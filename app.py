@@ -520,11 +520,30 @@ st.markdown('<div class="control-card"><div class="control-title">Execution Cont
 ctrl_col1, ctrl_col2, ctrl_col3 = st.columns([4, 5, 3])
 
 with ctrl_col1:
-    symbol = st.selectbox(
-        "Cryptocurrency",
-        ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "DOGEUSDT"],
-        key="symbol_select"
+    market_options = {
+        "BTCUSDT (Bitcoin)": "BTCUSDT",
+        "ETHUSDT (Ethereum)": "ETHUSDT",
+        "SOLUSDT (Solana)": "SOLUSDT",
+        "BNBUSDT (Binance Coin)": "BNBUSDT",
+        "DOGEUSDT (Dogecoin)": "DOGEUSDT",
+        "PAXGUSDT (Gold)": "PAXGUSDT"
+    }
+    
+    current_sym = st.session_state.get("live_symbol", "BTCUSDT")
+    default_idx = 0
+    for i, (label, val) in enumerate(market_options.items()):
+        if val == current_sym:
+            default_idx = i
+            break
+            
+    selected_label = st.selectbox(
+        "Cryptocurrency / Market",
+        list(market_options.keys()),
+        index=default_idx,
+        key="symbol_select_dropdown"
     )
+    symbol = market_options[selected_label]
+    
     if symbol != st.session_state.live_symbol:
         st.session_state.live_symbol = symbol
         reset_realtime_sandbox()
