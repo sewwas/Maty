@@ -365,6 +365,17 @@ PLOT_LAYOUT = dict(
 # --- STATE PERSISTENCE HELPERS ---
 STATE_FILE = "bot_state.pkl"
 
+def get_default_order_size(symbol: str) -> float:
+    defaults = {
+        "BTCUSDT": 0.008,
+        "ETHUSDT": 0.15,
+        "SOLUSDT": 3.0,
+        "BNBUSDT": 0.8,
+        "DOGEUSDT": 3000.0,
+        "PAXGUSDT": 0.12
+    }
+    return defaults.get(symbol, 0.1)
+
 def sync_active_market_primitives():
     if "markets" in st.session_state and "live_symbol" in st.session_state and st.session_state.live_symbol in st.session_state.markets:
         active = st.session_state.markets[st.session_state.live_symbol]
@@ -374,6 +385,7 @@ def sync_active_market_primitives():
         active["strat_offset"] = st.session_state.strat_offset
         active["strat_gap"] = st.session_state.strat_gap
         active["strat_is_percent"] = st.session_state.strat_is_percent
+        active["strat_order_size"] = st.session_state.strat_order_size
         active["strat_size_multiplier"] = st.session_state.strat_size_multiplier
         active["strat_target_profit"] = st.session_state.strat_target_profit
         active["strat_sl"] = st.session_state.strat_sl
@@ -403,7 +415,7 @@ def load_bot_state() -> bool:
                 st.session_state.markets = state["markets"]
                 st.session_state.live_symbol = state["live_symbol"]
                 # Ensure zero fees on all loaded brokers and provide default strategy values if missing
-                for m_state in st.session_state.markets.values():
+                for symbol, m_state in st.session_state.markets.items():
                     if "broker" in m_state and m_state["broker"]:
                         m_state["broker"].commission_pct = 0.0
                         m_state["broker"].slippage_pct = 0.0
@@ -413,6 +425,8 @@ def load_bot_state() -> bool:
                         m_state["strat_gap"] = 0.10
                     if "strat_is_percent" not in m_state:
                         m_state["strat_is_percent"] = True
+                    if "strat_order_size" not in m_state:
+                        m_state["strat_order_size"] = get_default_order_size(symbol)
                     if "strat_size_multiplier" not in m_state:
                         m_state["strat_size_multiplier"] = 1.0
                     if "strat_target_profit" not in m_state:
@@ -446,6 +460,7 @@ def load_bot_state() -> bool:
                         "strat_offset": 0.15,
                         "strat_gap": 0.10,
                         "strat_is_percent": True,
+                        "strat_order_size": get_default_order_size(live_sym),
                         "strat_size_multiplier": 1.0,
                         "strat_target_profit": 10.0,
                         "strat_sl": float('inf'),
@@ -509,7 +524,7 @@ if st.session_state.live_symbol not in st.session_state.markets:
         grid_levels=10,
         grid_gap=0.10,
         trap_offset=0.15,
-        order_size=500.0 / price,
+        order_size=get_default_order_size(st.session_state.live_symbol),
         order_size_multiplier=1.0,
         target_profit=10.0,
         auto_restart=True,
@@ -530,6 +545,7 @@ if st.session_state.live_symbol not in st.session_state.markets:
         "strat_offset": 0.15,
         "strat_gap": 0.10,
         "strat_is_percent": True,
+        "strat_order_size": get_default_order_size(st.session_state.live_symbol),
         "strat_size_multiplier": 1.0,
         "strat_target_profit": 10.0,
         "strat_sl": float('inf'),
@@ -549,6 +565,7 @@ st.session_state.running = active_market["running"]
 st.session_state.strat_offset = active_market.get("strat_offset", 0.15)
 st.session_state.strat_gap = active_market.get("strat_gap", 0.10)
 st.session_state.strat_is_percent = active_market.get("strat_is_percent", True)
+st.session_state.strat_order_size = active_market.get("strat_order_size", get_default_order_size(st.session_state.live_symbol))
 st.session_state.strat_size_multiplier = active_market.get("strat_size_multiplier", 1.0)
 st.session_state.strat_target_profit = active_market.get("strat_target_profit", 10.0)
 st.session_state.strat_sl = active_market.get("strat_sl", float('inf'))
@@ -556,14 +573,10 @@ st.session_state.strat_trailing = active_market.get("strat_trailing", False)
 st.session_state.strat_trailing_dist = active_market.get("strat_trailing_dist", 1.5)
 
 # Force the settings to be applied to the bot instance
-# Calculate dynamic order size to target a position value of ~$500 USD per level
-current_price = st.session_state.price_history[-1][1] if st.session_state.price_history else st.session_state.last_price
-dynamic_order_size = 500.0 / current_price
-
 st.session_state.bot.grid_levels = 10
 st.session_state.bot.grid_gap = st.session_state.strat_gap
 st.session_state.bot.trap_offset = st.session_state.strat_offset
-st.session_state.bot.order_size = dynamic_order_size
+st.session_state.bot.order_size = st.session_state.strat_order_size
 st.session_state.bot.order_size_multiplier = st.session_state.strat_size_multiplier
 st.session_state.bot.target_profit = st.session_state.strat_target_profit
 st.session_state.bot.auto_restart = True
@@ -766,6 +779,17 @@ with col_strategy:
         st.session_state.strat_trailing_dist = trailing_dist_val
         
     with strat_col3:
+        order_size_val = st.number_input(
+            "Base Order Size (Quantity)",
+            min_value=0.00001,
+            max_value=1000000.0,
+            value=st.session_state.strat_order_size,
+            step=0.0001 if st.session_state.strat_order_size < 0.1 else 0.01,
+            format="%.5f" if st.session_state.strat_order_size < 0.01 else "%.3f" if st.session_state.strat_order_size < 1.0 else "%.1f",
+            key="strat_order_size_input"
+        )
+        st.session_state.strat_order_size = order_size_val
+
         size_mult_val = st.number_input(
             "Size Multiplier (Martingale)",
             min_value=0.5,
@@ -777,11 +801,10 @@ with col_strategy:
         )
         st.session_state.strat_size_multiplier = size_mult_val
         
-        if st.session_state.strat_size_multiplier != 1.0:
-            current_price = st.session_state.price_history[-1][1] if st.session_state.price_history else st.session_state.last_price
-            base_size = 500.0 / current_price
-            progression = [f"{base_size * (st.session_state.strat_size_multiplier ** i):.4f}" for i in range(5)]
-            st.caption(f"📐 Sizing progression: {' ➔ '.join(progression)} ...")
+        # Calculate progression directly from configured base order size
+        progression = [f"{st.session_state.strat_order_size * (st.session_state.strat_size_multiplier ** i):.5f}" for i in range(5)]
+        clean_prog = [p.rstrip('0').rstrip('.') for p in progression]
+        st.caption(f"📐 Sizing progression: {' ➔ '.join(clean_prog)} ...")
         
     st.markdown('</div>', unsafe_allow_html=True)
 
