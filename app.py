@@ -441,8 +441,8 @@ if not state_loaded:
             target_profit=10.0,
             auto_restart=True,
             is_percent=True,
-            stop_loss=100.0,
-            max_cycle_duration=3600.0,
+            stop_loss=float('inf'),
+            max_cycle_duration=float('inf'),
             cancel_opposite_on_trigger=False
         )
 
@@ -458,8 +458,8 @@ st.session_state.bot.order_size = dynamic_order_size
 st.session_state.bot.target_profit = 10.0
 st.session_state.bot.auto_restart = True
 st.session_state.bot.is_percent = True
-st.session_state.bot.stop_loss = 100.0
-st.session_state.bot.max_cycle_duration = 3600.0
+st.session_state.bot.stop_loss = float('inf')
+st.session_state.bot.max_cycle_duration = float('inf')
 st.session_state.bot.cancel_opposite_on_trigger = False
 st.session_state.bot.use_trailing_stop = False
 st.session_state.bot.use_bb_filter = False
