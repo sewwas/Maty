@@ -373,6 +373,7 @@ def sync_active_market_primitives():
         active["price_history"] = st.session_state.price_history
         active["strat_offset"] = st.session_state.strat_offset
         active["strat_gap"] = st.session_state.strat_gap
+        active["strat_is_percent"] = st.session_state.strat_is_percent
         active["strat_target_profit"] = st.session_state.strat_target_profit
         active["strat_sl"] = st.session_state.strat_sl
         active["strat_trailing"] = st.session_state.strat_trailing
@@ -409,6 +410,8 @@ def load_bot_state() -> bool:
                         m_state["strat_offset"] = 0.15
                     if "strat_gap" not in m_state:
                         m_state["strat_gap"] = 0.10
+                    if "strat_is_percent" not in m_state:
+                        m_state["strat_is_percent"] = True
                     if "strat_target_profit" not in m_state:
                         m_state["strat_target_profit"] = 10.0
                     if "strat_sl" not in m_state:
@@ -439,6 +442,7 @@ def load_bot_state() -> bool:
                         "running": state.get("running", False),
                         "strat_offset": 0.15,
                         "strat_gap": 0.10,
+                        "strat_is_percent": True,
                         "strat_target_profit": 10.0,
                         "strat_sl": float('inf'),
                         "strat_trailing": False,
@@ -520,6 +524,7 @@ if st.session_state.live_symbol not in st.session_state.markets:
         "running": False,
         "strat_offset": 0.15,
         "strat_gap": 0.10,
+        "strat_is_percent": True,
         "strat_target_profit": 10.0,
         "strat_sl": float('inf'),
         "strat_trailing": False,
@@ -537,6 +542,7 @@ st.session_state.running = active_market["running"]
 # Expose strategy config values to session state
 st.session_state.strat_offset = active_market.get("strat_offset", 0.15)
 st.session_state.strat_gap = active_market.get("strat_gap", 0.10)
+st.session_state.strat_is_percent = active_market.get("strat_is_percent", True)
 st.session_state.strat_target_profit = active_market.get("strat_target_profit", 10.0)
 st.session_state.strat_sl = active_market.get("strat_sl", float('inf'))
 st.session_state.strat_trailing = active_market.get("strat_trailing", False)
@@ -553,7 +559,7 @@ st.session_state.bot.trap_offset = st.session_state.strat_offset
 st.session_state.bot.order_size = dynamic_order_size
 st.session_state.bot.target_profit = st.session_state.strat_target_profit
 st.session_state.bot.auto_restart = True
-st.session_state.bot.is_percent = True
+st.session_state.bot.is_percent = st.session_state.strat_is_percent
 st.session_state.bot.stop_loss = st.session_state.strat_sl
 st.session_state.bot.max_cycle_duration = float('inf')
 st.session_state.bot.cancel_opposite_on_trigger = False
@@ -665,25 +671,54 @@ with col_strategy:
     st.markdown('<div class="control-card"><div class="control-title">Strategy Tuning</div>', unsafe_allow_html=True)
     strat_col1, strat_col2, strat_col3 = st.columns(3)
     with strat_col1:
+        # Spacing Mode selectbox
+        spacing_mode = st.selectbox(
+            "Spacing Mode",
+            ["Percentage (%)", "USD Points / Pips"],
+            index=0 if st.session_state.get("strat_is_percent", True) else 1,
+            key="strat_is_percent_select"
+        )
+        st.session_state.strat_is_percent = (spacing_mode == "Percentage (%)")
+        
+        # Determine labels, bounds, and step sizes based on spacing mode
+        if st.session_state.strat_is_percent:
+            offset_label = "Trap Offset (%)"
+            offset_min, offset_max, offset_step = 0.01, 5.0, 0.01
+            gap_label = "Grid Gap (%)"
+            gap_min, gap_max, gap_step = 0.01, 5.0, 0.01
+            default_offset = 0.15 if st.session_state.strat_offset > 5.0 else st.session_state.strat_offset
+            default_gap = 0.10 if st.session_state.strat_gap > 5.0 else st.session_state.strat_gap
+        else:
+            offset_label = "Trap Offset (USD)"
+            offset_min, offset_max, offset_step = 0.1, 5000.0, 1.0
+            gap_label = "Grid Gap (USD)"
+            gap_min, gap_max, gap_step = 0.1, 5000.0, 1.0
+            if st.session_state.strat_offset < 5.0:
+                default_offset = max(0.5, round(current_price * (st.session_state.strat_offset / 100.0), 2))
+                default_gap = max(0.5, round(current_price * (st.session_state.strat_gap / 100.0), 2))
+            else:
+                default_offset = st.session_state.strat_offset
+                default_gap = st.session_state.strat_gap
+
         trap_offset_val = st.number_input(
-            "Trap Offset (%)",
-            min_value=0.01,
-            max_value=2.00,
-            value=st.session_state.strat_offset,
-            step=0.01,
-            format="%.2f",
-            key="strat_offset_input"
+            offset_label,
+            min_value=offset_min,
+            max_value=offset_max,
+            value=default_offset,
+            step=offset_step,
+            format="%.2f" if st.session_state.strat_is_percent or default_offset % 1 != 0 else "%.1f",
+            key=f"strat_offset_input_{'pct' if st.session_state.strat_is_percent else 'usd'}"
         )
         st.session_state.strat_offset = trap_offset_val
         
         grid_gap_val = st.number_input(
-            "Grid Gap (%)",
-            min_value=0.01,
-            max_value=2.00,
-            value=st.session_state.strat_gap,
-            step=0.01,
-            format="%.2f",
-            key="strat_gap_input"
+            gap_label,
+            min_value=gap_min,
+            max_value=gap_max,
+            value=default_gap,
+            step=gap_step,
+            format="%.2f" if st.session_state.strat_is_percent or default_gap % 1 != 0 else "%.1f",
+            key=f"strat_gap_input_{'pct' if st.session_state.strat_is_percent else 'usd'}"
         )
         st.session_state.strat_gap = grid_gap_val
         
