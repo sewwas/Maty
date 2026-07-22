@@ -236,6 +236,28 @@ html, body, [data-testid="stAppViewContainer"], [data-testid="stApp"], .main, .b
 .badge-amber {{ color: var(--amber); background: var(--amber-muted); }}
 .badge-blue {{ color: var(--accent); background: rgba(59, 130, 246, 0.1); }}
 
+/* Empty state placeholder */
+.empty-state {{
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 2rem 1rem;
+    border: 1px dashed var(--border);
+    background: var(--bg-subtle);
+    border-radius: var(--radius);
+    text-align: center;
+    color: var(--text-muted);
+    font-size: 0.76rem;
+    margin-top: 0.5rem;
+}}
+.empty-state-icon {{
+    font-size: 1.4rem;
+    margin-bottom: 0.3rem;
+    color: var(--text-dim);
+    opacity: 0.75;
+}}
+
 /* Top Brand Row */
 .brand-container {{
     display: flex;
@@ -668,7 +690,10 @@ with col_tables1:
         table_html = """
         <div class="table-wrap">
             <h4>Active Positions</h4>
-            <p style='font-size:0.8rem; color:#71717a; margin: 0;'>No active positions</p>
+            <div class="empty-state">
+                <div class="empty-state-icon">⧇</div>
+                No active positions in the current cycle
+            </div>
         </div>
         """
     st.markdown(table_html, unsafe_allow_html=True)
@@ -710,7 +735,10 @@ with col_tables2:
         table_html = """
         <div class="table-wrap">
             <h4>Active Grid Traps (Pending Orders)</h4>
-            <p style='font-size:0.8rem; color:#71717a; margin: 0;'>No pending traps deployed</p>
+            <div class="empty-state">
+                <div class="empty-state-icon">◇</div>
+                No pending traps deployed in the market
+            </div>
         </div>
         """
     st.markdown(table_html, unsafe_allow_html=True)
