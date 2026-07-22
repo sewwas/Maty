@@ -746,43 +746,6 @@ with col_strategy:
             key="strat_target_profit_input"
         )
         st.session_state.strat_target_profit = target_profit_val
-        
-        sl_option = st.selectbox(
-            "Stop Loss Option",
-            ["Infinite / None", "Custom USD Value"],
-            index=0 if st.session_state.strat_sl == float('inf') else 1,
-            key="strat_sl_select"
-        )
-        if sl_option == "Custom USD Value":
-            sl_val = st.number_input(
-                "Stop Loss (USD)",
-                min_value=1.0,
-                max_value=10000.0,
-                value=100.0 if st.session_state.strat_sl == float('inf') else st.session_state.strat_sl,
-                step=10.0,
-                key="strat_sl_val_input"
-            )
-            st.session_state.strat_sl = sl_val
-        else:
-            st.session_state.strat_sl = float('inf')
-            
-    with strat_col3:
-        size_mult_val = st.number_input(
-            "Size Multiplier (Martingale)",
-            min_value=0.5,
-            max_value=5.0,
-            value=st.session_state.strat_size_multiplier,
-            step=0.1,
-            format="%.2f" if st.session_state.strat_size_multiplier % 0.1 != 0 else "%.1f",
-            key="strat_size_multiplier_input"
-        )
-        st.session_state.strat_size_multiplier = size_mult_val
-        
-        if st.session_state.strat_size_multiplier != 1.0:
-            current_price = st.session_state.price_history[-1][1] if st.session_state.price_history else st.session_state.last_price
-            base_size = 500.0 / current_price
-            progression = [f"{base_size * (st.session_state.strat_size_multiplier ** i):.4f}" for i in range(5)]
-            st.caption(f"📐 Sizing progression: {' ➔ '.join(progression)} ...")
 
         trailing_stop_val = st.toggle(
             "Enable Trailing Stop",
@@ -801,6 +764,24 @@ with col_strategy:
             key="strat_trailing_dist_input"
         )
         st.session_state.strat_trailing_dist = trailing_dist_val
+        
+    with strat_col3:
+        size_mult_val = st.number_input(
+            "Size Multiplier (Martingale)",
+            min_value=0.5,
+            max_value=5.0,
+            value=st.session_state.strat_size_multiplier,
+            step=0.1,
+            format="%.2f" if st.session_state.strat_size_multiplier % 0.1 != 0 else "%.1f",
+            key="strat_size_multiplier_input"
+        )
+        st.session_state.strat_size_multiplier = size_mult_val
+        
+        if st.session_state.strat_size_multiplier != 1.0:
+            current_price = st.session_state.price_history[-1][1] if st.session_state.price_history else st.session_state.last_price
+            base_size = 500.0 / current_price
+            progression = [f"{base_size * (st.session_state.strat_size_multiplier ** i):.4f}" for i in range(5)]
+            st.caption(f"📐 Sizing progression: {' ➔ '.join(progression)} ...")
         
     st.markdown('</div>', unsafe_allow_html=True)
 
