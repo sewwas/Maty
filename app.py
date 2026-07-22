@@ -474,15 +474,27 @@ def reset_realtime_sandbox():
     st.session_state.bot.current_cycle_id = 1
     st.session_state.bot.cycle_history.clear()
     
-    # Initialize price history with single price point
     symbol = st.session_state.live_symbol
-    price = get_live_price(symbol)
-    if price is None:
-        price = st.session_state.last_price
-    else:
-        st.session_state.last_price = price
+    price = None
+    
+    # Try to pre-populate with historical 1m data for a richer chart
+    try:
+        df_hist = get_historical_klines(symbol, interval="1m", limit=30)
+        if df_hist is not None and not df_hist.empty:
+            df_ticks = interpolate_ticks(df_hist)
+            ticks = list(zip(df_ticks["timestamp"], df_ticks["price"]))
+            st.session_state.price_history = ticks
+            price = ticks[-1][1]
+    except Exception as e:
+        print(f"Error pre-populating historical klines: {e}")
         
-    st.session_state.price_history = [(time.time(), price)]
+    if price is None:
+        price = get_live_price(symbol)
+        if price is None:
+            price = st.session_state.last_price
+        st.session_state.price_history = [(time.time(), price)]
+        
+    st.session_state.last_price = price
     
     # Scale order size dynamically based on price before deploying traps
     st.session_state.bot.order_size = 500.0 / price
@@ -516,6 +528,12 @@ with ctrl_col1:
     if symbol != st.session_state.live_symbol:
         st.session_state.live_symbol = symbol
         reset_realtime_sandbox()
+        
+    timeframe = st.selectbox(
+        "Chart Timeframe",
+        ["5 Seconds", "1 Minute"],
+        key="timeframe_select"
+    )
 
 with ctrl_col2:
     st.write("") # vertical spacing align
@@ -572,8 +590,8 @@ if st.session_state.running:
     previous_price = st.session_state.price_history[-1][1]
     st.session_state.price_history.append((now, latest_price))
     
-    # Keep history to last 150 points for charting performance
-    if len(st.session_state.price_history) > 150:
+    # Keep history to last 3000 points for charting performance
+    if len(st.session_state.price_history) > 3000:
         st.session_state.price_history.pop(0)
         
     # 2. Update engine
@@ -621,8 +639,12 @@ if st.session_state.error_message:
     st.warning(st.session_state.error_message)
 
 # 10. PLOTLY LIVE CHART
-# Convert ticks to 5-second candlesticks
-interval_seconds = 5.0
+# Convert ticks to candlesticks based on selected timeframe
+timeframe_choice = st.session_state.get("timeframe_select", "5 Seconds")
+if timeframe_choice == "1 Minute":
+    interval_seconds = 60.0
+else:
+    interval_seconds = 5.0
 ticks = st.session_state.price_history
 ohlc_df = pd.DataFrame()
 
@@ -706,7 +728,7 @@ fig.update_xaxes(showgrid=True, gridcolor="rgba(255,255,255,0.05)" if IS_DARK el
 fig.update_yaxes(showgrid=True, gridcolor="rgba(255,255,255,0.05)" if IS_DARK else "rgba(0,0,0,0.05)")
 
 with st.container(border=True):
-    st.markdown('<div class="brand" style="margin-bottom: 5px;"><span class="chart-title">Real-Time Market Traps & Execution Chart</span></div><div class="chart-subtitle">Real-time prices, trap levels, and executed orders (10 Stops above, 10 Stops below)</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="brand" style="margin-bottom: 5px;"><span class="chart-title">Real-Time Market Traps & Execution Chart ({timeframe_choice})</span></div><div class="chart-subtitle">Real-time prices, trap levels, and executed orders (10 Stops above, 10 Stops below)</div>', unsafe_allow_html=True)
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
 # 11. TABLES
