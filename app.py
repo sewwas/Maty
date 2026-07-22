@@ -526,7 +526,7 @@ with ctrl_col1:
         "SOLUSDT (Solana)": "SOLUSDT",
         "BNBUSDT (Binance Coin)": "BNBUSDT",
         "DOGEUSDT (Dogecoin)": "DOGEUSDT",
-        "PAXGUSDT (Gold)": "PAXGUSDT"
+        "XAUUSD (Gold)": "PAXGUSDT"
     }
     
     current_sym = st.session_state.get("live_symbol", "BTCUSDT")
@@ -634,6 +634,7 @@ else:
 curr_price = st.session_state.price_history[-1][1]
 broker_instance = st.session_state.broker
 bot_instance = st.session_state.bot
+display_symbol = "XAUUSD" if symbol == "PAXGUSDT" else symbol
 
 # 9. KPI METRIC CARDS
 kpi1, kpi2, kpi3, kpi4, kpi5 = st.columns(5)
@@ -688,7 +689,7 @@ if not ohlc_df.empty:
         high=ohlc_df["high"],
         low=ohlc_df["low"],
         close=ohlc_df["close"],
-        name=f"{symbol} Price",
+        name=f"{display_symbol} Price",
         increasing_line_color="#22c55e",
         decreasing_line_color="#ef4444",
         increasing_fillcolor="rgba(34, 197, 94, 0.2)",
