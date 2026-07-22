@@ -426,7 +426,7 @@ st.markdown(f"""
 
 # 7. EXECUTION CONTROLS CENTER CARD
 st.markdown('<div class="control-card"><div class="control-title">Execution Controls</div>', unsafe_allow_html=True)
-ctrl_col1, ctrl_col2, ctrl_col3, ctrl_col4 = st.columns([3, 4, 3, 2])
+ctrl_col1, ctrl_col2, ctrl_col3 = st.columns([4, 5, 3])
 
 with ctrl_col1:
     symbol = st.selectbox(
@@ -439,13 +439,6 @@ with ctrl_col1:
         reset_realtime_sandbox()
 
 with ctrl_col2:
-    data_source = st.radio(
-        "Market Feed Source",
-        ["Local Random Walk Simulator", "Binance Real-time Public API"],
-        index=0
-    )
-
-with ctrl_col3:
     st.write("") # vertical spacing align
     run_col1, run_col2 = st.columns(2)
     with run_col1:
@@ -467,7 +460,7 @@ with ctrl_col3:
             st.warning(f"Panic close executed! Closed {len(closed)} open trades.")
             st.rerun()
 
-with ctrl_col4:
+with ctrl_col3:
     st.write("") # vertical spacing align
     theme_col, reset_col = st.columns(2)
     with theme_col:
@@ -482,24 +475,15 @@ st.markdown('</div>', unsafe_allow_html=True)
 
 # 8. ENGINE TICK PROCESSING
 # Run calculation tick if running
-sim_vol = 0.0008
-sim_drift = 0.0
-
 if st.session_state.running:
-    # 1. Fetch latest price
-    latest_price = None
-    if data_source == "Binance Real-time Public API":
-        latest_price = get_live_price(st.session_state.live_symbol)
-        if latest_price is None:
-            # fall back to simulator or last price if API fails
-            st.session_state.error_message = "Binance API timeout. Falling back to simulated price."
-            latest_price = st.session_state.price_history[-1][1] * (1.0 + np.random.normal(sim_drift, sim_vol))
-        else:
-            st.session_state.error_message = None
+    # 1. Fetch latest price from live market (Binance API)
+    latest_price = get_live_price(st.session_state.live_symbol)
+    if latest_price is None:
+        # Fall back to last recorded price if API times out
+        st.session_state.error_message = "Binance API connection timeout. Retrying..."
+        latest_price = st.session_state.price_history[-1][1]
     else:
-        # Simulated Random Walk
         st.session_state.error_message = None
-        latest_price = st.session_state.price_history[-1][1] * (1.0 + np.random.normal(sim_drift, sim_vol))
     
     # Record price tick
     now = time.time()
