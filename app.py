@@ -392,6 +392,10 @@ def load_bot_state() -> bool:
             st.session_state.last_price = state["last_price"]
             st.session_state.live_symbol = state["live_symbol"]
             st.session_state.running = state.get("running", False)
+            # Ensure fees are removed even if loading from an older saved state
+            if hasattr(st.session_state, "broker") and st.session_state.broker:
+                st.session_state.broker.commission_pct = 0.0
+                st.session_state.broker.slippage_pct = 0.0
             return True
         except Exception as e:
             print(f"Error loading bot state: {e}")
@@ -413,7 +417,7 @@ if "error_message" not in st.session_state:
 
 if not state_loaded:
     if "broker" not in st.session_state:
-        st.session_state.broker = SimulatedBroker(initial_balance=10000.0, commission_pct=0.0005, slippage_pct=0.0002)
+        st.session_state.broker = SimulatedBroker(initial_balance=10000.0, commission_pct=0.0, slippage_pct=0.0)
 
     if "price_history" not in st.session_state:
         st.session_state.price_history = []  # list of tuples (timestamp, price)
@@ -464,6 +468,8 @@ st.session_state.bot.use_bb_filter = False
 def reset_realtime_sandbox():
     clear_bot_state()
     st.session_state.broker.reset()
+    st.session_state.broker.commission_pct = 0.0
+    st.session_state.broker.slippage_pct = 0.0
     st.session_state.bot.deployed = False
     st.session_state.bot.current_cycle_id = 1
     st.session_state.bot.cycle_history.clear()
