@@ -5,6 +5,8 @@ import plotly.graph_objects as go
 import time
 from datetime import datetime
 import textwrap
+import pickle
+import os
 
 # Import core bot logic
 from core.engine import SimulatedBroker, BreakoutGridBot
