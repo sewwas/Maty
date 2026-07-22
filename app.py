@@ -498,6 +498,16 @@ if st.session_state.running:
     cycle_hit = st.session_state.bot.process_tick(previous_price, latest_price, now)
     if cycle_hit:
         st.toast(f"🎉 Cycle {cycle_hit['cycle_id']} exit hit target profit! PnL: ${cycle_hit['pnl']:.2f}")
+else:
+    # If bot is not running, periodically fetch the live price on page load to keep it fresh
+    now = time.time()
+    if not st.session_state.price_history or (now - st.session_state.price_history[-1][0] > 5.0):
+        latest_price = get_live_price(st.session_state.live_symbol)
+        if latest_price is not None:
+            # Update the last point in history to show the real current price
+            st.session_state.price_history[-1] = (now, latest_price)
+            st.session_state.last_price = latest_price
+            st.session_state.error_message = None
 
 # Get current state pointers
 curr_price = st.session_state.price_history[-1][1]
