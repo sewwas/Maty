@@ -628,6 +628,12 @@ with col_controls:
             ["5 Seconds", "1 Minute"],
             key="timeframe_select"
         )
+        
+        price_source = st.selectbox(
+            "Price Source",
+            ["Live Market API", "Simulated Market (Demo)"],
+            key="price_source_select"
+        )
 
     with ctrl_col2:
         st.write("") # vertical spacing align
@@ -776,14 +782,21 @@ with col_strategy:
 # 8. ENGINE TICK PROCESSING
 # Run calculation tick if running
 if st.session_state.running:
-    # 1. Fetch latest price from live market (Binance API)
-    latest_price = get_live_price(st.session_state.live_symbol)
-    if latest_price is None:
-        # Fall back to last recorded price if API times out
-        st.session_state.error_message = "Binance API connection timeout. Retrying..."
-        latest_price = st.session_state.price_history[-1][1]
-    else:
+    # 1. Fetch latest price
+    if st.session_state.get("price_source_select", "Live Market API") == "Simulated Market (Demo)":
+        last_p = st.session_state.price_history[-1][1] if st.session_state.price_history else st.session_state.last_price
+        vol = 0.0008 if st.session_state.live_symbol == "PAXGUSDT" else 0.0005
+        change = np.random.normal(0, vol)
+        latest_price = round(last_p * (1 + change), 2)
         st.session_state.error_message = None
+    else:
+        latest_price = get_live_price(st.session_state.live_symbol)
+        if latest_price is None:
+            # Fall back to last recorded price if API times out
+            st.session_state.error_message = "Binance API connection timeout. Retrying..."
+            latest_price = st.session_state.price_history[-1][1]
+        else:
+            st.session_state.error_message = None
     
     # Record price tick
     now = time.time()
@@ -803,13 +816,17 @@ else:
     # If bot is not running, periodically fetch the live price on page load to keep it fresh
     now = time.time()
     if not st.session_state.price_history or (now - st.session_state.price_history[-1][0] > 5.0):
-        latest_price = get_live_price(st.session_state.live_symbol)
-        if latest_price is not None:
-            # Update the last point in history to show the real current price
-            st.session_state.price_history[-1] = (now, latest_price)
-            st.session_state.last_price = latest_price
-            st.session_state.error_message = None
-            save_bot_state()
+        if st.session_state.get("price_source_select", "Live Market API") == "Simulated Market (Demo)":
+            # Just keep the last price, no need to query live API
+            latest_price = st.session_state.price_history[-1][1]
+        else:
+            latest_price = get_live_price(st.session_state.live_symbol)
+            if latest_price is not None:
+                # Update the last point in history to show the real current price
+                st.session_state.price_history[-1] = (now, latest_price)
+                st.session_state.last_price = latest_price
+                st.session_state.error_message = None
+                save_bot_state()
 
 # Get current state pointers
 curr_price = st.session_state.price_history[-1][1]
