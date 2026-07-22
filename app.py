@@ -537,20 +537,38 @@ if st.session_state.error_message:
     st.warning(st.session_state.error_message)
 
 # 10. PLOTLY LIVE CHART
-price_df = pd.DataFrame(st.session_state.price_history, columns=["time", "price"])
-price_df["datetime"] = pd.to_datetime(price_df["time"], unit="s")
+# Convert ticks to 5-second candlesticks
+interval_seconds = 5.0
+ticks = st.session_state.price_history
+ohlc_df = pd.DataFrame()
+
+if len(ticks) >= 1:
+    df_ticks = pd.DataFrame(ticks, columns=["time", "price"])
+    df_ticks["interval_id"] = (df_ticks["time"] // interval_seconds) * interval_seconds
+    ohlc = df_ticks.groupby("interval_id")["price"].agg(
+        open="first",
+        high="max",
+        low="min",
+        close="last"
+    ).reset_index()
+    ohlc["datetime"] = pd.to_datetime(ohlc["interval_id"], unit="s")
+    ohlc_df = ohlc
 
 fig = go.Figure()
 
-# Price history trace
-fig.add_trace(go.Scatter(
-    x=price_df["datetime"],
-    y=price_df["price"],
-    mode="lines+markers",
-    line=dict(color="#2563eb" if not IS_DARK else "#60a5fa", width=2),
-    marker=dict(size=4),
-    name=f"{symbol} Price"
-))
+if not ohlc_df.empty:
+    fig.add_trace(go.Candlestick(
+        x=ohlc_df["datetime"],
+        open=ohlc_df["open"],
+        high=ohlc_df["high"],
+        low=ohlc_df["low"],
+        close=ohlc_df["close"],
+        name=f"{symbol} Price",
+        increasing_line_color="#22c55e",
+        decreasing_line_color="#ef4444",
+        increasing_fillcolor="rgba(34, 197, 94, 0.2)",
+        decreasing_fillcolor="rgba(239, 68, 68, 0.2)"
+    ))
 
 # Current price indicator line
 fig.add_hline(
@@ -599,6 +617,7 @@ for pos_id, pos in broker_instance.open_positions.items():
     )
 
 fig.update_layout(PLOT_LAYOUT)
+fig.update_layout(xaxis_rangeslider_visible=False)
 fig.update_xaxes(showgrid=True, gridcolor="rgba(255,255,255,0.05)" if IS_DARK else "rgba(0,0,0,0.05)")
 fig.update_yaxes(showgrid=True, gridcolor="rgba(255,255,255,0.05)" if IS_DARK else "rgba(0,0,0,0.05)")
 
@@ -696,56 +715,110 @@ with col_tables2:
         """
     st.markdown(table_html, unsafe_allow_html=True)
 
-# Completed cycle log table
-if bot_instance.cycle_history:
-    rows_html = ""
-    for cycle in reversed(bot_instance.cycle_history):
-        pnl_style = "color: var(--green);" if cycle["pnl"] >= 0 else "color: var(--red);"
-        dt_str = datetime.fromtimestamp(cycle["exit_time"]).strftime("%H:%M:%S")
-        duration = cycle["exit_time"] - cycle["start_time"]
-        
-        rows_html += f"""
-        <tr>
-            <td>Cycle #{cycle['cycle_id']}</td>
-            <td>${cycle['deploy_price']:,.2f}</td>
-            <td>${cycle['exit_price']:,.2f}</td>
-            <td>{cycle['trades_count']} trades</td>
-            <td>{duration:.1f}s</td>
-            <td style="{pnl_style} font-weight: bold;">${cycle['pnl']:+,.2f}</td>
-            <td>{dt_str}</td>
-        </tr>
-        """
-    cycles_html = f"""
-    <div class="table-wrap">
-        <h4>Realized Cycles (Completed Profit-Targets)</h4>
-        <table class="data-table">
-            <thead>
-                <tr>
-                    <th>Cycle ID</th>
-                    <th>Deploy Price</th>
-                    <th>Exit Price</th>
-                    <th>Execution Stats</th>
-                    <th>Duration</th>
-                    <th>Total Net PnL</th>
-                    <th>Completed At</th>
-                </tr>
-            </thead>
-            <tbody>
-                {rows_html}
-            </tbody>
-        </table>
-    </div>
-    """
-else:
-    cycles_html = """
-    <div class="table-wrap">
-        <h4>Realized Cycles (Completed Profit-Targets)</h4>
-        <p style='font-size:0.8rem; color:#71717a; margin: 0;'>No completed breakout cycles yet</p>
-    </div>
-    """
-st.markdown(cycles_html, unsafe_allow_html=True)
+# 12. HISTORY LOGS TABS
+tab_cycles, tab_trades = st.tabs(["🔄 Completed Cycles", "📜 Detailed Trades Log"])
 
-# 12. RUNNER LOOP
+with tab_cycles:
+    if bot_instance.cycle_history:
+        rows_html = ""
+        for cycle in reversed(bot_instance.cycle_history):
+            pnl_style = "color: var(--green);" if cycle["pnl"] >= 0 else "color: var(--red);"
+            dt_str = datetime.fromtimestamp(cycle["exit_time"]).strftime("%H:%M:%S")
+            duration = cycle["exit_time"] - cycle["start_time"]
+            
+            rows_html += f"""
+            <tr>
+                <td>Cycle #{cycle['cycle_id']}</td>
+                <td>${cycle['deploy_price']:,.2f}</td>
+                <td>${cycle['exit_price']:,.2f}</td>
+                <td>{cycle['trades_count']} trades</td>
+                <td>{duration:.1f}s</td>
+                <td style="{pnl_style} font-weight: bold;">${cycle['pnl']:+,.2f}</td>
+                <td>{dt_str}</td>
+            </tr>
+            """
+        cycles_html = f"""
+        <div class="table-wrap">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>Cycle ID</th>
+                        <th>Deploy Price</th>
+                        <th>Exit Price</th>
+                        <th>Execution Stats</th>
+                        <th>Duration</th>
+                        <th>Total Net PnL</th>
+                        <th>Completed At</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {rows_html}
+                </tbody>
+            </table>
+        </div>
+        """
+    else:
+        cycles_html = """
+        <div class="table-wrap">
+            <p style='font-size:0.8rem; color:#71717a; margin: 0;'>No completed breakout cycles yet</p>
+        </div>
+        """
+    st.markdown(cycles_html, unsafe_allow_html=True)
+
+with tab_trades:
+    if broker_instance.closed_trades:
+        rows_html = ""
+        for t in reversed(broker_instance.closed_trades):
+            pnl_style = "color: var(--green);" if t["pnl"] >= 0 else "color: var(--red);"
+            dt_entry = datetime.fromtimestamp(t["entry_time"]).strftime("%H:%M:%S")
+            dt_exit = datetime.fromtimestamp(t["exit_time"]).strftime("%H:%M:%S")
+            badge_type = "green" if t["type"] == "BUY" else "red"
+            badge_html = render_badge(t["type"], badge_type)
+            
+            rows_html += f"""
+            <tr>
+                <td>{t['position_id']}</td>
+                <td>{badge_html}</td>
+                <td>${t['entry_price']:,.2f}</td>
+                <td>${t['exit_price']:,.2f}</td>
+                <td>{t['size']:.4f}</td>
+                <td>${t['commission']:,.4f}</td>
+                <td style="{pnl_style} font-weight: bold;">${t['pnl']:+,.2f}</td>
+                <td>{dt_entry}</td>
+                <td>{dt_exit}</td>
+            </tr>
+            """
+        trades_html = f"""
+        <div class="table-wrap">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>Trade ID</th>
+                        <th>Type</th>
+                        <th>Entry Price</th>
+                        <th>Exit Price</th>
+                        <th>Size</th>
+                        <th>Commission</th>
+                        <th>Net PnL</th>
+                        <th>Entry Time</th>
+                        <th>Exit Time</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {rows_html}
+                </tbody>
+            </table>
+        </div>
+        """
+    else:
+        trades_html = """
+        <div class="table-wrap">
+            <p style='font-size:0.8rem; color:#71717a; margin: 0;'>No detailed trades executed yet</p>
+        </div>
+        """
+    st.markdown(trades_html, unsafe_allow_html=True)
+
+# 13. RUNNER LOOP
 if st.session_state.running:
     time.sleep(1.0)
     st.rerun()
