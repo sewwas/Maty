@@ -203,6 +203,27 @@ def run_tests():
     assert len(broker.pending_orders) > 0
     print("[PASS] BB Squeeze Filter blocks traps in high volatility")
 
+    # 11. Test Martingale/Size Multiplier Progression
+    broker.reset()
+    m_bot = BreakoutGridBot(
+        broker=broker,
+        grid_levels=3,
+        grid_gap=10.0,
+        trap_offset=5.0,
+        order_size=0.01,
+        order_size_multiplier=2.0,
+        auto_restart=False,
+        is_percent=False
+    )
+    m_bot.deploy_traps(1000.0, timestamp)
+    # Sizes should progress exponentially: 0.01, 0.02, 0.04
+    orders = sorted(list(broker.pending_orders.values()), key=lambda o: o.trigger_price)
+    buy_orders = [o for o in orders if o.type == "BUY_STOP"]
+    assert abs(buy_orders[0].size - 0.01) < 0.0001
+    assert abs(buy_orders[1].size - 0.02) < 0.0001
+    assert abs(buy_orders[2].size - 0.04) < 0.0001
+    print("[PASS] Martingale/Size Multiplier progression")
+
     print("\nALL TESTS PASSED SUCCESSFULLY!")
 
 if __name__ == "__main__":

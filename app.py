@@ -374,6 +374,7 @@ def sync_active_market_primitives():
         active["strat_offset"] = st.session_state.strat_offset
         active["strat_gap"] = st.session_state.strat_gap
         active["strat_is_percent"] = st.session_state.strat_is_percent
+        active["strat_size_multiplier"] = st.session_state.strat_size_multiplier
         active["strat_target_profit"] = st.session_state.strat_target_profit
         active["strat_sl"] = st.session_state.strat_sl
         active["strat_trailing"] = st.session_state.strat_trailing
@@ -412,6 +413,8 @@ def load_bot_state() -> bool:
                         m_state["strat_gap"] = 0.10
                     if "strat_is_percent" not in m_state:
                         m_state["strat_is_percent"] = True
+                    if "strat_size_multiplier" not in m_state:
+                        m_state["strat_size_multiplier"] = 1.0
                     if "strat_target_profit" not in m_state:
                         m_state["strat_target_profit"] = 10.0
                     if "strat_sl" not in m_state:
@@ -443,6 +446,7 @@ def load_bot_state() -> bool:
                         "strat_offset": 0.15,
                         "strat_gap": 0.10,
                         "strat_is_percent": True,
+                        "strat_size_multiplier": 1.0,
                         "strat_target_profit": 10.0,
                         "strat_sl": float('inf'),
                         "strat_trailing": False,
@@ -506,6 +510,7 @@ if st.session_state.live_symbol not in st.session_state.markets:
         grid_gap=0.10,
         trap_offset=0.15,
         order_size=500.0 / price,
+        order_size_multiplier=1.0,
         target_profit=10.0,
         auto_restart=True,
         is_percent=True,
@@ -525,6 +530,7 @@ if st.session_state.live_symbol not in st.session_state.markets:
         "strat_offset": 0.15,
         "strat_gap": 0.10,
         "strat_is_percent": True,
+        "strat_size_multiplier": 1.0,
         "strat_target_profit": 10.0,
         "strat_sl": float('inf'),
         "strat_trailing": False,
@@ -543,6 +549,7 @@ st.session_state.running = active_market["running"]
 st.session_state.strat_offset = active_market.get("strat_offset", 0.15)
 st.session_state.strat_gap = active_market.get("strat_gap", 0.10)
 st.session_state.strat_is_percent = active_market.get("strat_is_percent", True)
+st.session_state.strat_size_multiplier = active_market.get("strat_size_multiplier", 1.0)
 st.session_state.strat_target_profit = active_market.get("strat_target_profit", 10.0)
 st.session_state.strat_sl = active_market.get("strat_sl", float('inf'))
 st.session_state.strat_trailing = active_market.get("strat_trailing", False)
@@ -557,6 +564,7 @@ st.session_state.bot.grid_levels = 10
 st.session_state.bot.grid_gap = st.session_state.strat_gap
 st.session_state.bot.trap_offset = st.session_state.strat_offset
 st.session_state.bot.order_size = dynamic_order_size
+st.session_state.bot.order_size_multiplier = st.session_state.strat_size_multiplier
 st.session_state.bot.target_profit = st.session_state.strat_target_profit
 st.session_state.bot.auto_restart = True
 st.session_state.bot.is_percent = st.session_state.strat_is_percent
@@ -759,6 +767,23 @@ with col_strategy:
             st.session_state.strat_sl = float('inf')
             
     with strat_col3:
+        size_mult_val = st.number_input(
+            "Size Multiplier (Martingale)",
+            min_value=0.5,
+            max_value=5.0,
+            value=st.session_state.strat_size_multiplier,
+            step=0.1,
+            format="%.2f" if st.session_state.strat_size_multiplier % 0.1 != 0 else "%.1f",
+            key="strat_size_multiplier_input"
+        )
+        st.session_state.strat_size_multiplier = size_mult_val
+        
+        if st.session_state.strat_size_multiplier != 1.0:
+            current_price = st.session_state.price_history[-1][1] if st.session_state.price_history else st.session_state.last_price
+            base_size = 500.0 / current_price
+            progression = [f"{base_size * (st.session_state.strat_size_multiplier ** i):.4f}" for i in range(5)]
+            st.caption(f"📐 Sizing progression: {' ➔ '.join(progression)} ...")
+
         trailing_stop_val = st.toggle(
             "Enable Trailing Stop",
             value=st.session_state.strat_trailing,
@@ -1140,9 +1165,10 @@ with tab_backtest:
                     grid_gap=st.session_state.strat_gap,
                     trap_offset=st.session_state.strat_offset,
                     order_size=bt_order_size,
+                    order_size_multiplier=st.session_state.strat_size_multiplier,
                     target_profit=st.session_state.strat_target_profit,
                     auto_restart=True,
-                    is_percent=True,
+                    is_percent=st.session_state.strat_is_percent,
                     stop_loss=st.session_state.strat_sl,
                     max_cycle_duration=float('inf'),
                     cancel_opposite_on_trigger=False,

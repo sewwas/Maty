@@ -203,6 +203,7 @@ class BreakoutGridBot:
         grid_gap: float = 10.0,
         trap_offset: float = 5.0,
         order_size: float = 0.1,
+        order_size_multiplier: float = 1.0,
         target_profit: float = 10.0,
         auto_restart: bool = True,
         is_percent: bool = False,
@@ -219,6 +220,7 @@ class BreakoutGridBot:
         self.grid_gap = grid_gap
         self.trap_offset = trap_offset
         self.order_size = order_size
+        self.order_size_multiplier = order_size_multiplier
         self.target_profit = target_profit
         self.auto_restart = auto_restart
         self.is_percent = is_percent
@@ -263,12 +265,14 @@ class BreakoutGridBot:
         # Place Buy Stop orders above the current price
         for i in range(self.grid_levels):
             trigger_price = current_price + offset_val + (i * gap_val)
-            self.broker.place_order("BUY_STOP", trigger_price, self.order_size, timestamp)
+            level_size = self.order_size * (self.order_size_multiplier ** i)
+            self.broker.place_order("BUY_STOP", trigger_price, level_size, timestamp)
 
         # Place Sell Stop orders below the current price
         for i in range(self.grid_levels):
             trigger_price = current_price - offset_val - (i * gap_val)
-            self.broker.place_order("SELL_STOP", trigger_price, self.order_size, timestamp)
+            level_size = self.order_size * (self.order_size_multiplier ** i)
+            self.broker.place_order("SELL_STOP", trigger_price, level_size, timestamp)
 
         self.deployed = True
 
