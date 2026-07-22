@@ -659,15 +659,7 @@ with col_tables1:
             pnl_style = "color: var(--green);" if pnl >= 0 else "color: var(--red);"
             badge_type = "green" if pos.type == "BUY" else "red"
             badge_html = render_badge(pos.type, badge_type)
-            rows_html += f"""
-            <tr>
-                <td>{pos.position_id}</td>
-                <td>{badge_html}</td>
-                <td>${pos.entry_price:,.2f}</td>
-                <td>{pos.size:.4f}</td>
-                <td style="{pnl_style} font-weight: bold;">${pnl:+,.2f}</td>
-            </tr>
-            """
+            rows_html += f"<tr><td>{pos.position_id}</td><td>{badge_html}</td><td>${pos.entry_price:,.2f}</td><td>{pos.size:.4f}</td><td style='{pnl_style} font-weight: bold;'>${pnl:+,.2f}</td></tr>"
         table_html = f"""
         <div class="table-wrap">
             <h4>Active Positions</h4>
@@ -706,14 +698,7 @@ with col_tables2:
         for o in sorted_orders:
             badge_type = "green" if "BUY" in o.type else "red"
             badge_html = render_badge(o.type, badge_type)
-            rows_html += f"""
-            <tr>
-                <td>{o.order_id}</td>
-                <td>{badge_html}</td>
-                <td>${o.trigger_price:,.2f}</td>
-                <td>{o.size:.4f}</td>
-            </tr>
-            """
+            rows_html += f"<tr><td>{o.order_id}</td><td>{badge_html}</td><td>${o.trigger_price:,.2f}</td><td>{o.size:.4f}</td></tr>"
         table_html = f"""
         <div class="table-wrap">
             <h4>Active Grid Traps (Pending Orders)</h4>
@@ -755,17 +740,7 @@ with tab_cycles:
             dt_str = datetime.fromtimestamp(cycle["exit_time"]).strftime("%H:%M:%S")
             duration = cycle["exit_time"] - cycle["start_time"]
             
-            rows_html += f"""
-            <tr>
-                <td>Cycle #{cycle['cycle_id']}</td>
-                <td>${cycle['deploy_price']:,.2f}</td>
-                <td>${cycle['exit_price']:,.2f}</td>
-                <td>{cycle['trades_count']} trades</td>
-                <td>{duration:.1f}s</td>
-                <td style="{pnl_style} font-weight: bold;">${cycle['pnl']:+,.2f}</td>
-                <td>{dt_str}</td>
-            </tr>
-            """
+            rows_html += f"<tr><td>Cycle #{cycle['cycle_id']}</td><td>${cycle['deploy_price']:,.2f}</td><td>${cycle['exit_price']:,.2f}</td><td>{cycle['trades_count']} trades</td><td>{duration:.1f}s</td><td style='{pnl_style} font-weight: bold;'>${cycle['pnl']:+,.2f}</td><td>{dt_str}</td></tr>"
         cycles_html = f"""
         <div class="table-wrap">
             <table class="data-table">
@@ -804,19 +779,7 @@ with tab_trades:
             badge_type = "green" if t["type"] == "BUY" else "red"
             badge_html = render_badge(t["type"], badge_type)
             
-            rows_html += f"""
-            <tr>
-                <td>{t['position_id']}</td>
-                <td>{badge_html}</td>
-                <td>${t['entry_price']:,.2f}</td>
-                <td>${t['exit_price']:,.2f}</td>
-                <td>{t['size']:.4f}</td>
-                <td>${t['commission']:,.4f}</td>
-                <td style="{pnl_style} font-weight: bold;">${t['pnl']:+,.2f}</td>
-                <td>{dt_entry}</td>
-                <td>{dt_exit}</td>
-            </tr>
-            """
+            rows_html += f"<tr><td>{t['position_id']}</td><td>{badge_html}</td><td>${t['entry_price']:,.2f}</td><td>${t['exit_price']:,.2f}</td><td>{t['size']:.4f}</td><td>${t['commission']:,.4f}</td><td style='{pnl_style} font-weight: bold;'>${t['pnl']:+,.2f}</td><td>{dt_entry}</td><td>{dt_exit}</td></tr>"
         trades_html = f"""
         <div class="table-wrap">
             <table class="data-table">
