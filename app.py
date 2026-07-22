@@ -833,7 +833,7 @@ with col_tables2:
     st.markdown(textwrap.dedent(table_html), unsafe_allow_html=True)
 
 # 12. HISTORY LOGS TABS
-tab_cycles, tab_trades = st.tabs(["🔄 Completed Cycles", "📜 Detailed Trades Log"])
+tab_cycles, tab_trades, tab_backtest = st.tabs(["🔄 Completed Cycles", "📜 Detailed Trades Log", "🧪 Backtesting"])
 
 with tab_cycles:
     if bot_instance.cycle_history:
@@ -912,6 +912,177 @@ with tab_trades:
         </div>
         """
     st.markdown(textwrap.dedent(trades_html), unsafe_allow_html=True)
+
+with tab_backtest:
+    st.markdown('<div class="control-card"><div class="control-title">Historical Backtest Suite</div>', unsafe_allow_html=True)
+    
+    bt_col1, bt_col2 = st.columns([1, 1])
+    with bt_col1:
+        candles_limit = st.slider("Historical Candles Count (1-minute intervals)", min_value=100, max_value=1000, value=500, step=50)
+    with bt_col2:
+        bt_balance = st.number_input("Initial Balance ($)", min_value=100.0, max_value=1000000.0, value=10000.0, step=100.0)
+        
+    if st.button("🚀 RUN HISTORICAL BACKTEST", type="primary", use_container_width=True):
+        with st.spinner("Fetching historical data and running backtest..."):
+            symbol_to_fetch = st.session_state.live_symbol
+            df_klines = get_historical_klines(symbol_to_fetch, interval="1m", limit=candles_limit)
+            if df_klines is None or df_klines.empty:
+                st.error("Failed to fetch historical data for backtesting. Please check your network connection.")
+            else:
+                df_ticks = interpolate_ticks(df_klines)
+                
+                # Setup backtest broker & bot with zero fees
+                bt_broker = SimulatedBroker(initial_balance=bt_balance, commission_pct=0.0, slippage_pct=0.0)
+                start_price = df_ticks.iloc[0]["price"]
+                bt_order_size = 500.0 / start_price
+                
+                bt_bot = BreakoutGridBot(
+                    bt_broker,
+                    grid_levels=10,
+                    grid_gap=0.10,
+                    trap_offset=0.15,
+                    order_size=bt_order_size,
+                    target_profit=10.0,
+                    auto_restart=True,
+                    is_percent=True,
+                    stop_loss=float('inf'),
+                    max_cycle_duration=float('inf'),
+                    cancel_opposite_on_trigger=False
+                )
+                
+                equity_history = []
+                price_history = []
+                timestamps = []
+                
+                bt_bot.deploy_traps(start_price, df_ticks.iloc[0]["timestamp"])
+                
+                ticks_list = list(zip(df_ticks["timestamp"], df_ticks["price"]))
+                for i in range(1, len(ticks_list)):
+                    prev_t, prev_p = ticks_list[i-1]
+                    curr_t, curr_p = ticks_list[i]
+                    
+                    bt_bot.process_tick(prev_p, curr_p, curr_t)
+                    
+                    if i % 10 == 0 or i == len(ticks_list) - 1:
+                        eq = bt_broker.get_equity(curr_p)
+                        equity_history.append(eq)
+                        price_history.append(curr_p)
+                        timestamps.append(datetime.fromtimestamp(curr_t))
+                
+                end_price = ticks_list[-1][1]
+                end_time = ticks_list[-1][0]
+                bt_broker.close_all_positions(end_price, end_time)
+                final_equity = bt_broker.balance
+                net_profit = final_equity - bt_balance
+                profit_pct = (net_profit / bt_balance) * 100.0
+                
+                st.session_state.bt_results = {
+                    "net_profit": net_profit,
+                    "profit_pct": profit_pct,
+                    "final_equity": final_equity,
+                    "start_balance": bt_balance,
+                    "completed_cycles": len(bt_bot.cycle_history),
+                    "total_trades": len(bt_broker.closed_trades),
+                    "equity_history": equity_history,
+                    "price_history": price_history,
+                    "timestamps": timestamps,
+                    "closed_trades": bt_broker.closed_trades,
+                    "cycle_history": bt_bot.cycle_history,
+                    "symbol": symbol_to_fetch
+                }
+                st.toast("🎉 Backtest completed successfully!")
+                
+    if "bt_results" in st.session_state:
+        res = st.session_state.bt_results
+        display_sym = "XAUUSD" if res["symbol"] == "PAXGUSDT" else res["symbol"]
+        
+        st.markdown("### Backtest Results Summary")
+        
+        bt_metric1, bt_metric2, bt_metric3, bt_metric4 = st.columns(4)
+        with bt_metric1:
+            pnl_type = "up" if res["net_profit"] >= 0 else "down"
+            metric_card("Total Net Profit", f"${res['net_profit']:.2f}", delta=f"{res['profit_pct']:+.2f}%", delta_type=pnl_type)
+        with bt_metric2:
+            metric_card("Final Account Equity", f"${res['final_equity']:.2f}")
+        with bt_metric3:
+            metric_card("Completed Cycles", f"{res['completed_cycles']}")
+        with bt_metric4:
+            metric_card("Total Closed Trades", f"{res['total_trades']}")
+            
+        st.markdown("#### Performance Charts")
+        chart_col1, chart_col2 = st.columns(2)
+        
+        with chart_col1:
+            fig_equity = go.Figure()
+            fig_equity.add_trace(go.Scatter(
+                x=res["timestamps"],
+                y=res["equity_history"],
+                mode="lines",
+                name="Equity ($)",
+                line=dict(color="#22c55e", width=2)
+            ))
+            fig_equity.update_layout(PLOT_LAYOUT)
+            fig_equity.update_layout(
+                yaxis=dict(title="Account Equity ($)", side="left"),
+                xaxis=dict(title="Time")
+            )
+            st.markdown('<div class="brand" style="margin-bottom: 5px;"><span class="chart-title">Account Equity Growth Curve</span></div>', unsafe_allow_html=True)
+            st.plotly_chart(fig_equity, use_container_width=True, config={"displayModeBar": False})
+            
+        with chart_col2:
+            fig_price = go.Figure()
+            fig_price.add_trace(go.Scatter(
+                x=res["timestamps"],
+                y=res["price_history"],
+                mode="lines",
+                name="Price ($)",
+                line=dict(color="#3b82f6", width=2)
+            ))
+            fig_price.update_layout(PLOT_LAYOUT)
+            fig_price.update_layout(
+                yaxis=dict(title=f"{display_sym} Price ($)", side="left"),
+                xaxis=dict(title="Time")
+            )
+            st.markdown(f'<div class="brand" style="margin-bottom: 5px;"><span class="chart-title">{display_sym} Historical Price Path</span></div>', unsafe_allow_html=True)
+            st.plotly_chart(fig_price, use_container_width=True, config={"displayModeBar": False})
+            
+        st.markdown("#### Backtest Completed Cycles")
+        if res["cycle_history"]:
+            rows_html = ""
+            for cycle in reversed(res["cycle_history"]):
+                pnl_style = "color: var(--green);" if cycle["pnl"] >= 0 else "color: var(--red);"
+                dt_str = datetime.fromtimestamp(cycle["exit_time"]).strftime("%Y-%m-%d %H:%M:%S")
+                duration = cycle["exit_time"] - cycle["start_time"]
+                
+                rows_html += f"<tr><td>Cycle #{cycle['cycle_id']}</td><td>${cycle['deploy_price']:,.2f}</td><td>${cycle['exit_price']:,.2f}</td><td>{cycle['trades_count']} trades</td><td>{duration:.1f}s</td><td style='{pnl_style} font-weight: bold;'>${cycle['pnl']:+,.2f}</td><td>{dt_str}</td></tr>"
+            cycles_html = f"""
+            <div class="table-wrap">
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>Cycle ID</th>
+                            <th>Deploy Price</th>
+                            <th>Exit Price</th>
+                            <th>Execution Stats</th>
+                            <th>Duration</th>
+                            <th>Total Net PnL</th>
+                            <th>Completed At</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {rows_html}
+                    </tbody>
+                </table>
+            </div>
+            """
+        else:
+            cycles_html = """
+            <div class="table-wrap">
+                <p style='font-size:0.8rem; color:#71717a; margin: 0;'>No completed breakout cycles during the backtest period.</p>
+            </div>
+            """
+        st.markdown(textwrap.dedent(cycles_html), unsafe_allow_html=True)
+    st.markdown('</div>', unsafe_allow_html=True)
 
 # 13. RUNNER LOOP
 if st.session_state.running:
