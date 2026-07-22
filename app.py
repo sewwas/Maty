@@ -365,16 +365,20 @@ PLOT_LAYOUT = dict(
 # --- STATE PERSISTENCE HELPERS ---
 STATE_FILE = "bot_state.pkl"
 
+def sync_active_market_primitives():
+    if "markets" in st.session_state and "live_symbol" in st.session_state and st.session_state.live_symbol in st.session_state.markets:
+        active = st.session_state.markets[st.session_state.live_symbol]
+        active["running"] = st.session_state.running
+        active["last_price"] = st.session_state.last_price
+        active["price_history"] = st.session_state.price_history
+
 def save_bot_state():
     try:
-        if "broker" in st.session_state and "bot" in st.session_state:
+        if "markets" in st.session_state:
+            sync_active_market_primitives()
             state = {
-                "broker": st.session_state.broker,
-                "bot": st.session_state.bot,
-                "price_history": st.session_state.price_history,
-                "last_price": st.session_state.last_price,
-                "live_symbol": st.session_state.live_symbol,
-                "running": st.session_state.running
+                "markets": st.session_state.markets,
+                "live_symbol": st.session_state.live_symbol
             }
             with open(STATE_FILE, "wb") as f:
                 pickle.dump(state, f)
@@ -386,17 +390,38 @@ def load_bot_state() -> bool:
         try:
             with open(STATE_FILE, "rb") as f:
                 state = pickle.load(f)
-            st.session_state.broker = state["broker"]
-            st.session_state.bot = state["bot"]
-            st.session_state.price_history = state["price_history"]
-            st.session_state.last_price = state["last_price"]
-            st.session_state.live_symbol = state["live_symbol"]
-            st.session_state.running = state.get("running", False)
-            # Ensure fees are removed even if loading from an older saved state
-            if hasattr(st.session_state, "broker") and st.session_state.broker:
-                st.session_state.broker.commission_pct = 0.0
-                st.session_state.broker.slippage_pct = 0.0
-            return True
+            
+            if "markets" in state:
+                st.session_state.markets = state["markets"]
+                st.session_state.live_symbol = state["live_symbol"]
+                # Ensure zero fees on all loaded brokers
+                for m_state in st.session_state.markets.values():
+                    if "broker" in m_state and m_state["broker"]:
+                        m_state["broker"].commission_pct = 0.0
+                        m_state["broker"].slippage_pct = 0.0
+                return True
+            else:
+                # Migrate old format
+                live_sym = state.get("live_symbol", "BTCUSDT")
+                st.session_state.live_symbol = live_sym
+                
+                broker = state["broker"]
+                bot = state["bot"]
+                broker.commission_pct = 0.0
+                broker.slippage_pct = 0.0
+                bot.stop_loss = float('inf')
+                bot.max_cycle_duration = float('inf')
+                
+                st.session_state.markets = {
+                    live_sym: {
+                        "broker": broker,
+                        "bot": bot,
+                        "price_history": state["price_history"],
+                        "last_price": state["last_price"],
+                        "running": state.get("running", False)
+                    }
+                }
+                return True
         except Exception as e:
             print(f"Error loading bot state: {e}")
     return False
@@ -416,35 +441,68 @@ if "error_message" not in st.session_state:
     st.session_state.error_message = None
 
 if not state_loaded:
-    if "broker" not in st.session_state:
-        st.session_state.broker = SimulatedBroker(initial_balance=10000.0, commission_pct=0.0, slippage_pct=0.0)
-
-    if "price_history" not in st.session_state:
-        st.session_state.price_history = []  # list of tuples (timestamp, price)
-
-    if "running" not in st.session_state:
-        st.session_state.running = False
-
+    if "markets" not in st.session_state:
+        st.session_state.markets = {}
     if "live_symbol" not in st.session_state:
         st.session_state.live_symbol = "BTCUSDT"
 
-    if "last_price" not in st.session_state:
-        st.session_state.last_price = 60000.0
+# Ensure the active symbol state exists in markets dict
+if "markets" not in st.session_state:
+    st.session_state.markets = {}
 
-    if "bot" not in st.session_state:
-        st.session_state.bot = BreakoutGridBot(
-            st.session_state.broker,
-            grid_levels=10,
-            grid_gap=0.10,
-            trap_offset=0.15,
-            order_size=0.0083, # default placeholder for BTCUSDT at 60k to target $500
-            target_profit=10.0,
-            auto_restart=True,
-            is_percent=True,
-            stop_loss=float('inf'),
-            max_cycle_duration=float('inf'),
-            cancel_opposite_on_trigger=False
-        )
+if st.session_state.live_symbol not in st.session_state.markets:
+    # Initialize state for this specific symbol
+    broker = SimulatedBroker(initial_balance=10000.0, commission_pct=0.0, slippage_pct=0.0)
+    
+    price_history = []
+    price = None
+    try:
+        df_hist = get_historical_klines(st.session_state.live_symbol, interval="1m", limit=30)
+        if df_hist is not None and not df_hist.empty:
+            df_ticks = interpolate_ticks(df_hist)
+            ticks = list(zip(df_ticks["timestamp"], df_ticks["price"]))
+            price_history = ticks
+            price = ticks[-1][1]
+    except Exception as e:
+        print(f"Error pre-populating historical klines for {st.session_state.live_symbol}: {e}")
+        
+    if price is None:
+        price = get_live_price(st.session_state.live_symbol)
+        if price is None:
+            price = 60000.0  # fallback
+        price_history = [(time.time(), price)]
+        
+    bot = BreakoutGridBot(
+        broker,
+        grid_levels=10,
+        grid_gap=0.10,
+        trap_offset=0.15,
+        order_size=500.0 / price,
+        target_profit=10.0,
+        auto_restart=True,
+        is_percent=True,
+        stop_loss=float('inf'),
+        max_cycle_duration=float('inf'),
+        cancel_opposite_on_trigger=False
+    )
+    
+    bot.deploy_traps(price, time.time())
+    
+    st.session_state.markets[st.session_state.live_symbol] = {
+        "broker": broker,
+        "bot": bot,
+        "price_history": price_history,
+        "last_price": price,
+        "running": False
+    }
+
+# Sync references to current active market
+active_market = st.session_state.markets[st.session_state.live_symbol]
+st.session_state.broker = active_market["broker"]
+st.session_state.bot = active_market["bot"]
+st.session_state.price_history = active_market["price_history"]
+st.session_state.last_price = active_market["last_price"]
+st.session_state.running = active_market["running"]
 
 # Force the hardcoded settings to be applied to the bot instance
 # Calculate dynamic order size to target a position value of ~$500 USD per level
@@ -467,40 +525,8 @@ st.session_state.bot.use_bb_filter = False
 # Helper to reset real-time dashboard data
 def reset_realtime_sandbox():
     clear_bot_state()
-    st.session_state.broker.reset()
-    st.session_state.broker.commission_pct = 0.0
-    st.session_state.broker.slippage_pct = 0.0
-    st.session_state.bot.deployed = False
-    st.session_state.bot.current_cycle_id = 1
-    st.session_state.bot.cycle_history.clear()
-    
-    symbol = st.session_state.live_symbol
-    price = None
-    
-    # Try to pre-populate with historical 1m data for a richer chart
-    try:
-        df_hist = get_historical_klines(symbol, interval="1m", limit=30)
-        if df_hist is not None and not df_hist.empty:
-            df_ticks = interpolate_ticks(df_hist)
-            ticks = list(zip(df_ticks["timestamp"], df_ticks["price"]))
-            st.session_state.price_history = ticks
-            price = ticks[-1][1]
-    except Exception as e:
-        print(f"Error pre-populating historical klines: {e}")
-        
-    if price is None:
-        price = get_live_price(symbol)
-        if price is None:
-            price = st.session_state.last_price
-        st.session_state.price_history = [(time.time(), price)]
-        
-    st.session_state.last_price = price
-    
-    # Scale order size dynamically based on price before deploying traps
-    st.session_state.bot.order_size = 500.0 / price
-    st.session_state.bot.deploy_traps(price, time.time())
-    st.session_state.error_message = None
-    save_bot_state()
+    if "markets" in st.session_state and st.session_state.live_symbol in st.session_state.markets:
+        del st.session_state.markets[st.session_state.live_symbol]
 
 # Initialize history if empty
 if not st.session_state.price_history:
@@ -545,8 +571,9 @@ with ctrl_col1:
     symbol = market_options[selected_label]
     
     if symbol != st.session_state.live_symbol:
+        sync_active_market_primitives()
         st.session_state.live_symbol = symbol
-        reset_realtime_sandbox()
+        st.rerun()
         
     timeframe = st.selectbox(
         "Chart Timeframe",
