@@ -7,18 +7,28 @@ from typing import Optional, Tuple, List
 def get_live_price(symbol: str = "BTCUSDT") -> Optional[float]:
     """
     Fetch the current price of a cryptocurrency from the public Binance REST API.
-    Does not require API keys.
+    If it fails (e.g. US cloud hosting geo-blocking), falls back to Coinbase API.
     """
+    # 1. Try Binance API
     url = f"https://api.binance.com/api/v3/ticker/price"
     params = {"symbol": symbol.upper()}
     try:
-        response = requests.get(url, params=params, timeout=5)
+        response = requests.get(url, params=params, timeout=3)
         response.raise_for_status()
         data = response.json()
         return float(data["price"])
     except Exception as e:
-        print(f"Error fetching live price for {symbol}: {e}")
-        return None
+        # 2. Fallback to Coinbase API (US Cloud-friendly)
+        base = symbol.upper().replace("USDT", "").replace("USD", "")
+        coinbase_url = f"https://api.coinbase.com/v2/prices/{base}-USD/spot"
+        try:
+            response = requests.get(coinbase_url, timeout=3)
+            response.raise_for_status()
+            data = response.json()
+            return float(data["data"]["amount"])
+        except Exception as cb_err:
+            print(f"Error fetching live price for {symbol} from Binance ({e}) and Coinbase ({cb_err})")
+            return None
 
 def get_historical_klines(symbol: str = "BTCUSDT", interval: str = "1m", limit: int = 500) -> Optional[pd.DataFrame]:
     """
