@@ -1,0 +1,9 @@
+The Core Strategy
+Instead of trying to guess which way the market will go, the bot sets traps in both directions. It waits for the market to make a sudden, strong move (a breakout) and rides that momentum for a quick profit.
+
+How It Works Step-by-Step
+The Trap: It places a grid of "Buy" orders above the current price and "Sell" orders below the current price.
+
+The Trigger: When a big price jump happens, it hits one of your orders and automatically enters a trade in the direction of the fast movement.
+
+The Exit: The moment your total floating profit hits your target (e.g., $10), it instantly closes all open trades and cancels all remaining traps to lock in the money.
