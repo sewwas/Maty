@@ -360,39 +360,85 @@ PLOT_LAYOUT = dict(
     )
 )
 
+# --- STATE PERSISTENCE HELPERS ---
+STATE_FILE = "bot_state.pkl"
+
+def save_bot_state():
+    try:
+        if "broker" in st.session_state and "bot" in st.session_state:
+            state = {
+                "broker": st.session_state.broker,
+                "bot": st.session_state.bot,
+                "price_history": st.session_state.price_history,
+                "last_price": st.session_state.last_price,
+                "live_symbol": st.session_state.live_symbol,
+                "running": st.session_state.running
+            }
+            with open(STATE_FILE, "wb") as f:
+                pickle.dump(state, f)
+    except Exception as e:
+        print(f"Error saving bot state: {e}")
+
+def load_bot_state() -> bool:
+    if os.path.exists(STATE_FILE):
+        try:
+            with open(STATE_FILE, "rb") as f:
+                state = pickle.load(f)
+            st.session_state.broker = state["broker"]
+            st.session_state.bot = state["bot"]
+            st.session_state.price_history = state["price_history"]
+            st.session_state.last_price = state["last_price"]
+            st.session_state.live_symbol = state["live_symbol"]
+            st.session_state.running = state.get("running", False)
+            return True
+        except Exception as e:
+            print(f"Error loading bot state: {e}")
+    return False
+
+def clear_bot_state():
+    if os.path.exists(STATE_FILE):
+        try:
+            os.remove(STATE_FILE)
+        except Exception as e:
+            print(f"Error deleting state file: {e}")
+
 # 5. INITIALIZE CORE ENGINES IN SESSION STATE
-if "broker" not in st.session_state:
-    st.session_state.broker = SimulatedBroker(initial_balance=10000.0, commission_pct=0.0005, slippage_pct=0.0002)
-
-if "price_history" not in st.session_state:
-    st.session_state.price_history = []  # list of tuples (timestamp, price)
-
-if "running" not in st.session_state:
-    st.session_state.running = False
-
-if "live_symbol" not in st.session_state:
-    st.session_state.live_symbol = "BTCUSDT"
-
-if "last_price" not in st.session_state:
-    st.session_state.last_price = 60000.0
+# Attempt to load state first
+state_loaded = load_bot_state()
 
 if "error_message" not in st.session_state:
     st.session_state.error_message = None
 
-if "bot" not in st.session_state:
-    st.session_state.bot = BreakoutGridBot(
-        st.session_state.broker,
-        grid_levels=10,
-        grid_gap=0.10,
-        trap_offset=0.15,
-        order_size=0.0083, # default placeholder for BTCUSDT at 60k to target $500
-        target_profit=10.0,
-        auto_restart=True,
-        is_percent=True,
-        stop_loss=100.0,
-        max_cycle_duration=3600.0,
-        cancel_opposite_on_trigger=False
-    )
+if not state_loaded:
+    if "broker" not in st.session_state:
+        st.session_state.broker = SimulatedBroker(initial_balance=10000.0, commission_pct=0.0005, slippage_pct=0.0002)
+
+    if "price_history" not in st.session_state:
+        st.session_state.price_history = []  # list of tuples (timestamp, price)
+
+    if "running" not in st.session_state:
+        st.session_state.running = False
+
+    if "live_symbol" not in st.session_state:
+        st.session_state.live_symbol = "BTCUSDT"
+
+    if "last_price" not in st.session_state:
+        st.session_state.last_price = 60000.0
+
+    if "bot" not in st.session_state:
+        st.session_state.bot = BreakoutGridBot(
+            st.session_state.broker,
+            grid_levels=10,
+            grid_gap=0.10,
+            trap_offset=0.15,
+            order_size=0.0083, # default placeholder for BTCUSDT at 60k to target $500
+            target_profit=10.0,
+            auto_restart=True,
+            is_percent=True,
+            stop_loss=100.0,
+            max_cycle_duration=3600.0,
+            cancel_opposite_on_trigger=False
+        )
 
 # Force the hardcoded settings to be applied to the bot instance
 # Calculate dynamic order size to target a position value of ~$500 USD per level
@@ -414,6 +460,7 @@ st.session_state.bot.use_bb_filter = False
 
 # Helper to reset real-time dashboard data
 def reset_realtime_sandbox():
+    clear_bot_state()
     st.session_state.broker.reset()
     st.session_state.bot.deployed = False
     st.session_state.bot.current_cycle_id = 1
@@ -433,6 +480,7 @@ def reset_realtime_sandbox():
     st.session_state.bot.order_size = 500.0 / price
     st.session_state.bot.deploy_traps(price, time.time())
     st.session_state.error_message = None
+    save_bot_state()
 
 # Initialize history if empty
 if not st.session_state.price_history:
@@ -468,10 +516,12 @@ with ctrl_col2:
         if not st.session_state.running:
             if st.button("▶ START BOT", type="primary", use_container_width=True):
                 st.session_state.running = True
+                save_bot_state()
                 st.rerun()
         else:
             if st.button("⏸ PAUSE BOT", type="secondary", use_container_width=True):
                 st.session_state.running = False
+                save_bot_state()
                 st.rerun()
     with run_col2:
         if st.button("🚨 PANIC CLOSE", type="secondary", use_container_width=True):
@@ -480,6 +530,7 @@ with ctrl_col2:
             st.session_state.broker.cancel_all_orders()
             st.session_state.bot.deployed = False
             st.session_state.running = False
+            save_bot_state()
             st.warning(f"Panic close executed! Closed {len(closed)} open trades.")
             st.rerun()
 
@@ -521,6 +572,7 @@ if st.session_state.running:
     cycle_hit = st.session_state.bot.process_tick(previous_price, latest_price, now)
     if cycle_hit:
         st.toast(f"🎉 Cycle {cycle_hit['cycle_id']} exit hit target profit! PnL: ${cycle_hit['pnl']:.2f}")
+    save_bot_state()
 else:
     # If bot is not running, periodically fetch the live price on page load to keep it fresh
     now = time.time()
@@ -531,6 +583,7 @@ else:
             st.session_state.price_history[-1] = (now, latest_price)
             st.session_state.last_price = latest_price
             st.session_state.error_message = None
+            save_bot_state()
 
 # Get current state pointers
 curr_price = st.session_state.price_history[-1][1]
