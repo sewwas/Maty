@@ -371,6 +371,12 @@ def sync_active_market_primitives():
         active["running"] = st.session_state.running
         active["last_price"] = st.session_state.last_price
         active["price_history"] = st.session_state.price_history
+        active["strat_offset"] = st.session_state.strat_offset
+        active["strat_gap"] = st.session_state.strat_gap
+        active["strat_target_profit"] = st.session_state.strat_target_profit
+        active["strat_sl"] = st.session_state.strat_sl
+        active["strat_trailing"] = st.session_state.strat_trailing
+        active["strat_trailing_dist"] = st.session_state.strat_trailing_dist
 
 def save_bot_state():
     try:
@@ -394,11 +400,23 @@ def load_bot_state() -> bool:
             if "markets" in state:
                 st.session_state.markets = state["markets"]
                 st.session_state.live_symbol = state["live_symbol"]
-                # Ensure zero fees on all loaded brokers
+                # Ensure zero fees on all loaded brokers and provide default strategy values if missing
                 for m_state in st.session_state.markets.values():
                     if "broker" in m_state and m_state["broker"]:
                         m_state["broker"].commission_pct = 0.0
                         m_state["broker"].slippage_pct = 0.0
+                    if "strat_offset" not in m_state:
+                        m_state["strat_offset"] = 0.15
+                    if "strat_gap" not in m_state:
+                        m_state["strat_gap"] = 0.10
+                    if "strat_target_profit" not in m_state:
+                        m_state["strat_target_profit"] = 10.0
+                    if "strat_sl" not in m_state:
+                        m_state["strat_sl"] = float('inf')
+                    if "strat_trailing" not in m_state:
+                        m_state["strat_trailing"] = False
+                    if "strat_trailing_dist" not in m_state:
+                        m_state["strat_trailing_dist"] = 1.5
                 return True
             else:
                 # Migrate old format
@@ -418,7 +436,13 @@ def load_bot_state() -> bool:
                         "bot": bot,
                         "price_history": state["price_history"],
                         "last_price": state["last_price"],
-                        "running": state.get("running", False)
+                        "running": state.get("running", False),
+                        "strat_offset": 0.15,
+                        "strat_gap": 0.10,
+                        "strat_target_profit": 10.0,
+                        "strat_sl": float('inf'),
+                        "strat_trailing": False,
+                        "strat_trailing_dist": 1.5
                     }
                 }
                 return True
@@ -493,7 +517,13 @@ if st.session_state.live_symbol not in st.session_state.markets:
         "bot": bot,
         "price_history": price_history,
         "last_price": price,
-        "running": False
+        "running": False,
+        "strat_offset": 0.15,
+        "strat_gap": 0.10,
+        "strat_target_profit": 10.0,
+        "strat_sl": float('inf'),
+        "strat_trailing": False,
+        "strat_trailing_dist": 1.5
     }
 
 # Sync references to current active market
@@ -504,22 +534,31 @@ st.session_state.price_history = active_market["price_history"]
 st.session_state.last_price = active_market["last_price"]
 st.session_state.running = active_market["running"]
 
-# Force the hardcoded settings to be applied to the bot instance
+# Expose strategy config values to session state
+st.session_state.strat_offset = active_market.get("strat_offset", 0.15)
+st.session_state.strat_gap = active_market.get("strat_gap", 0.10)
+st.session_state.strat_target_profit = active_market.get("strat_target_profit", 10.0)
+st.session_state.strat_sl = active_market.get("strat_sl", float('inf'))
+st.session_state.strat_trailing = active_market.get("strat_trailing", False)
+st.session_state.strat_trailing_dist = active_market.get("strat_trailing_dist", 1.5)
+
+# Force the settings to be applied to the bot instance
 # Calculate dynamic order size to target a position value of ~$500 USD per level
 current_price = st.session_state.price_history[-1][1] if st.session_state.price_history else st.session_state.last_price
 dynamic_order_size = 500.0 / current_price
 
 st.session_state.bot.grid_levels = 10
-st.session_state.bot.grid_gap = 0.10
-st.session_state.bot.trap_offset = 0.15
+st.session_state.bot.grid_gap = st.session_state.strat_gap
+st.session_state.bot.trap_offset = st.session_state.strat_offset
 st.session_state.bot.order_size = dynamic_order_size
-st.session_state.bot.target_profit = 10.0
+st.session_state.bot.target_profit = st.session_state.strat_target_profit
 st.session_state.bot.auto_restart = True
 st.session_state.bot.is_percent = True
-st.session_state.bot.stop_loss = float('inf')
+st.session_state.bot.stop_loss = st.session_state.strat_sl
 st.session_state.bot.max_cycle_duration = float('inf')
 st.session_state.bot.cancel_opposite_on_trigger = False
-st.session_state.bot.use_trailing_stop = False
+st.session_state.bot.use_trailing_stop = st.session_state.strat_trailing
+st.session_state.bot.trailing_stop_distance = st.session_state.strat_trailing_dist
 st.session_state.bot.use_bb_filter = False
 
 # Helper to reset real-time dashboard data
@@ -541,83 +580,163 @@ st.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 
-# 7. EXECUTION CONTROLS CENTER CARD
-st.markdown('<div class="control-card"><div class="control-title">Execution Controls</div>', unsafe_allow_html=True)
-ctrl_col1, ctrl_col2, ctrl_col3 = st.columns([4, 5, 3])
+# 7. EXECUTION CONTROLS & STRATEGY TUNING
+col_controls, col_strategy = st.columns([5, 7])
 
-with ctrl_col1:
-    market_options = {
-        "BTCUSDT (Bitcoin)": "BTCUSDT",
-        "ETHUSDT (Ethereum)": "ETHUSDT",
-        "SOLUSDT (Solana)": "SOLUSDT",
-        "BNBUSDT (Binance Coin)": "BNBUSDT",
-        "DOGEUSDT (Dogecoin)": "DOGEUSDT",
-        "XAUUSD (Gold)": "PAXGUSDT"
-    }
+with col_controls:
+    st.markdown('<div class="control-card"><div class="control-title">Execution Controls</div>', unsafe_allow_html=True)
+    ctrl_col1, ctrl_col2, ctrl_col3 = st.columns([4, 5, 3])
     
-    current_sym = st.session_state.get("live_symbol", "BTCUSDT")
-    default_idx = 0
-    for i, (label, val) in enumerate(market_options.items()):
-        if val == current_sym:
-            default_idx = i
-            break
-            
-    selected_label = st.selectbox(
-        "Cryptocurrency / Market",
-        list(market_options.keys()),
-        index=default_idx,
-        key="symbol_select_dropdown"
-    )
-    symbol = market_options[selected_label]
-    
-    if symbol != st.session_state.live_symbol:
-        sync_active_market_primitives()
-        st.session_state.live_symbol = symbol
-        st.rerun()
+    with ctrl_col1:
+        market_options = {
+            "BTCUSDT (Bitcoin)": "BTCUSDT",
+            "ETHUSDT (Ethereum)": "ETHUSDT",
+            "SOLUSDT (Solana)": "SOLUSDT",
+            "BNBUSDT (Binance Coin)": "BNBUSDT",
+            "DOGEUSDT (Dogecoin)": "DOGEUSDT",
+            "XAUUSD (Gold)": "PAXGUSDT"
+        }
         
-    timeframe = st.selectbox(
-        "Chart Timeframe",
-        ["5 Seconds", "1 Minute"],
-        key="timeframe_select"
-    )
+        current_sym = st.session_state.get("live_symbol", "BTCUSDT")
+        default_idx = 0
+        for i, (label, val) in enumerate(market_options.items()):
+            if val == current_sym:
+                default_idx = i
+                break
+                
+        selected_label = st.selectbox(
+            "Cryptocurrency / Market",
+            list(market_options.keys()),
+            index=default_idx,
+            key="symbol_select_dropdown"
+        )
+        symbol = market_options[selected_label]
+        
+        if symbol != st.session_state.live_symbol:
+            sync_active_market_primitives()
+            st.session_state.live_symbol = symbol
+            st.rerun()
+            
+        timeframe = st.selectbox(
+            "Chart Timeframe",
+            ["5 Seconds", "1 Minute"],
+            key="timeframe_select"
+        )
 
-with ctrl_col2:
-    st.write("") # vertical spacing align
-    run_col1, run_col2 = st.columns(2)
-    with run_col1:
-        if not st.session_state.running:
-            if st.button("▶ START BOT", type="primary", use_container_width=True):
-                st.session_state.running = True
-                save_bot_state()
-                st.rerun()
-        else:
-            if st.button("⏸ PAUSE BOT", type="secondary", use_container_width=True):
+    with ctrl_col2:
+        st.write("") # vertical spacing align
+        run_col1, run_col2 = st.columns(2)
+        with run_col1:
+            if not st.session_state.running:
+                if st.button("▶ START BOT", type="primary", use_container_width=True):
+                    st.session_state.running = True
+                    save_bot_state()
+                    st.rerun()
+            else:
+                if st.button("⏸ PAUSE BOT", type="secondary", use_container_width=True):
+                    st.session_state.running = False
+                    save_bot_state()
+                    st.rerun()
+        with run_col2:
+            if st.button("🚨 PANIC CLOSE", type="secondary", use_container_width=True):
+                curr_price = st.session_state.price_history[-1][1]
+                closed = st.session_state.broker.close_all_positions(curr_price, time.time())
+                st.session_state.broker.cancel_all_orders()
+                st.session_state.bot.deployed = False
                 st.session_state.running = False
                 save_bot_state()
+                st.warning(f"Panic close executed! Closed {len(closed)} open trades.")
                 st.rerun()
-    with run_col2:
-        if st.button("🚨 PANIC CLOSE", type="secondary", use_container_width=True):
-            curr_price = st.session_state.price_history[-1][1]
-            closed = st.session_state.broker.close_all_positions(curr_price, time.time())
-            st.session_state.broker.cancel_all_orders()
-            st.session_state.bot.deployed = False
-            st.session_state.running = False
-            save_bot_state()
-            st.warning(f"Panic close executed! Closed {len(closed)} open trades.")
-            st.rerun()
 
-with ctrl_col3:
-    st.write("") # vertical spacing align
-    theme_col, reset_col = st.columns(2)
-    with theme_col:
-        theme_btn_text = "☀️ LIGHT" if IS_DARK else "🌙 DARK"
-        st.button(theme_btn_text, on_click=toggle_theme, use_container_width=True)
-    with reset_col:
-        if st.button("🔄 RESET", use_container_width=True):
-            reset_realtime_sandbox()
-            st.success("Environment reset complete.")
-            st.rerun()
-st.markdown('</div>', unsafe_allow_html=True)
+    with ctrl_col3:
+        st.write("") # vertical spacing align
+        theme_col, reset_col = st.columns(2)
+        with theme_col:
+            theme_btn_text = "☀️ LIGHT" if IS_DARK else "🌙 DARK"
+            st.button(theme_btn_text, on_click=toggle_theme, use_container_width=True)
+        with reset_col:
+            if st.button("🔄 RESET", use_container_width=True):
+                reset_realtime_sandbox()
+                st.success("Environment reset complete.")
+                st.rerun()
+    st.markdown('</div>', unsafe_allow_html=True)
+
+with col_strategy:
+    st.markdown('<div class="control-card"><div class="control-title">Strategy Tuning</div>', unsafe_allow_html=True)
+    strat_col1, strat_col2, strat_col3 = st.columns(3)
+    with strat_col1:
+        trap_offset_val = st.number_input(
+            "Trap Offset (%)",
+            min_value=0.01,
+            max_value=2.00,
+            value=st.session_state.strat_offset,
+            step=0.01,
+            format="%.2f",
+            key="strat_offset_input"
+        )
+        st.session_state.strat_offset = trap_offset_val
+        
+        grid_gap_val = st.number_input(
+            "Grid Gap (%)",
+            min_value=0.01,
+            max_value=2.00,
+            value=st.session_state.strat_gap,
+            step=0.01,
+            format="%.2f",
+            key="strat_gap_input"
+        )
+        st.session_state.strat_gap = grid_gap_val
+        
+    with strat_col2:
+        target_profit_val = st.number_input(
+            "Target Profit (USD)",
+            min_value=1.0,
+            max_value=10000.0,
+            value=st.session_state.strat_target_profit,
+            step=1.0,
+            key="strat_target_profit_input"
+        )
+        st.session_state.strat_target_profit = target_profit_val
+        
+        sl_option = st.selectbox(
+            "Stop Loss Option",
+            ["Infinite / None", "Custom USD Value"],
+            index=0 if st.session_state.strat_sl == float('inf') else 1,
+            key="strat_sl_select"
+        )
+        if sl_option == "Custom USD Value":
+            sl_val = st.number_input(
+                "Stop Loss (USD)",
+                min_value=1.0,
+                max_value=10000.0,
+                value=100.0 if st.session_state.strat_sl == float('inf') else st.session_state.strat_sl,
+                step=10.0,
+                key="strat_sl_val_input"
+            )
+            st.session_state.strat_sl = sl_val
+        else:
+            st.session_state.strat_sl = float('inf')
+            
+    with strat_col3:
+        trailing_stop_val = st.toggle(
+            "Enable Trailing Stop",
+            value=st.session_state.strat_trailing,
+            key="strat_trailing_input"
+        )
+        st.session_state.strat_trailing = trailing_stop_val
+        
+        trailing_dist_val = st.number_input(
+            "Trailing Distance (USD)",
+            min_value=0.1,
+            max_value=1000.0,
+            value=st.session_state.strat_trailing_dist,
+            step=0.5,
+            disabled=not trailing_stop_val,
+            key="strat_trailing_dist_input"
+        )
+        st.session_state.strat_trailing_dist = trailing_dist_val
+        
+    st.markdown('</div>', unsafe_allow_html=True)
 
 # 8. ENGINE TICK PROCESSING
 # Run calculation tick if running
@@ -966,15 +1085,17 @@ with tab_backtest:
                 bt_bot = BreakoutGridBot(
                     bt_broker,
                     grid_levels=10,
-                    grid_gap=0.10,
-                    trap_offset=0.15,
+                    grid_gap=st.session_state.strat_gap,
+                    trap_offset=st.session_state.strat_offset,
                     order_size=bt_order_size,
-                    target_profit=10.0,
+                    target_profit=st.session_state.strat_target_profit,
                     auto_restart=True,
                     is_percent=True,
-                    stop_loss=float('inf'),
+                    stop_loss=st.session_state.strat_sl,
                     max_cycle_duration=float('inf'),
-                    cancel_opposite_on_trigger=False
+                    cancel_opposite_on_trigger=False,
+                    use_trailing_stop=st.session_state.strat_trailing,
+                    trailing_stop_distance=st.session_state.strat_trailing_dist
                 )
                 
                 equity_history = []
