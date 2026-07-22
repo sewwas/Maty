@@ -315,8 +315,9 @@ class BreakoutGridBot:
                 self.max_floating_pnl = float_pnl
 
             if self.use_trailing_stop:
-                if float_pnl <= (self.max_floating_pnl - self.trailing_stop_distance):
-                    trailing_stop_hit = True
+                if self.max_floating_pnl > 0:
+                    if float_pnl <= (self.max_floating_pnl - self.trailing_stop_distance):
+                        trailing_stop_hit = True
             else:
                 if float_pnl >= self.target_profit:
                     target_hit = True
