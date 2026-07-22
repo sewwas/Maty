@@ -4,6 +4,7 @@ import numpy as np
 import plotly.graph_objects as go
 import time
 from datetime import datetime
+import textwrap
 
 # Import core bot logic
 from core.engine import SimulatedBroker, BreakoutGridBot
@@ -696,7 +697,7 @@ with col_tables1:
             </div>
         </div>
         """
-    st.markdown(table_html, unsafe_allow_html=True)
+    st.markdown(textwrap.dedent(table_html), unsafe_allow_html=True)
 
 with col_tables2:
     if broker_instance.pending_orders:
@@ -741,7 +742,7 @@ with col_tables2:
             </div>
         </div>
         """
-    st.markdown(table_html, unsafe_allow_html=True)
+    st.markdown(textwrap.dedent(table_html), unsafe_allow_html=True)
 
 # 12. HISTORY LOGS TABS
 tab_cycles, tab_trades = st.tabs(["🔄 Completed Cycles", "📜 Detailed Trades Log"])
@@ -791,7 +792,7 @@ with tab_cycles:
             <p style='font-size:0.8rem; color:#71717a; margin: 0;'>No completed breakout cycles yet</p>
         </div>
         """
-    st.markdown(cycles_html, unsafe_allow_html=True)
+    st.markdown(textwrap.dedent(cycles_html), unsafe_allow_html=True)
 
 with tab_trades:
     if broker_instance.closed_trades:
@@ -844,7 +845,7 @@ with tab_trades:
             <p style='font-size:0.8rem; color:#71717a; margin: 0;'>No detailed trades executed yet</p>
         </div>
         """
-    st.markdown(trades_html, unsafe_allow_html=True)
+    st.markdown(textwrap.dedent(trades_html), unsafe_allow_html=True)
 
 # 13. RUNNER LOOP
 if st.session_state.running:
