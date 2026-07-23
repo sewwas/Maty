@@ -855,8 +855,8 @@ with col_strategy:
             gap_label = "Grid Gap (USD)"
             gap_min, gap_max, gap_step = 0.1, 5000.0, 1.0
             if st.session_state.strat_offset < 5.0:
-                default_offset = max(0.5, round(current_price * (st.session_state.strat_offset / 100.0), 2))
-                default_gap = max(0.5, round(current_price * (st.session_state.strat_gap / 100.0), 2))
+                default_offset = max(0.5, round(st.session_state.last_price * (st.session_state.strat_offset / 100.0), 2))
+                default_gap = max(0.5, round(st.session_state.last_price * (st.session_state.strat_gap / 100.0), 2))
             else:
                 default_offset = st.session_state.strat_offset
                 default_gap = st.session_state.strat_gap
