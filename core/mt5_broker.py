@@ -57,7 +57,19 @@ class MT5Broker:
             "PAXGUSDT": "XAUUSD"
         }
         base_sym = symbol_map.get(ui_symbol, ui_symbol)
-        return f"{base_sym}{self.symbol_suffix}"
+        candidate = f"{base_sym}{self.symbol_suffix}"
+        
+        # If the broker does not support XAUUSD, check if they use "GOLD" instead (e.g. some Exness/other broker setups)
+        if ui_symbol == "PAXGUSDT" and MT5_AVAILABLE:
+            # Check symbol validity in MT5 terminal
+            info = mt5.symbol_info(candidate)
+            if info is None:
+                fallback_candidate = f"GOLD{self.symbol_suffix}"
+                fallback_info = mt5.symbol_info(fallback_candidate)
+                if fallback_info is not None:
+                    return fallback_candidate
+                    
+        return candidate
 
     def reset(self):
         """

@@ -624,7 +624,11 @@ bot.use_bb_filter = False
 # If settings that affect grid placement/sizing changed, redeploy traps immediately
 # provided that no positions are currently open.
 if settings_changed and bot.deployed and len(broker.open_positions) == 0:
-    bot.deploy_traps(st.session_state.last_price, time.time())
+    try:
+        bot.deploy_traps(st.session_state.last_price, time.time())
+        st.session_state.error_message = None
+    except Exception as e:
+        st.session_state.error_message = f"Grid deployment failed: {e}"
 
 # Helper to reset real-time dashboard data
 def reset_realtime_sandbox():
@@ -974,9 +978,13 @@ if st.session_state.running:
         st.session_state.price_history.pop(0)
         
     # 2. Update engine
-    cycle_hit = st.session_state.bot.process_tick(previous_price, latest_price, now)
-    if cycle_hit:
-        st.toast(f"🎉 Cycle {cycle_hit['cycle_id']} exit hit target profit! PnL: ${cycle_hit['pnl']:.2f}")
+    try:
+        cycle_hit = st.session_state.bot.process_tick(previous_price, latest_price, now)
+        if cycle_hit:
+            st.toast(f"🎉 Cycle {cycle_hit['cycle_id']} exit hit target profit! PnL: ${cycle_hit['pnl']:.2f}")
+        st.session_state.error_message = None
+    except Exception as e:
+        st.session_state.error_message = f"Tick processing failed: {e}"
     save_bot_state()
 else:
     # If bot is not running, periodically fetch the live price on page load to keep it fresh
