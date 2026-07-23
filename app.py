@@ -482,8 +482,12 @@ def clear_bot_state():
             print(f"Error deleting state file: {e}")
 
 # 5. INITIALIZE CORE ENGINES IN SESSION STATE
-# Attempt to load state first
-state_loaded = load_bot_state()
+# Attempt to load state from disk only on the first run of this session
+if "state_loaded" not in st.session_state:
+    state_loaded = load_bot_state()
+    st.session_state.state_loaded = True
+else:
+    state_loaded = True
 
 # Re-initialize MT5 connection on script startup if active market is using MT5Broker
 if "markets" in st.session_state:
@@ -735,6 +739,7 @@ with col_controls:
         if symbol != st.session_state.live_symbol:
             sync_active_market_primitives()
             st.session_state.live_symbol = symbol
+            save_bot_state()  # Persist symbol change to disk immediately
             st.rerun()
             
         timeframe = st.selectbox(
