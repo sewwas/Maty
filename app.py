@@ -10,6 +10,7 @@ import os
 
 # Import core bot logic
 from core.engine import SimulatedBroker, BreakoutGridBot
+from core.mt5_broker import MT5Broker, MT5_AVAILABLE
 from core.data import get_live_price, get_historical_klines, interpolate_ticks, generate_simulated_ticks
 
 # 1. PAGE CONFIGURATION
@@ -484,6 +485,24 @@ def clear_bot_state():
 # Attempt to load state first
 state_loaded = load_bot_state()
 
+# Re-initialize MT5 connection on script startup if active market is using MT5Broker
+if "markets" in st.session_state:
+    for sym, m_state in st.session_state.markets.items():
+        brk = m_state.get("broker")
+        if brk and brk.__class__.__name__ == "MT5Broker":
+            try:
+                import MetaTrader5 as mt5
+                if not mt5.initialize():
+                    st.session_state.mt5_startup_error = f"MT5 failed to initialize: {mt5.last_error()}"
+                else:
+                    authorized = mt5.login(login=brk.login, password=brk.password, server=brk.server)
+                    if not authorized:
+                        st.session_state.mt5_startup_error = f"MT5 login failed: {mt5.last_error()}"
+                    else:
+                        st.session_state.mt5_startup_error = None
+            except Exception as e:
+                st.session_state.mt5_startup_error = f"Failed to reconnect to MT5 on startup: {e}"
+
 if "error_message" not in st.session_state:
     st.session_state.error_message = None
 
@@ -561,38 +580,108 @@ st.session_state.price_history = active_market["price_history"]
 st.session_state.last_price = active_market["last_price"]
 st.session_state.running = active_market["running"]
 
-# Expose strategy config values to session state
-st.session_state.strat_offset = active_market.get("strat_offset", 0.15)
-st.session_state.strat_gap = active_market.get("strat_gap", 0.10)
-st.session_state.strat_is_percent = active_market.get("strat_is_percent", True)
-st.session_state.strat_order_size = active_market.get("strat_order_size", get_default_order_size(st.session_state.live_symbol))
-st.session_state.strat_size_multiplier = active_market.get("strat_size_multiplier", 1.0)
-st.session_state.strat_target_profit = active_market.get("strat_target_profit", 10.0)
-st.session_state.strat_sl = active_market.get("strat_sl", float('inf'))
-st.session_state.strat_trailing = active_market.get("strat_trailing", False)
-st.session_state.strat_trailing_dist = active_market.get("strat_trailing_dist", 1.5)
+# Initialize or sync current symbol to avoid resetting strategy parameter states on every rerun
+if "current_symbol" not in st.session_state or st.session_state.current_symbol != st.session_state.live_symbol:
+    st.session_state.current_symbol = st.session_state.live_symbol
+    st.session_state.strat_offset = active_market.get("strat_offset", 0.15)
+    st.session_state.strat_gap = active_market.get("strat_gap", 0.10)
+    st.session_state.strat_is_percent = active_market.get("strat_is_percent", True)
+    st.session_state.strat_order_size = active_market.get("strat_order_size", get_default_order_size(st.session_state.live_symbol))
+    st.session_state.strat_size_multiplier = active_market.get("strat_size_multiplier", 1.0)
+    st.session_state.strat_target_profit = active_market.get("strat_target_profit", 10.0)
+    st.session_state.strat_sl = active_market.get("strat_sl", float('inf'))
+    st.session_state.strat_trailing = active_market.get("strat_trailing", False)
+    st.session_state.strat_trailing_dist = active_market.get("strat_trailing_dist", 1.5)
 
-# Force the settings to be applied to the bot instance
-st.session_state.bot.grid_levels = 10
-st.session_state.bot.grid_gap = st.session_state.strat_gap
-st.session_state.bot.trap_offset = st.session_state.strat_offset
-st.session_state.bot.order_size = st.session_state.strat_order_size
-st.session_state.bot.order_size_multiplier = st.session_state.strat_size_multiplier
-st.session_state.bot.target_profit = st.session_state.strat_target_profit
-st.session_state.bot.auto_restart = True
-st.session_state.bot.is_percent = st.session_state.strat_is_percent
-st.session_state.bot.stop_loss = st.session_state.strat_sl
-st.session_state.bot.max_cycle_duration = float('inf')
-st.session_state.bot.cancel_opposite_on_trigger = False
-st.session_state.bot.use_trailing_stop = st.session_state.strat_trailing
-st.session_state.bot.trailing_stop_distance = st.session_state.strat_trailing_dist
-st.session_state.bot.use_bb_filter = False
+# Detect if parameters affecting grid layout or sizing have changed
+bot = st.session_state.bot
+broker = st.session_state.broker
+
+settings_changed = (
+    bot.grid_gap != st.session_state.strat_gap or
+    bot.trap_offset != st.session_state.strat_offset or
+    bot.order_size != st.session_state.strat_order_size or
+    bot.order_size_multiplier != st.session_state.strat_size_multiplier or
+    bot.is_percent != st.session_state.strat_is_percent
+)
+
+# Apply settings to the bot instance
+bot.grid_levels = 10
+bot.grid_gap = st.session_state.strat_gap
+bot.trap_offset = st.session_state.strat_offset
+bot.order_size = st.session_state.strat_order_size
+bot.order_size_multiplier = st.session_state.strat_size_multiplier
+bot.target_profit = st.session_state.strat_target_profit
+bot.auto_restart = True
+bot.is_percent = st.session_state.strat_is_percent
+bot.stop_loss = st.session_state.strat_sl
+bot.max_cycle_duration = float('inf')
+bot.cancel_opposite_on_trigger = False
+bot.use_trailing_stop = st.session_state.strat_trailing
+bot.trailing_stop_distance = st.session_state.strat_trailing_dist
+bot.use_bb_filter = False
+
+# If settings that affect grid placement/sizing changed, redeploy traps immediately
+# provided that no positions are currently open.
+if settings_changed and bot.deployed and len(broker.open_positions) == 0:
+    bot.deploy_traps(st.session_state.last_price, time.time())
 
 # Helper to reset real-time dashboard data
 def reset_realtime_sandbox():
     clear_bot_state()
     if "markets" in st.session_state and st.session_state.live_symbol in st.session_state.markets:
         del st.session_state.markets[st.session_state.live_symbol]
+    if "current_symbol" in st.session_state:
+        del st.session_state.current_symbol
+
+def init_mt5_broker(login, password, server, suffix):
+    try:
+        broker = MT5Broker(
+            login=login,
+            password=password,
+            server=server,
+            symbol=st.session_state.live_symbol,
+            symbol_suffix=suffix,
+            magic_number=998877
+        )
+        st.session_state.markets[st.session_state.live_symbol]["broker"] = broker
+        st.session_state.markets[st.session_state.live_symbol]["bot"].broker = broker
+        st.session_state.broker = broker
+        st.session_state.bot.broker = broker
+        
+        # Pull current live price from MT5 if available
+        import MetaTrader5 as mt5
+        exness_symbol = broker.get_exness_symbol(st.session_state.live_symbol)
+        mt5.symbol_select(exness_symbol, True)
+        tick = mt5.symbol_info_tick(exness_symbol)
+        if tick:
+            current_price = tick.bid
+            st.session_state.last_price = current_price
+            st.session_state.markets[st.session_state.live_symbol]["last_price"] = current_price
+            if st.session_state.price_history:
+                st.session_state.price_history[-1] = (time.time(), current_price)
+                
+        # Redeploy traps on the live broker at current price if no positions exist
+        if len(broker.open_positions) == 0:
+            st.session_state.bot.deploy_traps(st.session_state.last_price, time.time())
+            
+        st.session_state.mt5_startup_error = None
+        save_bot_state()
+        return True
+    except Exception as e:
+        st.session_state.mt5_startup_error = str(e)
+        return False
+
+def init_simulated_broker():
+    broker = SimulatedBroker(initial_balance=10000.0, commission_pct=0.0, slippage_pct=0.0)
+    st.session_state.markets[st.session_state.live_symbol]["broker"] = broker
+    st.session_state.markets[st.session_state.live_symbol]["bot"].broker = broker
+    st.session_state.broker = broker
+    st.session_state.bot.broker = broker
+    # Deploy simulated traps
+    st.session_state.bot.deploy_traps(st.session_state.last_price, time.time())
+    st.session_state.mt5_startup_error = None
+    save_bot_state()
 
 # Initialize history if empty
 if not st.session_state.price_history:
@@ -693,6 +782,51 @@ with col_controls:
                 st.success("Environment reset complete.")
                 st.rerun()
     st.markdown('</div>', unsafe_allow_html=True)
+
+    # Exness MT5 connection UI
+    broker_type = "Simulated Sandbox" if st.session_state.broker.__class__.__name__ == "SimulatedBroker" else "Exness MT5 Live"
+    status_color = "#3b82f6" if broker_type == "Simulated Sandbox" else "#f59e0b"
+    
+    st.markdown(f"""
+    <div style="display: flex; align-items: center; gap: 8px; margin-top: 8px; margin-bottom: 8px; font-size: 0.8rem; font-weight: 500;">
+        <span style="color: var(--text-muted);">Active Broker:</span>
+        <span style="background: {status_color}22; color: {status_color}; border: 1px solid {status_color}44; padding: 2px 8px; border-radius: 12px; font-size: 0.72rem;">{broker_type}</span>
+    </div>
+    """, unsafe_allow_html=True)
+
+    with st.expander("🔌 EXNESS MT5 LIVE ACCOUNT LINK", expanded=(broker_type == "Exness MT5 Live")):
+        if not MT5_AVAILABLE:
+            st.warning("MetaTrader 5 Python package is not available on this machine. Run: `pip install MetaTrader5` in your terminal to enable it (Windows only).")
+        else:
+            is_live = (broker_type == "Exness MT5 Live")
+            current_login = st.session_state.broker.login if is_live else 0
+            current_server = st.session_state.broker.server if is_live else "Exness-MT5-Trial"
+            current_suffix = st.session_state.broker.symbol_suffix if is_live else "m"
+            
+            mt5_login = st.number_input("MT5 Login (Account ID)", min_value=0, value=current_login or 0, step=1, key="mt5_login_input")
+            mt5_password = st.text_input("MT5 Password", type="password", value=st.session_state.get("mt5_pwd", ""), key="mt5_pwd_input")
+            mt5_server = st.text_input("MT5 Server (e.g., Exness-MT5-Trial)", value=current_server, key="mt5_server_input")
+            mt5_suffix = st.text_input("Exness Symbol Suffix (e.g., 'm' for Mini/Cent)", value=current_suffix, key="mt5_suffix_input")
+            
+            if st.session_state.get("mt5_startup_error"):
+                st.error(st.session_state.mt5_startup_error)
+            
+            conn_col1, conn_col2 = st.columns(2)
+            with conn_col1:
+                if st.button("CONNECT MT5", type="primary", use_container_width=True):
+                    if mt5_login == 0 or not mt5_password or not mt5_server:
+                        st.error("Please fill in Login, Password, and Server fields.")
+                    else:
+                        st.session_state.mt5_pwd = mt5_password
+                        success = init_mt5_broker(mt5_login, mt5_password, mt5_server, mt5_suffix)
+                        if success:
+                            st.rerun()
+            with conn_col2:
+                if is_live:
+                    if st.button("DISCONNECT (GO SANDBOX)", type="secondary", use_container_width=True):
+                        init_simulated_broker()
+                        st.success("Disconnected from MT5. Switched back to Simulated Sandbox.")
+                        st.rerun()
 
 with col_strategy:
     st.markdown('<div class="control-card"><div class="control-title">Strategy Tuning</div>', unsafe_allow_html=True)
