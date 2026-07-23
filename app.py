@@ -795,8 +795,11 @@ with col_controls:
     """, unsafe_allow_html=True)
 
     with st.expander("🔌 EXNESS MT5 LIVE ACCOUNT LINK", expanded=(broker_type == "Exness MT5 Live")):
-        if not MT5_AVAILABLE:
-            st.warning("MetaTrader 5 Python package is not available on this machine. Run: `pip install MetaTrader5` in your terminal to enable it (Windows only).")
+        import sys
+        if sys.platform != "win32":
+            st.info("ℹ️ **Exness MT5 Live Trading** is only supported when running this application locally on a Windows machine with the MetaTrader 5 desktop application open in the background.")
+        elif not MT5_AVAILABLE:
+            st.warning("MetaTrader 5 Python package is not available on this machine. Run: `pip install MetaTrader5` in your terminal to enable it.")
         else:
             is_live = (broker_type == "Exness MT5 Live")
             current_login = st.session_state.broker.login if is_live else 0
