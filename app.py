@@ -1296,7 +1296,7 @@ fig.add_hline(
 )
 
 # Trap levels lines
-if bot_instance.deployed:
+if True:  # Plot pending orders whenever they exist in broker state
     # Place buy/sell stops in chart
     for o in list(broker_instance.pending_orders.values()):
         if o.type == "BUY_STOP":
