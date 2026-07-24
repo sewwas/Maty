@@ -93,6 +93,12 @@ class SimulatedBroker:
     def get_floating_pnl(self, current_price: float) -> float:
         return sum(pos.get_pnl(current_price) for pos in self.open_positions.values())
 
+    def sync(self):
+        pass
+
+    def get_all_account_positions(self) -> list:
+        return []
+
     def get_equity(self, current_price: float) -> float:
         return self.balance + self.get_floating_pnl(current_price)
 
@@ -262,19 +268,29 @@ class BreakoutGridBot:
             offset_val = self.trap_offset
             gap_val = self.grid_gap
 
-        # Place Buy Stop orders above the current price
-        for i in range(self.grid_levels):
-            trigger_price = current_price + offset_val + (i * gap_val)
-            level_size = self.order_size * (self.order_size_multiplier ** i)
-            self.broker.place_order("BUY_STOP", trigger_price, level_size, timestamp)
+        try:
+            # Place Buy Stop orders above the current price
+            for i in range(self.grid_levels):
+                trigger_price = current_price + offset_val + (i * gap_val)
+                level_size = self.order_size * (self.order_size_multiplier ** i)
+                self.broker.place_order("BUY_STOP", trigger_price, level_size, timestamp)
 
-        # Place Sell Stop orders below the current price
-        for i in range(self.grid_levels):
-            trigger_price = current_price - offset_val - (i * gap_val)
-            level_size = self.order_size * (self.order_size_multiplier ** i)
-            self.broker.place_order("SELL_STOP", trigger_price, level_size, timestamp)
+            # Place Sell Stop orders below the current price
+            for i in range(self.grid_levels):
+                trigger_price = current_price - offset_val - (i * gap_val)
+                level_size = self.order_size * (self.order_size_multiplier ** i)
+                self.broker.place_order("SELL_STOP", trigger_price, level_size, timestamp)
 
-        self.deployed = True
+            self.deployed = True
+        except Exception as e:
+            # Rollback: Clean up any pending orders placed during this failed deployment to avoid orphans
+            print(f"Failed to deploy grid traps. Rolling back: {e}")
+            try:
+                self.broker.cancel_all_orders()
+            except Exception as rollback_err:
+                print(f"Deployment rollback cleanup failed: {rollback_err}")
+            self.deployed = False
+            raise e
 
     def process_tick(self, previous_price: float, current_price: float, timestamp: float, bb_width: float = None) -> Optional[dict]:
         """

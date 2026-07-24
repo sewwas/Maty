@@ -71,6 +71,31 @@ class MT5Broker:
                     
         return candidate
 
+    def ensure_connected(self) -> bool:
+        """
+        Checks connection to MT5 terminal and tries to reconnect/login if disconnected.
+        """
+        if not MT5_AVAILABLE:
+            return False
+            
+        try:
+            # Check terminal info
+            info = mt5.terminal_info()
+            if info is not None:
+                # Check if logged in and connected
+                acc = mt5.account_info()
+                if acc is not None:
+                    return True
+        except Exception:
+            pass
+
+        # Try to initialize and login
+        if not mt5.initialize():
+            return False
+            
+        authorized = mt5.login(login=self.login, password=self.password, server=self.server)
+        return authorized
+
     def reset(self):
         """
         Resets local state but does NOT clear live account balance/equity
@@ -84,21 +109,36 @@ class MT5Broker:
 
     @property
     def balance(self) -> float:
+        self.ensure_connected()
         account_info = mt5.account_info()
         return account_info.balance if account_info else 0.0
 
     def get_equity(self, current_price: float = None) -> float:
+        self.ensure_connected()
         account_info = mt5.account_info()
         return account_info.equity if account_info else 0.0
 
     def get_floating_pnl(self, current_price: float = None) -> float:
-        account_info = mt5.account_info()
-        return account_info.profit if account_info else 0.0
+        if not self.ensure_connected():
+            return 0.0
+            
+        exness_symbol = self.get_exness_symbol(self.symbol) if self.symbol else None
+        positions = mt5.positions_get(symbol=exness_symbol) if exness_symbol else mt5.positions_get()
+        
+        pnl = 0.0
+        if positions:
+            for pos in positions:
+                if pos.magic == self.magic_number:
+                    pnl += pos.profit
+        return pnl
 
     def place_order(self, type: str, trigger_price: float, size: float, timestamp: float, symbol: str = None) -> Order:
         """
         Places a pending Buy Stop or Sell Stop order on the MT5 terminal.
         """
+        if not self.ensure_connected():
+            raise RuntimeError("MT5 connection is offline. Cannot place order.")
+
         if symbol is None:
             symbol = self.symbol
         exness_symbol = self.get_exness_symbol(symbol)
@@ -108,6 +148,49 @@ class MT5Broker:
         
         # Map bot order type to MT5 order types
         mt5_order_type = mt5.ORDER_TYPE_BUY_STOP if type == "BUY_STOP" else mt5.ORDER_TYPE_SELL_STOP
+
+        # Round trigger price and order volume/size to match the broker's symbol constraints
+        info = mt5.symbol_info(exness_symbol)
+        if info is not None:
+            # Enforce MT5 Stop Level constraints to prevent Invalid Price rejections
+            tick = mt5.symbol_info_tick(exness_symbol)
+            if tick is not None:
+                bid = tick.bid
+                ask = tick.ask
+                point = info.point
+                # Minimum allowed distance in price points (trade_stops_level)
+                # We add 2 points safety margin to avoid issues with millisecond price ticks
+                stop_level_pts = info.trade_stops_level + 2
+                stop_level_dist = stop_level_pts * point
+                
+                if type == "BUY_STOP":
+                    min_allowed_price = ask + stop_level_dist
+                    if trigger_price < min_allowed_price:
+                        trigger_price = min_allowed_price
+                        print(f"Adjusted BUY_STOP trigger price to {trigger_price} to satisfy MT5 Stop Level ({stop_level_pts} pts).")
+                elif type == "SELL_STOP":
+                    max_allowed_price = bid - stop_level_dist
+                    if trigger_price > max_allowed_price:
+                        trigger_price = max_allowed_price
+                        print(f"Adjusted SELL_STOP trigger price to {trigger_price} to satisfy MT5 Stop Level ({stop_level_pts} pts).")
+
+            # 1. Round price to the nearest tick size (e.g. 0.01 or 0.1)
+            tick_size = info.trade_tick_size
+            if tick_size > 0:
+                price_steps = round(trigger_price / tick_size)
+                trigger_price = round(price_steps * tick_size, 8)
+                
+            # 2. Round size/volume to the nearest volume step and clamp within min/max volume limits
+            vol_min = info.volume_min
+            vol_max = info.volume_max
+            vol_step = info.volume_step
+            if vol_step > 0:
+                size_steps = round(size / vol_step)
+                size = round(size_steps * vol_step, 8)
+            if size < vol_min:
+                size = vol_min
+            elif size > vol_max:
+                size = vol_max
 
         # Standard Exness standard accounts usually require ORDER_FILLING_IOC or ORDER_FILLING_RETURN.
         # We try ORDER_FILLING_RETURN (which acts as standard GTC/pending filling on Exness)
@@ -125,7 +208,9 @@ class MT5Broker:
         }
 
         result = mt5.order_send(request)
-        if result is None or result.retcode != mt5.TRADE_RETCODE_DONE:
+        success_codes = [mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_PLACED]
+        
+        if result is None or result.retcode not in success_codes:
             err = mt5.last_error() if result is None else result.comment
             print(f"MT5 Order placement failed: {err} (Retcode: {getattr(result, 'retcode', 'N/A')})")
             # Fallback to try ORDER_FILLING_IOC if broker restricts filling mode
@@ -133,7 +218,7 @@ class MT5Broker:
                 request["type_filling"] = mt5.ORDER_FILLING_IOC
                 result = mt5.order_send(request)
                 
-            if result is None or result.retcode != mt5.TRADE_RETCODE_DONE:
+            if result is None or result.retcode not in success_codes:
                 raise RuntimeError(f"Failed to place {type} on MT5. Error: {getattr(result, 'comment', err)}")
 
         # Create local Order representation
@@ -142,12 +227,19 @@ class MT5Broker:
         self.ticket_to_order_id[result.order] = order.order_id
         self.pending_orders[order.order_id] = order
         
+        # Add a tiny delay to throttle order placement and prevent rate-limiting/anti-spam limits on the broker
+        time.sleep(0.05)
+        
         return order
 
     def cancel_order(self, order_id: str) -> Optional[Order]:
         """
         Deletes a pending order from MT5.
         """
+        if not self.ensure_connected():
+            print("MT5 connection is offline. Cannot cancel order.")
+            return None
+
         order = self.pending_orders.get(order_id)
         if not order:
             return None
@@ -176,6 +268,12 @@ class MT5Broker:
         """
         Cancels all pending orders placed by this bot magic number.
         """
+        if not self.ensure_connected():
+            print("MT5 connection is offline. Cannot cancel all orders.")
+            self.pending_orders.clear()
+            self.ticket_to_order_id.clear()
+            return
+
         if symbol is None:
             symbol = self.symbol
         # Get active orders
@@ -191,6 +289,20 @@ class MT5Broker:
                     }
                     mt5.order_send(request)
                     
+        # Wait up to 1.5 seconds for the broker to complete order cancellation to avoid duplicates on quick redeploy
+        import time
+        for _ in range(15):
+            orders_still_active = False
+            active_orders = mt5.orders_get(symbol=exness_symbol) if exness_symbol else mt5.orders_get()
+            if active_orders:
+                for o in active_orders:
+                    if o.magic == self.magic_number:
+                        orders_still_active = True
+                        break
+            if not orders_still_active:
+                break
+            time.sleep(0.1)
+
         self.pending_orders.clear()
         self.ticket_to_order_id.clear()
 
@@ -198,6 +310,10 @@ class MT5Broker:
         """
         Closes a specific MT5 position.
         """
+        if not self.ensure_connected():
+            print("MT5 connection is offline. Cannot close position.")
+            return None
+
         # Find the position ticket ID
         ticket = None
         for t, pid in list(self.ticket_to_position_id.items()):
@@ -235,7 +351,8 @@ class MT5Broker:
         }
 
         result = mt5.order_send(request)
-        if result.retcode == mt5.TRADE_RETCODE_DONE:
+        success_codes = [mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_PLACED]
+        if result.retcode in success_codes:
             # Remove from local track
             self.ticket_to_position_id.pop(ticket, None)
             local_pos = self.open_positions.pop(position_id, None)
@@ -245,7 +362,7 @@ class MT5Broker:
                 "position_id": position_id,
                 "type": local_pos.type if local_pos else ("BUY" if pos.type == mt5.POSITION_TYPE_BUY else "SELL"),
                 "entry_price": pos.price_open,
-                "exit_price": result.price,
+                "exit_price": result.price if result.price > 0 else price,
                 "size": pos.volume,
                 "pnl": pnl,
                 "entry_time": pos.time,
@@ -263,6 +380,12 @@ class MT5Broker:
         """
         Closes all open positions matching this bot's magic number.
         """
+        if not self.ensure_connected():
+            print("MT5 connection is offline. Cannot close all positions.")
+            self.open_positions.clear()
+            self.ticket_to_position_id.clear()
+            return []
+
         if symbol is None:
             symbol = self.symbol
         exness_symbol = self.get_exness_symbol(symbol) if symbol else None
@@ -292,7 +415,7 @@ class MT5Broker:
         Synchronizes with the live MT5 account state.
         Detects if any pending orders were filled by the broker.
         """
-        if not MT5_AVAILABLE:
+        if not self.ensure_connected():
             return []
 
         if symbol is None:
@@ -301,6 +424,10 @@ class MT5Broker:
         
         # 1. Fetch current pending orders from MT5
         mt5_orders = mt5.orders_get(symbol=exness_symbol) if exness_symbol else mt5.orders_get()
+        if mt5_orders is None:
+            print(f"Failed to fetch pending orders from MT5 (Connection error): {mt5.last_error()}")
+            return []
+            
         mt5_order_tickets = set()
         if mt5_orders:
             for o in mt5_orders:
@@ -315,6 +442,10 @@ class MT5Broker:
 
         # 3. Fetch active positions from MT5
         mt5_positions = mt5.positions_get(symbol=exness_symbol) if exness_symbol else mt5.positions_get()
+        if mt5_positions is None:
+            print(f"Failed to fetch active positions from MT5 (Connection error): {mt5.last_error()}")
+            return []
+            
         mt5_positions_dict = {}
         if mt5_positions:
             for p in mt5_positions:
@@ -344,12 +475,120 @@ class MT5Broker:
                     # The order was cancelled manually or timed out
                     print(f"Pending order {ticket} was cancelled or expired on MT5.")
 
-        # 5. Clean up any open positions that were closed directly in MT5 by the user
+        # 5. Clean up any open positions that were closed directly in MT5 by the user or broker
         for ticket, pos_id in list(self.ticket_to_position_id.items()):
             if ticket not in mt5_positions_dict:
                 # Position was closed outside the bot
-                self.open_positions.pop(pos_id, None)
+                local_pos = self.open_positions.pop(pos_id, None)
                 self.ticket_to_position_id.pop(ticket, None)
-                print(f"Position {ticket} was closed directly in MT5.")
+                
+                # Retrieve actual details from MT5 trade history
+                entry_price = local_pos.entry_price if local_pos else 0.0
+                exit_price = current_price
+                pnl = 0.0
+                size = local_pos.size if local_pos else 0.0
+                pos_type = local_pos.type if local_pos else "BUY"
+                
+                history_success = False
+                try:
+                    # Request deals matching this position ticket
+                    deals = mt5.history_deals_get(position=ticket)
+                    if deals:
+                        deals = sorted(list(deals), key=lambda d: d.time)
+                        # First deal is entry, last is exit
+                        entry_deal = deals[0]
+                        exit_deal = deals[-1]
+                        entry_price = entry_deal.price
+                        exit_price = exit_deal.price
+                        pnl = sum(d.profit + d.commission + d.swap for d in deals) # net profit
+                        size = exit_deal.volume
+                        pos_type = "BUY" if entry_deal.type == mt5.DEAL_TYPE_BUY else "SELL"
+                        history_success = True
+                except Exception as e:
+                    print(f"Failed to fetch MT5 history deals for closed position {ticket}: {e}")
+                
+                if not history_success and local_pos:
+                    # Fallback approximation
+                    pnl = local_pos.get_pnl(current_price)
+                
+                record = {
+                    "position_id": pos_id,
+                    "type": pos_type,
+                    "entry_price": entry_price,
+                    "exit_price": exit_price,
+                    "size": size,
+                    "pnl": pnl,
+                    "entry_time": local_pos.entry_time if local_pos else timestamp - 60,
+                    "exit_time": timestamp,
+                    "commission": 0.0
+                }
+                self.closed_trades.append(record)
+                self.realized_pnl += pnl
+                print(f"Position {ticket} was closed outside the bot. PnL: ${pnl:+.2f}")
 
         return triggered_positions
+
+    def sync(self):
+        """
+        Synchronizes local pending_orders and open_positions dictionaries with the MT5 terminal.
+        Does not perform trigger evaluations. Useful for refreshing UI tables when bot is paused.
+        """
+        if not self.ensure_connected():
+            return
+            
+        exness_symbol = self.get_exness_symbol(self.symbol) if self.symbol else None
+        
+        # 1. Sync pending orders
+        mt5_orders = mt5.orders_get(symbol=exness_symbol) if exness_symbol else mt5.orders_get()
+        if mt5_orders is not None:
+            self.pending_orders.clear()
+            self.ticket_to_order_id.clear()
+            for o in mt5_orders:
+                if o.magic == self.magic_number:
+                    # Create Order object
+                    order_type = "BUY_STOP" if o.type == mt5.ORDER_TYPE_BUY_STOP else "SELL_STOP"
+                    local_order = Order(order_type, o.price_open, o.volume, o.time)
+                    local_order.order_id = str(o.ticket)
+                    self.pending_orders[local_order.order_id] = local_order
+                    self.ticket_to_order_id[o.ticket] = local_order.order_id
+
+        # 2. Sync active positions
+        mt5_positions = mt5.positions_get(symbol=exness_symbol) if exness_symbol else mt5.positions_get()
+        if mt5_positions is not None:
+            self.open_positions.clear()
+            self.ticket_to_position_id.clear()
+            for p in mt5_positions:
+                if p.magic == self.magic_number:
+                    pos_type = "BUY" if p.type == mt5.POSITION_TYPE_BUY else "SELL"
+                    local_pos = Position(pos_type, p.price_open, p.volume, p.time)
+                    local_pos.position_id = str(p.ticket)
+                    self.open_positions[local_pos.position_id] = local_pos
+                    self.ticket_to_position_id[p.ticket] = local_pos.position_id
+
+    def get_all_account_positions(self) -> list:
+        """
+        Retrieves all active positions on the MT5 account (including manual and external trades)
+        for UI display purposes.
+        """
+        if not self.ensure_connected():
+            return []
+            
+        exness_symbol = self.get_exness_symbol(self.symbol) if self.symbol else None
+        positions = mt5.positions_get(symbol=exness_symbol) if exness_symbol else mt5.positions_get()
+        
+        pos_list = []
+        if positions:
+            for p in positions:
+                # Include positions that do NOT belong to this bot (manual/external trades)
+                if p.magic != self.magic_number:
+                    pos_type = "BUY" if p.type == mt5.POSITION_TYPE_BUY else "SELL"
+                    pos_list.append({
+                        "ticket": p.ticket,
+                        "symbol": p.symbol,
+                        "type": pos_type,
+                        "price": p.price_open,
+                        "volume": p.volume,
+                        "profit": p.profit,
+                        "magic": p.magic
+                    })
+        return pos_list

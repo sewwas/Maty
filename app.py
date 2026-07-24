@@ -364,7 +364,20 @@ PLOT_LAYOUT = dict(
 )
 
 # --- STATE PERSISTENCE HELPERS ---
-STATE_FILE = "bot_state.pkl"
+STATE_FILE = os.path.join(os.path.expanduser("~"), ".gemini", "antigravity-ide", "bot_state.pkl")
+os.makedirs(os.path.dirname(STATE_FILE), exist_ok=True)
+
+DEFAULT_PRICES = {
+    "BTCUSDT": 60000.0,
+    "ETHUSDT": 3300.0,
+    "SOLUSDT": 150.0,
+    "BNBUSDT": 580.0,
+    "DOGEUSDT": 0.12,
+    "PAXGUSDT": 2300.0
+}
+
+def get_default_price(symbol: str) -> float:
+    return DEFAULT_PRICES.get(symbol.upper(), 100.0)
 
 def get_default_order_size(symbol: str) -> float:
     defaults = {
@@ -397,12 +410,35 @@ def save_bot_state():
     try:
         if "markets" in st.session_state:
             sync_active_market_primitives()
+            
+            # Re-bind custom classes to the currently imported versions to prevent Streamlit pickle errors on hot-reload
+            from core.engine import SimulatedBroker, BreakoutGridBot
+            from core.mt5_broker import MT5Broker
+            for symbol, m_state in list(st.session_state.markets.items()):
+                broker_obj = m_state.get("broker")
+                if broker_obj:
+                    if broker_obj.__class__.__name__ == "SimulatedBroker" and broker_obj.__class__ != SimulatedBroker:
+                        broker_obj.__class__ = SimulatedBroker
+                    elif broker_obj.__class__.__name__ == "MT5Broker" and broker_obj.__class__ != MT5Broker:
+                        broker_obj.__class__ = MT5Broker
+                
+                bot_obj = m_state.get("bot")
+                if bot_obj:
+                    if bot_obj.__class__.__name__ == "BreakoutGridBot" and bot_obj.__class__ != BreakoutGridBot:
+                        bot_obj.__class__ = BreakoutGridBot
+            
             state = {
                 "markets": st.session_state.markets,
-                "live_symbol": st.session_state.live_symbol
+                "live_symbol": st.session_state.live_symbol,
+                "mt5_pwd": st.session_state.get("mt5_pwd", "")
             }
-            with open(STATE_FILE, "wb") as f:
-                pickle.dump(state, f)
+            # Write to a temporary file first and rename atomically to prevent state file corruption on reload/crashes
+            import tempfile
+            temp_dir = os.path.dirname(STATE_FILE)
+            with tempfile.NamedTemporaryFile("wb", dir=temp_dir, delete=False) as tf:
+                pickle.dump(state, tf)
+                temp_name = tf.name
+            os.replace(temp_name, STATE_FILE)
     except Exception as e:
         print(f"Error saving bot state: {e}")
 
@@ -410,11 +446,21 @@ def load_bot_state() -> bool:
     if os.path.exists(STATE_FILE):
         try:
             with open(STATE_FILE, "rb") as f:
-                state = pickle.load(f)
+                class CustomUnpickler(pickle.Unpickler):
+                    def find_class(self, module, name):
+                        if module == "core.engine":
+                            import core.engine
+                            return getattr(core.engine, name)
+                        elif module == "core.mt5_broker":
+                            import core.mt5_broker
+                            return getattr(core.mt5_broker, name)
+                        return super().find_class(module, name)
+                state = CustomUnpickler(f).load()
             
             if "markets" in state:
                 st.session_state.markets = state["markets"]
                 st.session_state.live_symbol = state["live_symbol"]
+                st.session_state.mt5_pwd = state.get("mt5_pwd", "")
                 # Ensure zero fees on all loaded brokers and provide default strategy values if missing
                 for symbol, m_state in st.session_state.markets.items():
                     if "broker" in m_state and m_state["broker"]:
@@ -521,26 +567,55 @@ if "markets" not in st.session_state:
     st.session_state.markets = {}
 
 if st.session_state.live_symbol not in st.session_state.markets:
-    # Initialize state for this specific symbol
-    broker = SimulatedBroker(initial_balance=10000.0, commission_pct=0.0, slippage_pct=0.0)
+    # Initialize state for this specific symbol. If MT5 is globally connected for another symbol, use MT5Broker.
+    mt5_template = None
+    if "markets" in st.session_state:
+        for sym, m_state in st.session_state.markets.items():
+            brk = m_state.get("broker")
+            if brk and brk.__class__.__name__ == "MT5Broker":
+                mt5_template = brk
+                break
+                
+    if mt5_template:
+        broker = MT5Broker(
+            login=mt5_template.login,
+            password=mt5_template.password,
+            server=mt5_template.server,
+            symbol=st.session_state.live_symbol,
+            symbol_suffix=mt5_template.symbol_suffix,
+            magic_number=998877
+        )
+    else:
+        broker = SimulatedBroker(initial_balance=10000.0, commission_pct=0.0, slippage_pct=0.0)
     
     price_history = []
     price = None
-    try:
-        df_hist = get_historical_klines(st.session_state.live_symbol, interval="1m", limit=30)
-        if df_hist is not None and not df_hist.empty:
-            df_ticks = interpolate_ticks(df_hist)
-            ticks = list(zip(df_ticks["timestamp"], df_ticks["price"]))
-            price_history = ticks
-            price = ticks[-1][1]
-    except Exception as e:
-        print(f"Error pre-populating historical klines for {st.session_state.live_symbol}: {e}")
-        
-    if price is None:
-        price = get_live_price(st.session_state.live_symbol)
+    
+    is_simulated = st.session_state.get("price_source_select", "Live Market API") == "Simulated Market (Demo)"
+    
+    if is_simulated:
+        price = get_default_price(st.session_state.live_symbol)
+        ticks = generate_simulated_ticks(price, num_ticks=120)
+        now = time.time()
+        time_diff = now - ticks[-1][0]
+        price_history = [(t + time_diff, p) for t, p in ticks]
+        price = price_history[-1][1]
+    else:
+        try:
+            df_hist = get_historical_klines(st.session_state.live_symbol, interval="1m", limit=30)
+            if df_hist is not None and not df_hist.empty:
+                df_ticks = interpolate_ticks(df_hist)
+                ticks = list(zip(df_ticks["timestamp"], df_ticks["price"]))
+                price_history = ticks
+                price = ticks[-1][1]
+        except Exception as e:
+            print(f"Error pre-populating historical klines for {st.session_state.live_symbol}: {e}")
+            
         if price is None:
-            price = 60000.0  # fallback
-        price_history = [(time.time(), price)]
+            price = get_live_price(st.session_state.live_symbol)
+            if price is None:
+                price = get_default_price(st.session_state.live_symbol)
+            price_history = [(time.time(), price)]
         
     bot = BreakoutGridBot(
         broker,
@@ -557,7 +632,11 @@ if st.session_state.live_symbol not in st.session_state.markets:
         cancel_opposite_on_trigger=False
     )
     
-    bot.deploy_traps(price, time.time())
+    # Only deploy traps initially if it is SimulatedBroker; live broker requires explicit bot start
+    if broker.__class__.__name__ == "SimulatedBroker":
+        bot.deploy_traps(price, time.time())
+    else:
+        bot.deployed = False
     
     st.session_state.markets[st.session_state.live_symbol] = {
         "broker": broker,
@@ -584,6 +663,12 @@ st.session_state.price_history = active_market["price_history"]
 st.session_state.last_price = active_market["last_price"]
 st.session_state.running = active_market["running"]
 
+# Synchronize active orders and positions with MT5 on every script execution to keep UI tables populated even when bot is paused
+try:
+    st.session_state.broker.sync()
+except Exception as e:
+    print(f"Failed to synchronize broker state: {e}")
+
 # Initialize or sync current symbol to avoid resetting strategy parameter states on every rerun
 if "current_symbol" not in st.session_state or st.session_state.current_symbol != st.session_state.live_symbol:
     st.session_state.current_symbol = st.session_state.live_symbol
@@ -596,6 +681,33 @@ if "current_symbol" not in st.session_state or st.session_state.current_symbol !
     st.session_state.strat_sl = active_market.get("strat_sl", float('inf'))
     st.session_state.strat_trailing = active_market.get("strat_trailing", False)
     st.session_state.strat_trailing_dist = active_market.get("strat_trailing_dist", 1.5)
+
+# --- SYNC WIDGET INPUTS TO STATE VARIABLES ON RERUN BEFORE RENDERING ---
+if "strat_is_percent_select" in st.session_state:
+    st.session_state.strat_is_percent = (st.session_state.strat_is_percent_select == "Percentage (%)")
+
+if "strat_size_multiplier_input" in st.session_state:
+    st.session_state.strat_size_multiplier = st.session_state.strat_size_multiplier_input
+if "strat_order_size_input" in st.session_state:
+    st.session_state.strat_order_size = st.session_state.strat_order_size_input
+if "strat_target_profit_input" in st.session_state:
+    st.session_state.strat_target_profit = st.session_state.strat_target_profit_input
+if "strat_trailing_input" in st.session_state:
+    st.session_state.strat_trailing = st.session_state.strat_trailing_input
+if "strat_trailing_dist_input" in st.session_state:
+    st.session_state.strat_trailing_dist = st.session_state.strat_trailing_dist_input
+
+if st.session_state.get("strat_is_percent", True):
+    if "strat_gap_input_pct" in st.session_state:
+        st.session_state.strat_gap = st.session_state.strat_gap_input_pct
+    if "strat_offset_input_pct" in st.session_state:
+        st.session_state.strat_offset = st.session_state.strat_offset_input_pct
+else:
+    if "strat_gap_input_usd" in st.session_state:
+        st.session_state.strat_gap = st.session_state.strat_gap_input_usd
+    if "strat_offset_input_usd" in st.session_state:
+        st.session_state.strat_offset = st.session_state.strat_offset_input_usd
+# -----------------------------------------------------------------------
 
 # Detect if parameters affecting grid layout or sizing have changed
 bot = st.session_state.bot
@@ -644,22 +756,27 @@ def reset_realtime_sandbox():
 
 def init_mt5_broker(login, password, server, suffix):
     try:
-        broker = MT5Broker(
-            login=login,
-            password=password,
-            server=server,
-            symbol=st.session_state.live_symbol,
-            symbol_suffix=suffix,
-            magic_number=998877
-        )
-        st.session_state.markets[st.session_state.live_symbol]["broker"] = broker
-        st.session_state.markets[st.session_state.live_symbol]["bot"].broker = broker
-        st.session_state.broker = broker
-        st.session_state.bot.broker = broker
+        # Loop through all configured symbols and apply MT5Broker globally
+        for sym in list(st.session_state.markets.keys()):
+            broker = MT5Broker(
+                login=login,
+                password=password,
+                server=server,
+                symbol=sym,
+                symbol_suffix=suffix,
+                magic_number=998877
+            )
+            st.session_state.markets[sym]["broker"] = broker
+            st.session_state.markets[sym]["bot"].broker = broker
+            
+        # Sync active references
+        active_market = st.session_state.markets[st.session_state.live_symbol]
+        st.session_state.broker = active_market["broker"]
+        st.session_state.bot = active_market["bot"]
         
         # Pull current live price from MT5 if available
         import MetaTrader5 as mt5
-        exness_symbol = broker.get_exness_symbol(st.session_state.live_symbol)
+        exness_symbol = st.session_state.broker.get_exness_symbol(st.session_state.live_symbol)
         mt5.symbol_select(exness_symbol, True)
         tick = mt5.symbol_info_tick(exness_symbol)
         if tick:
@@ -669,9 +786,8 @@ def init_mt5_broker(login, password, server, suffix):
             if st.session_state.price_history:
                 st.session_state.price_history[-1] = (time.time(), current_price)
                 
-        # Redeploy traps on the live broker at current price if no positions exist
-        if len(broker.open_positions) == 0:
-            st.session_state.bot.deploy_traps(st.session_state.last_price, time.time())
+        # Avoid placing live orders on account link. Mark bot as not deployed so it places them when START BOT is clicked.
+        st.session_state.bot.deployed = False
             
         st.session_state.mt5_startup_error = None
         save_bot_state()
@@ -681,11 +797,17 @@ def init_mt5_broker(login, password, server, suffix):
         return False
 
 def init_simulated_broker():
-    broker = SimulatedBroker(initial_balance=10000.0, commission_pct=0.0, slippage_pct=0.0)
-    st.session_state.markets[st.session_state.live_symbol]["broker"] = broker
-    st.session_state.markets[st.session_state.live_symbol]["bot"].broker = broker
-    st.session_state.broker = broker
-    st.session_state.bot.broker = broker
+    # Loop through all configured symbols and apply SimulatedBroker globally
+    for sym in list(st.session_state.markets.keys()):
+        broker = SimulatedBroker(initial_balance=10000.0, commission_pct=0.0, slippage_pct=0.0)
+        st.session_state.markets[sym]["broker"] = broker
+        st.session_state.markets[sym]["bot"].broker = broker
+        
+    # Sync active references
+    active_market = st.session_state.markets[st.session_state.live_symbol]
+    st.session_state.broker = active_market["broker"]
+    st.session_state.bot = active_market["bot"]
+    
     # Deploy simulated traps
     st.session_state.bot.deploy_traps(st.session_state.last_price, time.time())
     st.session_state.mt5_startup_error = None
@@ -737,8 +859,67 @@ with col_controls:
         symbol = market_options[selected_label]
         
         if symbol != st.session_state.live_symbol:
+            # 1. Clean up the old symbol's pending orders so they are not left orphaned/active on the broker
+            old_sym = st.session_state.live_symbol
+            if old_sym in st.session_state.markets:
+                old_broker = st.session_state.markets[old_sym]["broker"]
+                old_bot = st.session_state.markets[old_sym]["bot"]
+                if old_bot.deployed:
+                    try:
+                        old_broker.cancel_all_orders()
+                        old_bot.deployed = False
+                    except Exception as e:
+                        print(f"Failed to cancel old traps for {old_sym}: {e}")
+
+            # 2. Automatically pause execution when switching symbols to avoid background/unprompted active trading
+            st.session_state.running = False
+
             sync_active_market_primitives()
             st.session_state.live_symbol = symbol
+            
+            # Fetch fresh historical price data for the newly selected symbol to prevent huge gaps in the chart
+            is_simulated = st.session_state.get("price_source_select", "Live Market API") == "Simulated Market (Demo)"
+            default_p = get_default_price(symbol)
+            new_price_history = []
+            new_price = None
+            
+            if is_simulated:
+                start_p = st.session_state.markets[symbol]["last_price"] if (symbol in st.session_state.markets and st.session_state.markets[symbol].get("last_price")) else default_p
+                ticks = generate_simulated_ticks(start_p, num_ticks=120)
+                now = time.time()
+                time_diff = now - ticks[-1][0]
+                new_price_history = [(t + time_diff, p) for t, p in ticks]
+                new_price = new_price_history[-1][1]
+            else:
+                try:
+                    df_hist = get_historical_klines(symbol, interval="1m", limit=30)
+                    if df_hist is not None and not df_hist.empty:
+                        df_ticks = interpolate_ticks(df_hist)
+                        new_price_history = list(zip(df_ticks["timestamp"], df_ticks["price"]))
+                        new_price = new_price_history[-1][1]
+                except Exception as e:
+                    print(f"Error fetching klines on symbol switch: {e}")
+                
+                if new_price is None:
+                    new_price = get_live_price(symbol)
+                    if new_price is None:
+                        new_price = st.session_state.markets[symbol]["last_price"] if (symbol in st.session_state.markets and st.session_state.markets[symbol].get("last_price")) else default_p
+                    new_price_history = [(time.time(), new_price)]
+            
+            if symbol in st.session_state.markets:
+                st.session_state.markets[symbol]["price_history"] = new_price_history
+                st.session_state.markets[symbol]["last_price"] = new_price
+                
+                # Redeploy traps at new price if there are no open positions (with defensive try-except)
+                curr_broker = st.session_state.markets[symbol]["broker"]
+                curr_bot = st.session_state.markets[symbol]["bot"]
+                if len(curr_broker.open_positions) == 0:
+                    try:
+                        curr_bot.deploy_traps(new_price, time.time())
+                        st.session_state.error_message = None
+                    except Exception as e:
+                        st.session_state.error_message = f"Failed to deploy traps for {symbol}: {e}"
+            
             save_bot_state()  # Persist symbol change to disk immediately
             st.rerun()
             
@@ -760,6 +941,15 @@ with col_controls:
         with run_col1:
             if not st.session_state.running:
                 if st.button("▶ START BOT", type="primary", use_container_width=True):
+                    # Close any leftover positions and cancel any leftover pending orders before starting fresh
+                    try:
+                        curr_price = st.session_state.price_history[-1][1] if st.session_state.price_history else st.session_state.last_price
+                        st.session_state.broker.close_all_positions(curr_price, time.time())
+                        st.session_state.broker.cancel_all_orders()
+                    except Exception as e:
+                        print(f"Startup cleanup failed: {e}")
+                    
+                    st.session_state.bot.deployed = False
                     st.session_state.running = True
                     save_bot_state()
                     st.rerun()
@@ -819,6 +1009,25 @@ with col_controls:
             mt5_password = st.text_input("MT5 Password", type="password", value=st.session_state.get("mt5_pwd", ""), key="mt5_pwd_input")
             mt5_server = st.text_input("MT5 Server (e.g., Exness-MT5-Trial)", value=current_server, key="mt5_server_input")
             mt5_suffix = st.text_input("Exness Symbol Suffix (e.g., 'm' for Mini/Cent)", value=current_suffix, key="mt5_suffix_input")
+            
+            # If successfully connected to MT5, render a real-time account status panel
+            if is_live and st.session_state.broker.ensure_connected():
+                import MetaTrader5 as mt5_ref
+                acc = mt5_ref.account_info()
+                if acc:
+                    st.markdown(f"""
+                    <div style="background: rgba(245, 158, 11, 0.08); border: 1px solid rgba(245, 158, 11, 0.2); border-radius: 8px; padding: 12px; margin-bottom: 12px; font-size: 0.8rem;">
+                        <div style="color: #f59e0b; font-weight: bold; margin-bottom: 8px; font-size: 0.85rem;">CONNECTED ACCOUNT INFO</div>
+                        <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px; color: var(--text-color);">
+                            <div><strong>Account Name:</strong> {acc.name}</div>
+                            <div><strong>Account Login:</strong> {acc.login}</div>
+                            <div><strong>Server:</strong> {acc.server}</div>
+                            <div><strong>Company:</strong> {acc.company}</div>
+                            <div><strong>Leverage:</strong> 1:{acc.leverage}</div>
+                            <div><strong>Currency:</strong> {acc.currency}</div>
+                        </div>
+                    </div>
+                    """, unsafe_allow_html=True)
             
             if st.session_state.get("mt5_startup_error"):
                 st.error(st.session_state.mt5_startup_error)
@@ -990,6 +1199,10 @@ if st.session_state.running:
         st.session_state.error_message = None
     except Exception as e:
         st.session_state.error_message = f"Tick processing failed: {e}"
+        # Auto-pause the bot immediately to prevent infinite redeployment loops and order flooding
+        st.session_state.running = False
+        if "markets" in st.session_state and st.session_state.live_symbol in st.session_state.markets:
+            st.session_state.markets[st.session_state.live_symbol]["running"] = False
     save_bot_state()
 else:
     # If bot is not running, periodically fetch the live price on page load to keep it fresh
@@ -1085,7 +1298,7 @@ fig.add_hline(
 # Trap levels lines
 if bot_instance.deployed:
     # Place buy/sell stops in chart
-    for o in broker_instance.pending_orders.values():
+    for o in list(broker_instance.pending_orders.values()):
         if o.type == "BUY_STOP":
             line_color = "rgba(34, 197, 94, 0.35)" if IS_DARK else "rgba(22, 163, 74, 0.4)"
             fig.add_hline(
@@ -1108,7 +1321,7 @@ if bot_instance.deployed:
             )
 
 # Plot open positions
-for pos_id, pos in broker_instance.open_positions.items():
+for pos_id, pos in list(broker_instance.open_positions.items()):
     pos_color = "#22c55e" if pos.type == "BUY" else "#ef4444"
     fig.add_hline(
         y=pos.entry_price,
@@ -1134,7 +1347,7 @@ col_tables1, col_tables2 = st.columns(2)
 with col_tables1:
     if broker_instance.open_positions:
         rows_html = ""
-        for pos in broker_instance.open_positions.values():
+        for pos in list(broker_instance.open_positions.values()):
             pnl = pos.get_pnl(curr_price)
             pnl_style = "color: var(--green);" if pnl >= 0 else "color: var(--red);"
             badge_type = "green" if pos.type == "BUY" else "red"
@@ -1171,10 +1384,47 @@ with col_tables1:
         """
     st.markdown(textwrap.dedent(table_html), unsafe_allow_html=True)
 
+    # Render other manual/external positions on the account
+    other_pos = getattr(broker_instance, "get_all_account_positions", lambda: [])()
+    if other_pos:
+        rows_other_html = ""
+        for p in other_pos:
+            badge_type = "green" if p["type"] == "BUY" else "red"
+            badge_html = render_badge(p["type"], badge_type)
+            rows_other_html += f"<tr><td>{p['ticket']}</td><td>{p['symbol']}</td><td>{badge_html}</td><td>${p['price']:,.2f}</td><td>{p['volume']:.4f}</td><td style='font-weight: bold; color: {'var(--green)' if p['profit'] >= 0 else 'var(--red)'};'>${p['profit']:+,.2f}</td><td>Magic: {p['magic']}</td></tr>"
+        
+        other_table_html = f"""
+        <div class="table-wrap" style="margin-top: 15px; border-color: rgba(245, 158, 11, 0.25);">
+            <h4 style="color: #f59e0b; display: flex; align-items: center; gap: 6px; margin: 0;">
+                <span>🔌 Other Account Positions (Manual / External)</span>
+            </h4>
+            <div style="font-size: 0.72rem; color: var(--text-muted); margin-bottom: 8px;">
+                These trades belong to other bots or manual orders and are ignored by this bot's profit targets.
+            </div>
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>Ticket ID</th>
+                        <th>Symbol</th>
+                        <th>Type</th>
+                        <th>Entry Price</th>
+                        <th>Size</th>
+                        <th>Profit</th>
+                        <th>Identifier</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {rows_other_html}
+                </tbody>
+            </table>
+        </div>
+        """
+        st.markdown(textwrap.dedent(other_table_html), unsafe_allow_html=True)
+
 with col_tables2:
     if broker_instance.pending_orders:
         rows_html = ""
-        sorted_orders = sorted(broker_instance.pending_orders.values(), key=lambda x: x.trigger_price, reverse=True)
+        sorted_orders = sorted(list(broker_instance.pending_orders.values()), key=lambda x: x.trigger_price, reverse=True)
         for o in sorted_orders:
             badge_type = "green" if "BUY" in o.type else "red"
             badge_html = render_badge(o.type, badge_type)
