@@ -410,6 +410,20 @@ class MT5Broker:
                     else:
                         raise RuntimeError(f"Failed to close active position {pos.ticket} on Exness MT5!")
                         
+        # Wait up to 1.5 seconds for MT5 to confirm all matching positions are closed on the server
+        import time
+        for _ in range(15):
+            positions_still_active = False
+            active_positions = mt5.positions_get(symbol=exness_symbol) if exness_symbol else mt5.positions_get()
+            if active_positions:
+                for p in active_positions:
+                    if p.magic == self.magic_number:
+                        positions_still_active = True
+                        break
+            if not positions_still_active:
+                break
+            time.sleep(0.1)
+
         return closed_records
 
     def process_tick(self, previous_price: float, current_price: float, timestamp: float, symbol: str = None) -> List[Position]:
