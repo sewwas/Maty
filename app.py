@@ -8,6 +8,10 @@ import textwrap
 import pickle
 import os
 
+# Global process-level shared state to prevent duplicate loop execution in multiple tabs
+if "GLOBAL_RUNNERS" not in globals():
+    GLOBAL_RUNNERS = {}
+
 # Import core bot logic
 from core.engine import SimulatedBroker, BreakoutGridBot
 from core.mt5_broker import MT5Broker, MT5_AVAILABLE
@@ -378,6 +382,18 @@ DEFAULT_PRICES = {
 
 def get_default_price(symbol: str) -> float:
     return DEFAULT_PRICES.get(symbol.upper(), 100.0)
+
+def get_current_live_price() -> Optional[float]:
+    # Check if MT5 is active and connected
+    if "broker" in st.session_state and st.session_state.broker.__class__.__name__ == "MT5Broker":
+        if st.session_state.broker.ensure_connected():
+            import MetaTrader5 as mt5_ref
+            exness_symbol = st.session_state.broker.get_exness_symbol(st.session_state.live_symbol)
+            tick = mt5_ref.symbol_info_tick(exness_symbol)
+            if tick is not None:
+                # Center around the mid price to keep the buy/sell stops perfectly balanced
+                return (float(tick.bid) + float(tick.ask)) / 2.0
+    return get_live_price(st.session_state.live_symbol)
 
 def get_default_order_size(symbol: str) -> float:
     defaults = {
@@ -901,7 +917,7 @@ with col_controls:
                     print(f"Error fetching klines on symbol switch: {e}")
                 
                 if new_price is None:
-                    new_price = get_live_price(symbol)
+                    new_price = get_current_live_price()
                     if new_price is None:
                         new_price = st.session_state.markets[symbol]["last_price"] if (symbol in st.session_state.markets and st.session_state.markets[symbol].get("last_price")) else default_p
                     new_price_history = [(time.time(), new_price)]
@@ -1166,6 +1182,31 @@ with col_strategy:
 # 8. ENGINE TICK PROCESSING
 # Run calculation tick if running
 if st.session_state.running:
+    # Multi-tab concurrency safety lock to prevent duplicate orders from multiple browser windows
+    from streamlit.runtime.scriptrunner import get_script_run_ctx
+    ctx = get_script_run_ctx()
+    session_id = ctx.session_id if ctx else "default"
+    
+    # Prune inactive sessions (no heartbeat for more than 3.0 seconds)
+    now_t = time.time()
+    dead_sessions = [sid for sid, t in list(GLOBAL_RUNNERS.items()) if now_t - t > 3.0]
+    for sid in dead_sessions:
+        GLOBAL_RUNNERS.pop(sid, None)
+        
+    # Check if another session is already active
+    other_active = [sid for sid in GLOBAL_RUNNERS.keys() if sid != session_id]
+    if other_active:
+        # Pause this session to protect the account
+        st.session_state.running = False
+        if "markets" in st.session_state and st.session_state.live_symbol in st.session_state.markets:
+            st.session_state.markets[st.session_state.live_symbol]["running"] = False
+        st.session_state.error_message = "⚠️ Bot execution paused in this tab because another browser window is already running the bot loop."
+        save_bot_state()
+        st.rerun()
+        
+    # Register this session's heartbeat
+    GLOBAL_RUNNERS[session_id] = now_t
+
     # 1. Fetch latest price
     if st.session_state.get("price_source_select", "Live Market API") == "Simulated Market (Demo)":
         last_p = st.session_state.price_history[-1][1] if st.session_state.price_history else st.session_state.last_price
@@ -1174,10 +1215,13 @@ if st.session_state.running:
         latest_price = round(last_p * (1 + change), 2)
         st.session_state.error_message = None
     else:
-        latest_price = get_live_price(st.session_state.live_symbol)
+        latest_price = get_current_live_price()
         if latest_price is None:
             # Fall back to last recorded price if API times out
-            st.session_state.error_message = "Binance API connection timeout. Retrying..."
+            if "broker" in st.session_state and st.session_state.broker.__class__.__name__ == "MT5Broker":
+                st.session_state.error_message = "MT5 connection timeout or symbol not found. Retrying..."
+            else:
+                st.session_state.error_message = "Binance API connection timeout. Retrying..."
             latest_price = st.session_state.price_history[-1][1]
         else:
             st.session_state.error_message = None
@@ -1212,7 +1256,7 @@ else:
             # Just keep the last price, no need to query live API
             latest_price = st.session_state.price_history[-1][1]
         else:
-            latest_price = get_live_price(st.session_state.live_symbol)
+            latest_price = get_current_live_price()
             if latest_price is not None:
                 # Update the last point in history to show the real current price
                 st.session_state.price_history[-1] = (now, latest_price)
