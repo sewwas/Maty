@@ -549,7 +549,7 @@ class MT5Broker:
                 if o.magic == self.magic_number:
                     # Create Order object
                     order_type = "BUY_STOP" if o.type == mt5.ORDER_TYPE_BUY_STOP else "SELL_STOP"
-                    local_order = Order(order_type, o.price_open, o.volume_initial, o.time)
+                    local_order = Order(order_type, o.price_open, o.volume_initial, o.time_setup)
                     local_order.order_id = str(o.ticket)
                     self.pending_orders[local_order.order_id] = local_order
                     self.ticket_to_order_id[o.ticket] = local_order.order_id
