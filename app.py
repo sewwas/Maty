@@ -754,8 +754,9 @@ bot.trailing_stop_distance = st.session_state.strat_trailing_dist
 bot.use_bb_filter = False
 
 # If settings that affect grid placement/sizing changed, redeploy traps immediately
-# provided that no positions are currently open.
-if settings_changed and bot.deployed and len(broker.open_positions) == 0:
+# provided that no positions are currently open (restricted to Simulated Sandbox for safety).
+is_simulated = (broker.__class__.__name__ == "SimulatedBroker")
+if settings_changed and bot.deployed and len(broker.open_positions) == 0 and is_simulated:
     try:
         bot.deploy_traps(st.session_state.last_price, time.time())
         st.session_state.error_message = None
@@ -926,10 +927,10 @@ with col_controls:
                 st.session_state.markets[symbol]["price_history"] = new_price_history
                 st.session_state.markets[symbol]["last_price"] = new_price
                 
-                # Redeploy traps at new price if there are no open positions (with defensive try-except)
+                # Redeploy traps at new price if there are no open positions (restricted to Simulated Sandbox)
                 curr_broker = st.session_state.markets[symbol]["broker"]
                 curr_bot = st.session_state.markets[symbol]["bot"]
-                if len(curr_broker.open_positions) == 0:
+                if len(curr_broker.open_positions) == 0 and curr_broker.__class__.__name__ == "SimulatedBroker":
                     try:
                         curr_bot.deploy_traps(new_price, time.time())
                         st.session_state.error_message = None
