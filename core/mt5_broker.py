@@ -353,13 +353,16 @@ class MT5Broker:
         }
 
         result = mt5.order_send(request)
+        if result is None:
+            raise RuntimeError(f"MT5 order_send returned None when closing position {ticket}. Last error: {mt5.last_error()}")
+            
         success_codes = [mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_PLACED]
         if result.retcode in success_codes:
             # Remove from local track
             self.ticket_to_position_id.pop(ticket, None)
             local_pos = self.open_positions.pop(position_id, None)
             
-            pnl = result.profit
+            pnl = result.profit if result.profit is not None else 0.0
             record = {
                 "position_id": position_id,
                 "type": local_pos.type if local_pos else ("BUY" if pos.type == mt5.POSITION_TYPE_BUY else "SELL"),
@@ -383,10 +386,7 @@ class MT5Broker:
         Closes all open positions matching this bot's magic number.
         """
         if not self.ensure_connected():
-            print("MT5 connection is offline. Cannot close all positions.")
-            self.open_positions.clear()
-            self.ticket_to_position_id.clear()
-            return []
+            raise RuntimeError("MT5 connection is offline. Cannot close open positions.")
 
         if symbol is None:
             symbol = self.symbol
@@ -407,9 +407,9 @@ class MT5Broker:
                     record = self.close_position(local_pid, exit_price, timestamp)
                     if record:
                         closed_records.append(record)
-
-        self.open_positions.clear()
-        self.ticket_to_position_id.clear()
+                    else:
+                        raise RuntimeError(f"Failed to close active position {pos.ticket} on Exness MT5!")
+                        
         return closed_records
 
     def process_tick(self, previous_price: float, current_price: float, timestamp: float, symbol: str = None) -> List[Position]:
