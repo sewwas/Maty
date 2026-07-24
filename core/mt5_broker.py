@@ -549,7 +549,7 @@ class MT5Broker:
                 if o.magic == self.magic_number:
                     # Create Order object
                     order_type = "BUY_STOP" if o.type == mt5.ORDER_TYPE_BUY_STOP else "SELL_STOP"
-                    local_order = Order(order_type, o.price_open, o.volume, o.time)
+                    local_order = Order(order_type, o.price_open, o.volume_initial, o.time)
                     local_order.order_id = str(o.ticket)
                     self.pending_orders[local_order.order_id] = local_order
                     self.ticket_to_order_id[o.ticket] = local_order.order_id
@@ -566,6 +566,12 @@ class MT5Broker:
                     local_pos.position_id = str(p.ticket)
                     self.open_positions[local_pos.position_id] = local_pos
                     self.ticket_to_position_id[p.ticket] = local_pos.position_id
+
+        # 3. Sync recent deals history
+        try:
+            self.sync_history_from_mt5()
+        except Exception as e:
+            print(f"Failed to sync history from MT5: {e}")
 
     def get_all_account_positions(self) -> list:
         """
@@ -594,3 +600,65 @@ class MT5Broker:
                         "magic": p.magic
                     })
         return pos_list
+
+    def sync_history_from_mt5(self):
+        """
+        Queries MT5 historical deals for our magic number and populates
+        the closed_trades list and realized_pnl.
+        """
+        if not self.ensure_connected():
+            return
+
+        import MetaTrader5 as mt5_ref
+        import time
+
+        # Query deals for the last 7 days to cover recent cycles
+        now = time.time()
+        from_date = now - 7 * 24 * 3600
+        deals = mt5_ref.history_deals_get(from_date, now + 3600)
+        
+        if not deals:
+            return
+
+        # Group deals by position ID
+        position_deals = {}
+        for d in deals:
+            if d.magic == self.magic_number:
+                pid = d.position_id
+                if pid not in position_deals:
+                    position_deals[pid] = []
+                position_deals[pid].append(d)
+
+        # Clear and rebuild closed trades
+        self.closed_trades.clear()
+        self.realized_pnl = 0.0
+
+        for pid, d_list in position_deals.items():
+            d_list = sorted(d_list, key=lambda x: x.time)
+            
+            # Reconstruct closed trades where there are at least two deals (entry & exit)
+            if len(d_list) >= 2:
+                entry_deal = d_list[0]
+                exit_deal = d_list[-1]
+                
+                # Check exit type indicator to make sure it is closed
+                if exit_deal.entry in [mt5_ref.DEAL_ENTRY_OUT, mt5_ref.DEAL_ENTRY_OUT_BY, 1, 3]:
+                    pnl = sum(d.profit + d.commission + d.swap for d in d_list)
+                    pos_type = "BUY" if entry_deal.type == mt5_ref.DEAL_TYPE_BUY else "SELL"
+                    
+                    record = {
+                        "position_id": f"live_{pid}",
+                        "type": pos_type,
+                        "entry_price": entry_deal.price,
+                        "exit_price": exit_deal.price,
+                        "size": exit_deal.volume,
+                        "pnl": pnl,
+                        "entry_time": entry_deal.time,
+                        "exit_time": exit_deal.time,
+                        "commission": 0.0
+                    }
+                    self.closed_trades.append(record)
+                    self.realized_pnl += pnl
+
+        # Sort closed trades by exit time descending so newest shows first in UI
+        self.closed_trades = sorted(self.closed_trades, key=lambda x: x["exit_time"], reverse=True)

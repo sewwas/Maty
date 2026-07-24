@@ -422,29 +422,166 @@ def sync_active_market_primitives():
         active["strat_trailing"] = st.session_state.strat_trailing
         active["strat_trailing_dist"] = st.session_state.strat_trailing_dist
 
+def serialize_market_state(m_state):
+    broker = m_state["broker"]
+    bot = m_state["bot"]
+    
+    # Serialize open positions
+    ser_positions = {}
+    for pos_id, pos in broker.open_positions.items():
+        ser_positions[pos_id] = {
+            "position_id": pos.position_id,
+            "type": pos.type,
+            "entry_price": pos.entry_price,
+            "size": pos.size,
+            "entry_time": pos.entry_time
+        }
+        
+    # Serialize pending orders
+    ser_orders = {}
+    for order_id, o in broker.pending_orders.items():
+        ser_orders[order_id] = {
+            "order_id": o.order_id,
+            "type": o.type,
+            "trigger_price": o.trigger_price,
+            "size": o.size,
+            "timestamp": o.timestamp
+        }
+        
+    serialized = {
+        "last_price": m_state.get("last_price"),
+        "price_history": m_state.get("price_history", []),
+        "running": m_state.get("running", False),
+        "strat_offset": m_state.get("strat_offset"),
+        "strat_gap": m_state.get("strat_gap"),
+        "strat_is_percent": m_state.get("strat_is_percent"),
+        "strat_order_size": m_state.get("strat_order_size"),
+        "strat_size_multiplier": m_state.get("strat_size_multiplier"),
+        "strat_target_profit": m_state.get("strat_target_profit"),
+        "strat_sl": m_state.get("strat_sl"),
+        "strat_trailing": m_state.get("strat_trailing"),
+        "strat_trailing_dist": m_state.get("strat_trailing_dist"),
+        
+        # Broker details
+        "broker_class": broker.__class__.__name__,
+        "broker_balance": getattr(broker, "_balance", 10000.0) if broker.__class__.__name__ == "SimulatedBroker" else 0.0,
+        "broker_realized_pnl": broker.realized_pnl,
+        "broker_closed_trades": broker.closed_trades,
+        "broker_open_positions": ser_positions,
+        "broker_pending_orders": ser_orders,
+        "broker_login": getattr(broker, "login", 0),
+        "broker_server": getattr(broker, "server", ""),
+        "broker_suffix": getattr(broker, "symbol_suffix", ""),
+        
+        # Bot details
+        "bot_deployed": bot.deployed,
+        "bot_deploy_price": bot.deploy_price,
+        "bot_current_cycle_id": bot.current_cycle_id,
+        "bot_cycle_start_time": bot.cycle_start_time,
+        "bot_cycle_history": bot.cycle_history
+    }
+    return serialized
+
+def deserialize_market_state(ser, symbol):
+    from core.engine import SimulatedBroker, BreakoutGridBot, Position, Order
+    from core.mt5_broker import MT5Broker
+    
+    # Recreate Broker
+    b_class = ser.get("broker_class", "SimulatedBroker")
+    if b_class == "MT5Broker":
+        broker = MT5Broker(
+            login=ser.get("broker_login", 0),
+            password=st.session_state.get("mt5_pwd", ""),
+            server=ser.get("broker_server", ""),
+            symbol=symbol,
+            symbol_suffix=ser.get("broker_suffix", ""),
+            magic_number=998877
+        )
+    else:
+        broker = SimulatedBroker(initial_balance=ser.get("broker_balance", 10000.0))
+        
+    broker.realized_pnl = ser.get("broker_realized_pnl", 0.0)
+    broker.closed_trades = ser.get("broker_closed_trades", [])
+    
+    # Recreate broker open positions
+    broker.open_positions = {}
+    for pos_id, pos_dict in ser.get("broker_open_positions", {}).items():
+        pos = Position(pos_dict["type"], pos_dict["entry_price"], pos_dict["size"], pos_dict["entry_time"])
+        pos.position_id = pos_dict["position_id"]
+        broker.open_positions[pos_id] = pos
+        if b_class == "MT5Broker":
+            try:
+                # Populate ticket mapping back
+                ticket_num = int(pos_id.replace("live_", ""))
+                broker.ticket_to_position_id[ticket_num] = pos_id
+            except:
+                pass
+                
+    # Recreate broker pending orders
+    broker.pending_orders = {}
+    for order_id, o_dict in ser.get("broker_pending_orders", {}).items():
+        o = Order(o_dict["type"], o_dict["trigger_price"], o_dict["size"], o_dict["timestamp"])
+        o.order_id = o_dict["order_id"]
+        broker.pending_orders[order_id] = o
+        if b_class == "MT5Broker":
+            try:
+                broker.ticket_to_order_id[int(order_id)] = order_id
+            except:
+                pass
+                
+    # Recreate Bot
+    bot = BreakoutGridBot(
+        broker,
+        grid_levels=10,
+        grid_gap=ser["strat_gap"],
+        trap_offset=ser["strat_offset"],
+        order_size=ser["strat_order_size"],
+        order_size_multiplier=ser["strat_size_multiplier"],
+        target_profit=ser["strat_target_profit"],
+        auto_restart=True,
+        is_percent=ser["strat_is_percent"],
+        stop_loss=ser["strat_sl"],
+        max_cycle_duration=float('inf'),
+        cancel_opposite_on_trigger=False,
+        use_trailing_stop=ser["strat_trailing"],
+        trailing_stop_distance=ser["strat_trailing_dist"]
+    )
+    
+    bot.deployed = ser["bot_deployed"]
+    bot.deploy_price = ser["bot_deploy_price"]
+    bot.current_cycle_id = ser["bot_current_cycle_id"]
+    bot.cycle_start_time = ser["bot_cycle_start_time"]
+    bot.cycle_history = ser["bot_cycle_history"]
+    
+    m_state = {
+        "broker": broker,
+        "bot": bot,
+        "price_history": ser["price_history"],
+        "last_price": ser["last_price"],
+        "running": ser["running"],
+        "strat_offset": ser["strat_offset"],
+        "strat_gap": ser["strat_gap"],
+        "strat_is_percent": ser["strat_is_percent"],
+        "strat_order_size": ser["strat_order_size"],
+        "strat_size_multiplier": ser["strat_size_multiplier"],
+        "strat_target_profit": ser["strat_target_profit"],
+        "strat_sl": ser["strat_sl"],
+        "strat_trailing": ser["strat_trailing"],
+        "strat_trailing_dist": ser["strat_trailing_dist"]
+    }
+    return m_state
+
 def save_bot_state():
     try:
         if "markets" in st.session_state:
             sync_active_market_primitives()
             
-            # Re-bind custom classes to the currently imported versions to prevent Streamlit pickle errors on hot-reload
-            from core.engine import SimulatedBroker, BreakoutGridBot
-            from core.mt5_broker import MT5Broker
-            for symbol, m_state in list(st.session_state.markets.items()):
-                broker_obj = m_state.get("broker")
-                if broker_obj:
-                    if broker_obj.__class__.__name__ == "SimulatedBroker" and broker_obj.__class__ != SimulatedBroker:
-                        broker_obj.__class__ = SimulatedBroker
-                    elif broker_obj.__class__.__name__ == "MT5Broker" and broker_obj.__class__ != MT5Broker:
-                        broker_obj.__class__ = MT5Broker
+            serialized_markets = {}
+            for sym, m_state in st.session_state.markets.items():
+                serialized_markets[sym] = serialize_market_state(m_state)
                 
-                bot_obj = m_state.get("bot")
-                if bot_obj:
-                    if bot_obj.__class__.__name__ == "BreakoutGridBot" and bot_obj.__class__ != BreakoutGridBot:
-                        bot_obj.__class__ = BreakoutGridBot
-            
             state = {
-                "markets": st.session_state.markets,
+                "markets": serialized_markets,
                 "live_symbol": st.session_state.live_symbol,
                 "mt5_pwd": st.session_state.get("mt5_pwd", "")
             }
@@ -462,75 +599,16 @@ def load_bot_state() -> bool:
     if os.path.exists(STATE_FILE):
         try:
             with open(STATE_FILE, "rb") as f:
-                class CustomUnpickler(pickle.Unpickler):
-                    def find_class(self, module, name):
-                        if module == "core.engine":
-                            import core.engine
-                            return getattr(core.engine, name)
-                        elif module == "core.mt5_broker":
-                            import core.mt5_broker
-                            return getattr(core.mt5_broker, name)
-                        return super().find_class(module, name)
-                state = CustomUnpickler(f).load()
+                state = pickle.load(f)
             
             if "markets" in state:
-                st.session_state.markets = state["markets"]
                 st.session_state.live_symbol = state["live_symbol"]
                 st.session_state.mt5_pwd = state.get("mt5_pwd", "")
-                # Ensure zero fees on all loaded brokers and provide default strategy values if missing
-                for symbol, m_state in st.session_state.markets.items():
-                    if "broker" in m_state and m_state["broker"]:
-                        m_state["broker"].commission_pct = 0.0
-                        m_state["broker"].slippage_pct = 0.0
-                    if "strat_offset" not in m_state:
-                        m_state["strat_offset"] = 0.15
-                    if "strat_gap" not in m_state:
-                        m_state["strat_gap"] = 0.10
-                    if "strat_is_percent" not in m_state:
-                        m_state["strat_is_percent"] = True
-                    if "strat_order_size" not in m_state:
-                        m_state["strat_order_size"] = get_default_order_size(symbol)
-                    if "strat_size_multiplier" not in m_state:
-                        m_state["strat_size_multiplier"] = 1.0
-                    if "strat_target_profit" not in m_state:
-                        m_state["strat_target_profit"] = 10.0
-                    if "strat_sl" not in m_state:
-                        m_state["strat_sl"] = float('inf')
-                    if "strat_trailing" not in m_state:
-                        m_state["strat_trailing"] = False
-                    if "strat_trailing_dist" not in m_state:
-                        m_state["strat_trailing_dist"] = 1.5
-                return True
-            else:
-                # Migrate old format
-                live_sym = state.get("live_symbol", "BTCUSDT")
-                st.session_state.live_symbol = live_sym
                 
-                broker = state["broker"]
-                bot = state["bot"]
-                broker.commission_pct = 0.0
-                broker.slippage_pct = 0.0
-                bot.stop_loss = float('inf')
-                bot.max_cycle_duration = float('inf')
-                
-                st.session_state.markets = {
-                    live_sym: {
-                        "broker": broker,
-                        "bot": bot,
-                        "price_history": state["price_history"],
-                        "last_price": state["last_price"],
-                        "running": state.get("running", False),
-                        "strat_offset": 0.15,
-                        "strat_gap": 0.10,
-                        "strat_is_percent": True,
-                        "strat_order_size": get_default_order_size(live_sym),
-                        "strat_size_multiplier": 1.0,
-                        "strat_target_profit": 10.0,
-                        "strat_sl": float('inf'),
-                        "strat_trailing": False,
-                        "strat_trailing_dist": 1.5
-                    }
-                }
+                # Reconstruct markets dictionary
+                st.session_state.markets = {}
+                for sym, ser_m in state["markets"].items():
+                    st.session_state.markets[sym] = deserialize_market_state(ser_m, sym)
                 return True
         except Exception as e:
             print(f"Error loading bot state: {e}")
@@ -679,9 +757,10 @@ st.session_state.price_history = active_market["price_history"]
 st.session_state.last_price = active_market["last_price"]
 st.session_state.running = active_market["running"]
 
-# Synchronize active orders and positions with MT5 on every script execution to keep UI tables populated even when bot is paused
 try:
     st.session_state.broker.sync()
+    if hasattr(st.session_state.bot, "sync_cycle_history_from_trades"):
+        st.session_state.bot.sync_cycle_history_from_trades()
 except Exception as e:
     print(f"Failed to synchronize broker state: {e}")
 

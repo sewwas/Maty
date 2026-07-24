@@ -378,3 +378,66 @@ class BreakoutGridBot:
             return cycle_summary
 
         return None
+
+    def sync_cycle_history_from_trades(self):
+        """
+        Reconstructs cycle_history from the broker's closed_trades list by grouping
+        trades that exited at the same time.
+        """
+        if not self.broker.closed_trades:
+            self.cycle_history = []
+            return
+
+        # Sort trades by exit time ascending
+        trades = sorted(self.broker.closed_trades, key=lambda x: x["exit_time"])
+        
+        # Group trades by exit time (within 3 seconds margin)
+        cycles = []
+        current_cycle_trades = []
+        
+        for t in trades:
+            if not current_cycle_trades:
+                current_cycle_trades.append(t)
+            else:
+                last_t = current_cycle_trades[-1]
+                if abs(t["exit_time"] - last_t["exit_time"]) <= 3.0:
+                    current_cycle_trades.append(t)
+                else:
+                    cycles.append(current_cycle_trades)
+                    current_cycle_trades = [t]
+        if current_cycle_trades:
+            cycles.append(current_cycle_trades)
+
+        # Build cycle history summaries
+        self.cycle_history = []
+        for idx, c_trades in enumerate(cycles):
+            pnl = sum(t["pnl"] for t in c_trades)
+            exit_time = c_trades[-1]["exit_time"]
+            start_time = min(t["entry_time"] for t in c_trades)
+            
+            # Estimate deploy price as average entry price
+            deploy_price = sum(t["entry_price"] for t in c_trades) / len(c_trades)
+            exit_price = c_trades[-1]["exit_price"]
+            
+            # Determine reason
+            if pnl >= getattr(self, 'target_profit', 10.0) * 0.9:
+                reason = "TARGET_PROFIT"
+            elif pnl <= -getattr(self, 'stop_loss', 100.0) * 0.9:
+                reason = "STOP_LOSS"
+            else:
+                reason = "MANUAL / EXIT"
+                
+            summary = {
+                "cycle_id": idx + 1,
+                "deploy_price": deploy_price,
+                "exit_price": exit_price,
+                "pnl": pnl,
+                "trades_count": len(c_trades),
+                "start_time": start_time,
+                "exit_time": exit_time,
+                "exit_reason": reason
+            }
+            self.cycle_history.append(summary)
+            
+        # Reverse to show newest cycle first in UI
+        self.cycle_history.reverse()
