@@ -1296,7 +1296,7 @@ fig.add_hline(
 )
 
 # Trap levels lines
-if True:  # Plot pending orders whenever they exist in broker state
+if broker_instance.pending_orders:
     # Place buy/sell stops in chart
     for o in list(broker_instance.pending_orders.values()):
         if o.type == "BUY_STOP":
@@ -1319,6 +1319,64 @@ if True:  # Plot pending orders whenever they exist in broker state
                 annotation_position="bottom left",
                 annotation_font=dict(size=8, color=line_color)
             )
+else:
+    # Render proposed preview traps on chart before deployment to MT5
+    if st.session_state.strat_is_percent:
+        offset_val = curr_price * (st.session_state.strat_offset / 100.0)
+        gap_val = curr_price * (st.session_state.strat_gap / 100.0)
+    else:
+        offset_val = st.session_state.strat_offset
+        gap_val = st.session_state.strat_gap
+
+    # Proposed BUY STOP levels
+    for i in range(10):
+        trigger_price = curr_price + offset_val + (i * gap_val)
+        if broker_type == "Exness MT5 Live" and broker_instance.ensure_connected():
+            import MetaTrader5 as mt5_ref
+            exness_symbol = broker_instance.get_exness_symbol(broker_instance.symbol)
+            tick = mt5_ref.symbol_info_tick(exness_symbol)
+            info = mt5_ref.symbol_info(exness_symbol)
+            if tick and info:
+                spread_pts = (tick.ask - tick.bid) / info.point if info.point > 0 else 0
+                stop_level_pts = int(max(info.trade_stops_level, spread_pts * 2.5)) + 2
+                min_allowed = tick.ask + stop_level_pts * info.point
+                if trigger_price < min_allowed:
+                    trigger_price = min_allowed
+        
+        line_color = "rgba(59, 130, 246, 0.15)" if IS_DARK else "rgba(37, 99, 235, 0.15)"
+        fig.add_hline(
+            y=trigger_price,
+            line_dash="dot",
+            line_color=line_color,
+            annotation_text=f"Proposed BUY STOP #{i+1}: ${trigger_price:.2f}",
+            annotation_position="top left",
+            annotation_font=dict(size=7, color=line_color)
+        )
+
+    # Proposed SELL STOP levels
+    for i in range(10):
+        trigger_price = curr_price - offset_val - (i * gap_val)
+        if broker_type == "Exness MT5 Live" and broker_instance.ensure_connected():
+            import MetaTrader5 as mt5_ref
+            exness_symbol = broker_instance.get_exness_symbol(broker_instance.symbol)
+            tick = mt5_ref.symbol_info_tick(exness_symbol)
+            info = mt5_ref.symbol_info(exness_symbol)
+            if tick and info:
+                spread_pts = (tick.ask - tick.bid) / info.point if info.point > 0 else 0
+                stop_level_pts = int(max(info.trade_stops_level, spread_pts * 2.5)) + 2
+                max_allowed = tick.bid - stop_level_pts * info.point
+                if trigger_price > max_allowed:
+                    trigger_price = max_allowed
+        
+        line_color = "rgba(245, 158, 11, 0.15)" if IS_DARK else "rgba(217, 119, 6, 0.15)"
+        fig.add_hline(
+            y=trigger_price,
+            line_dash="dot",
+            line_color=line_color,
+            annotation_text=f"Proposed SELL STOP #{i+1}: ${trigger_price:.2f}",
+            annotation_position="bottom left",
+            annotation_font=dict(size=7, color=line_color)
+        )
 
 # Plot open positions
 for pos_id, pos in list(broker_instance.open_positions.items()):
@@ -1448,15 +1506,30 @@ with col_tables2:
         </div>
         """
     else:
-        table_html = """
-        <div class="table-wrap">
-            <h4>Active Grid Traps (Pending Orders)</h4>
-            <div class="empty-state">
-                <div class="empty-state-icon">◇</div>
-                No pending traps deployed in the market
+        is_mt5 = (broker_instance.__class__.__name__ == "MT5Broker")
+        if is_mt5 and not st.session_state.running:
+            table_html = """
+            <div class="table-wrap" style="border-color: rgba(245, 158, 11, 0.25);">
+                <h4>Active Grid Traps (Pending Orders)</h4>
+                <div class="empty-state">
+                    <div class="empty-state-icon" style="color: #f59e0b; text-shadow: 0 0 10px rgba(245, 158, 11, 0.2);">🔌</div>
+                    <div style="font-weight: 600; color: #f59e0b; margin-bottom: 4px;">Exness Account Linked</div>
+                    <div style="font-size: 0.72rem; max-width: 260px; margin: 0 auto; color: var(--text-muted);">
+                        Click <strong style="color: var(--text-color);">▶ START BOT</strong> to deploy the breakout grid traps on your Exness MT5 terminal!
+                    </div>
+                </div>
             </div>
-        </div>
-        """
+            """
+        else:
+            table_html = """
+            <div class="table-wrap">
+                <h4>Active Grid Traps (Pending Orders)</h4>
+                <div class="empty-state">
+                    <div class="empty-state-icon">◇</div>
+                    No pending traps deployed in the market
+                </div>
+            </div>
+            """
     st.markdown(textwrap.dedent(table_html), unsafe_allow_html=True)
 
 # 12. HISTORY LOGS TABS
