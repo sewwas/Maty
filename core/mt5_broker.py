@@ -332,6 +332,18 @@ class MT5Broker:
             return None
         pos = positions[0]
 
+        # Determine filling mode based on symbol properties
+        filling_mode = mt5.ORDER_FILLING_FOK  # Default fallback
+        info = mt5.symbol_info(pos.symbol)
+        if info is not None:
+            filling_flags = info.type_filling_mode
+            if filling_flags & mt5.SYMBOL_FILLING_FOK:
+                filling_mode = mt5.ORDER_FILLING_FOK
+            elif filling_flags & mt5.SYMBOL_FILLING_IOC:
+                filling_mode = mt5.ORDER_FILLING_IOC
+            else:
+                filling_mode = mt5.ORDER_FILLING_RETURN
+
         # Opposite type to close it
         close_type = mt5.ORDER_TYPE_SELL if pos.type == mt5.POSITION_TYPE_BUY else mt5.ORDER_TYPE_BUY
         
@@ -346,10 +358,10 @@ class MT5Broker:
             "type": close_type,
             "position": pos.ticket,
             "price": price,
-            "deviation": 20,
+            "deviation": 100,  # Increased deviation to 100 points for immediate execution
             "magic": self.magic_number,
             "comment": "Maty Close Position",
-            "type_filling": mt5.ORDER_FILLING_IOC,
+            "type_filling": filling_mode,
         }
 
         result = mt5.order_send(request)
@@ -357,7 +369,21 @@ class MT5Broker:
             raise RuntimeError(f"MT5 order_send returned None when closing position {ticket}. Last error: {mt5.last_error()}")
             
         success_codes = [mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_PLACED]
-        if result.retcode in success_codes:
+        
+        # Fallback loop for alternative filling modes if invalid fill occurs
+        if result.retcode in [mt5.TRADE_RETCODE_INVALID_FILL, 10014]:
+            fallback_modes = [mt5.ORDER_FILLING_FOK, mt5.ORDER_FILLING_IOC, mt5.ORDER_FILLING_RETURN]
+            for mode in fallback_modes:
+                if mode != filling_mode:
+                    request["type_filling"] = mode
+                    # Refresh tick price
+                    tick = mt5.symbol_info_tick(pos.symbol)
+                    request["price"] = tick.ask if close_type == mt5.ORDER_TYPE_BUY else tick.bid
+                    result = mt5.order_send(request)
+                    if result is not None and result.retcode in success_codes:
+                        break
+                        
+        if result is not None and result.retcode in success_codes:
             # Remove from local track
             self.ticket_to_position_id.pop(ticket, None)
             local_pos = self.open_positions.pop(position_id, None)
@@ -378,7 +404,7 @@ class MT5Broker:
             self.realized_pnl += pnl
             return record
         else:
-            print(f"Failed to close position {ticket}: {result.comment}")
+            print(f"Failed to close position {ticket}: {getattr(result, 'comment', 'N/A')} (Retcode: {getattr(result, 'retcode', 'N/A')})")
         return None
 
     def close_all_positions(self, exit_price: float, timestamp: float, symbol: str = None) -> List[dict]:
