@@ -159,20 +159,22 @@ class MT5Broker:
                 ask = tick.ask
                 point = info.point
                 # Minimum allowed distance in price points (trade_stops_level)
-                # We add 2 points safety margin to avoid issues with millisecond price ticks
-                stop_level_pts = info.trade_stops_level + 2
+                # Exness uses dynamic stop levels that are often reported as 0, so we enforce
+                # a minimum distance of at least 2.5 times the current spread in points, plus 2 points margin.
+                spread_pts = (ask - bid) / point if point > 0 else 0
+                stop_level_pts = int(max(info.trade_stops_level, spread_pts * 2.5)) + 2
                 stop_level_dist = stop_level_pts * point
                 
                 if type == "BUY_STOP":
                     min_allowed_price = ask + stop_level_dist
                     if trigger_price < min_allowed_price:
                         trigger_price = min_allowed_price
-                        print(f"Adjusted BUY_STOP trigger price to {trigger_price} to satisfy MT5 Stop Level ({stop_level_pts} pts).")
+                        print(f"Adjusted BUY_STOP trigger price to {trigger_price} to satisfy dynamic Stop Level ({stop_level_pts} pts).")
                 elif type == "SELL_STOP":
                     max_allowed_price = bid - stop_level_dist
                     if trigger_price > max_allowed_price:
                         trigger_price = max_allowed_price
-                        print(f"Adjusted SELL_STOP trigger price to {trigger_price} to satisfy MT5 Stop Level ({stop_level_pts} pts).")
+                        print(f"Adjusted SELL_STOP trigger price to {trigger_price} to satisfy dynamic Stop Level ({stop_level_pts} pts).")
 
             # 1. Round price to the nearest tick size (e.g. 0.01 or 0.1)
             tick_size = info.trade_tick_size
