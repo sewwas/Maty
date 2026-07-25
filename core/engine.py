@@ -219,7 +219,9 @@ class BreakoutGridBot:
         use_trailing_stop: bool = False,
         trailing_stop_distance: float = 15.0,
         use_bb_filter: bool = False,
-        bb_squeeze_threshold: float = 0.02
+        bb_squeeze_threshold: float = 0.02,
+        use_breakeven: bool = False,
+        breakeven_trigger: float = 0.5
     ):
         self.broker = broker
         self.grid_levels = grid_levels
@@ -237,14 +239,17 @@ class BreakoutGridBot:
         self.trailing_stop_distance = trailing_stop_distance
         self.use_bb_filter = use_bb_filter
         self.bb_squeeze_threshold = bb_squeeze_threshold
+        self.use_breakeven = use_breakeven
+        self.breakeven_trigger = breakeven_trigger  # fraction of target_profit that activates breakeven (0.5 = 50%)
 
         self.deployed = False
         self.deploy_price = 0.0
         self.current_cycle_id = 1
         
-        # History of cycles: {cycle_id, start_price, exit_price, pnl, trades_count, start_time, exit_time}
         self.cycle_history = []
         self.cycle_start_time = None
+        self.max_floating_pnl = -float("inf")
+        self.breakeven_activated = False  # True once pnl has crossed the breakeven threshold
 
     def deploy_traps(self, current_price: float, timestamp: float, bb_width: float = None):
         """
@@ -323,12 +328,23 @@ class BreakoutGridBot:
         target_hit = False
         trailing_stop_hit = False
         stop_loss_hit = False
+        breakeven_hit = False
         timeout_hit = (timestamp - self.cycle_start_time) >= self.max_cycle_duration
 
         if len(self.broker.open_positions) > 0:
             # Update max PnL
             if float_pnl > getattr(self, 'max_floating_pnl', -float("inf")):
                 self.max_floating_pnl = float_pnl
+
+            # Activate breakeven protection once pnl crosses the threshold (e.g. 50% of target)
+            if self.use_breakeven and not self.breakeven_activated:
+                if float_pnl >= self.target_profit * self.breakeven_trigger:
+                    self.breakeven_activated = True
+
+            # If breakeven was activated and price has now dropped back near zero, exit to protect capital
+            if self.use_breakeven and self.breakeven_activated:
+                if float_pnl <= 0.0:
+                    breakeven_hit = True
 
             if self.use_trailing_stop:
                 if self.max_floating_pnl > 0:
@@ -341,12 +357,16 @@ class BreakoutGridBot:
             if float_pnl <= -self.stop_loss:
                 stop_loss_hit = True
 
-        if target_hit or trailing_stop_hit or stop_loss_hit or timeout_hit:
+        if target_hit or trailing_stop_hit or stop_loss_hit or timeout_hit or breakeven_hit:
             # Determine reason
             if trailing_stop_hit: reason = "TRAILING_STOP"
             elif target_hit: reason = "TARGET_PROFIT"
+            elif breakeven_hit: reason = "BREAKEVEN"
             elif stop_loss_hit: reason = "STOP_LOSS"
             else: reason = "TIMEOUT"
+            
+            # Reset breakeven state for next cycle
+            self.breakeven_activated = False
             
             # Close cycle
             closed_trades = self.broker.close_all_positions(current_price, timestamp)

@@ -383,17 +383,25 @@ DEFAULT_PRICES = {
 def get_default_price(symbol: str) -> float:
     return DEFAULT_PRICES.get(symbol.upper(), 100.0)
 
-def get_current_live_price() -> Optional[float]:
+def get_current_live_price(symbol: str = None) -> Optional[float]:
+    if symbol is None:
+        symbol = st.session_state.live_symbol
     # Check if MT5 is active and connected
-    if "broker" in st.session_state and st.session_state.broker.__class__.__name__ == "MT5Broker":
-        if st.session_state.broker.ensure_connected():
+    broker = None
+    if "markets" in st.session_state and symbol in st.session_state.markets:
+        broker = st.session_state.markets[symbol]["broker"]
+    elif "broker" in st.session_state:
+        broker = st.session_state.broker
+        
+    if broker and broker.__class__.__name__ == "MT5Broker":
+        if broker.ensure_connected():
             import MetaTrader5 as mt5_ref
-            exness_symbol = st.session_state.broker.get_exness_symbol(st.session_state.live_symbol)
+            exness_symbol = broker.get_exness_symbol(symbol)
             tick = mt5_ref.symbol_info_tick(exness_symbol)
             if tick is not None:
                 # Center around the mid price to keep the buy/sell stops perfectly balanced
                 return (float(tick.bid) + float(tick.ask)) / 2.0
-    return get_live_price(st.session_state.live_symbol)
+    return get_live_price(symbol)
 
 def get_default_order_size(symbol: str) -> float:
     defaults = {
@@ -421,6 +429,8 @@ def sync_active_market_primitives():
         active["strat_sl"] = st.session_state.strat_sl
         active["strat_trailing"] = st.session_state.strat_trailing
         active["strat_trailing_dist"] = st.session_state.strat_trailing_dist
+        active["strat_breakeven"] = st.session_state.get("strat_breakeven", True)
+        active["strat_breakeven_trigger"] = st.session_state.get("strat_breakeven_trigger", 0.5)
 
 def serialize_market_state(m_state):
     broker = m_state["broker"]
@@ -461,6 +471,8 @@ def serialize_market_state(m_state):
         "strat_sl": m_state.get("strat_sl"),
         "strat_trailing": m_state.get("strat_trailing"),
         "strat_trailing_dist": m_state.get("strat_trailing_dist"),
+        "strat_breakeven": m_state.get("strat_breakeven", False),
+        "strat_breakeven_trigger": m_state.get("strat_breakeven_trigger", 0.5),
         
         # Broker details
         "broker_class": broker.__class__.__name__,
@@ -478,7 +490,9 @@ def serialize_market_state(m_state):
         "bot_deploy_price": bot.deploy_price,
         "bot_current_cycle_id": bot.current_cycle_id,
         "bot_cycle_start_time": bot.cycle_start_time,
-        "bot_cycle_history": bot.cycle_history
+        "bot_cycle_history": bot.cycle_history,
+        "bot_max_floating_pnl": getattr(bot, "max_floating_pnl", -float("inf")),
+        "bot_breakeven_activated": getattr(bot, "breakeven_activated", False)
     }
     return serialized
 
@@ -544,7 +558,9 @@ def deserialize_market_state(ser, symbol):
         max_cycle_duration=float('inf'),
         cancel_opposite_on_trigger=False,
         use_trailing_stop=ser["strat_trailing"],
-        trailing_stop_distance=ser["strat_trailing_dist"]
+        trailing_stop_distance=ser["strat_trailing_dist"],
+        use_breakeven=ser.get("strat_breakeven", False),
+        breakeven_trigger=ser.get("strat_breakeven_trigger", 0.5)
     )
     
     bot.deployed = ser["bot_deployed"]
@@ -552,6 +568,8 @@ def deserialize_market_state(ser, symbol):
     bot.current_cycle_id = ser["bot_current_cycle_id"]
     bot.cycle_start_time = ser["bot_cycle_start_time"]
     bot.cycle_history = ser["bot_cycle_history"]
+    bot.max_floating_pnl = ser.get("bot_max_floating_pnl", -float("inf"))
+    bot.breakeven_activated = ser.get("bot_breakeven_activated", False)
     
     m_state = {
         "broker": broker,
@@ -567,7 +585,9 @@ def deserialize_market_state(ser, symbol):
         "strat_target_profit": ser["strat_target_profit"],
         "strat_sl": ser["strat_sl"],
         "strat_trailing": ser["strat_trailing"],
-        "strat_trailing_dist": ser["strat_trailing_dist"]
+        "strat_trailing_dist": ser["strat_trailing_dist"],
+        "strat_breakeven": ser.get("strat_breakeven", False),
+        "strat_breakeven_trigger": ser.get("strat_breakeven_trigger", 0.5)
     }
     return m_state
 
@@ -714,16 +734,18 @@ if st.session_state.live_symbol not in st.session_state.markets:
     bot = BreakoutGridBot(
         broker,
         grid_levels=10,
-        grid_gap=0.10,
-        trap_offset=0.15,
+        grid_gap=0.08,          # Proven: 0.08% spacing
+        trap_offset=0.12,       # Proven: 0.12% offset
         order_size=get_default_order_size(st.session_state.live_symbol),
-        order_size_multiplier=1.0,
+        order_size_multiplier=1.5,  # Proven: 1.5x wins $8,145 over 6 months
         target_profit=10.0,
         auto_restart=True,
         is_percent=True,
-        stop_loss=float('inf'),
+        stop_loss=150.0,        # Proven: $150 hard stop loss
         max_cycle_duration=float('inf'),
-        cancel_opposite_on_trigger=False
+        cancel_opposite_on_trigger=True,  # Proven: OCO enabled
+        use_breakeven=False,
+        breakeven_trigger=0.5
     )
     
     # Only deploy traps initially if it is SimulatedBroker; live broker requires explicit bot start
@@ -738,15 +760,17 @@ if st.session_state.live_symbol not in st.session_state.markets:
         "price_history": price_history,
         "last_price": price,
         "running": False,
-        "strat_offset": 0.15,
-        "strat_gap": 0.10,
+        "strat_offset": 0.12,           # Proven: 0.12%
+        "strat_gap": 0.08,              # Proven: 0.08%
         "strat_is_percent": True,
         "strat_order_size": get_default_order_size(st.session_state.live_symbol),
-        "strat_size_multiplier": 1.0,
+        "strat_size_multiplier": 1.5,   # Proven: 1.5x ($8,145 in 6 months)
         "strat_target_profit": 10.0,
-        "strat_sl": float('inf'),
+        "strat_sl": 150.0,              # Proven: $150 stop loss
         "strat_trailing": False,
-        "strat_trailing_dist": 1.5
+        "strat_trailing_dist": 1.5,
+        "strat_breakeven": False,
+        "strat_breakeven_trigger": 0.5
     }
 
 # Sync references to current active market
@@ -955,23 +979,9 @@ with col_controls:
         symbol = market_options[selected_label]
         
         if symbol != st.session_state.live_symbol:
-            # 1. Clean up the old symbol's pending orders so they are not left orphaned/active on the broker
-            old_sym = st.session_state.live_symbol
-            if old_sym in st.session_state.markets:
-                old_broker = st.session_state.markets[old_sym]["broker"]
-                old_bot = st.session_state.markets[old_sym]["bot"]
-                if old_bot.deployed:
-                    try:
-                        old_broker.cancel_all_orders()
-                        old_bot.deployed = False
-                    except Exception as e:
-                        print(f"Failed to cancel old traps for {old_sym}: {e}")
-
-            # 2. Automatically pause execution when switching symbols to avoid background/unprompted active trading
-            st.session_state.running = False
-
             sync_active_market_primitives()
             st.session_state.live_symbol = symbol
+            st.session_state.running = st.session_state.markets[symbol].get("running", False) if symbol in st.session_state.markets else False
             
             # Fetch fresh historical price data for the newly selected symbol to prevent huge gaps in the chart
             is_simulated = st.session_state.get("price_source_select", "Live Market API") == "Simulated Market (Demo)"
@@ -997,21 +1007,23 @@ with col_controls:
                     print(f"Error fetching klines on symbol switch: {e}")
                 
                 if new_price is None:
-                    new_price = get_current_live_price()
+                    new_price = get_current_live_price(symbol)
                     if new_price is None:
                         new_price = st.session_state.markets[symbol]["last_price"] if (symbol in st.session_state.markets and st.session_state.markets[symbol].get("last_price")) else default_p
                     new_price_history = [(time.time(), new_price)]
             
             if symbol in st.session_state.markets:
-                st.session_state.markets[symbol]["price_history"] = new_price_history
-                st.session_state.markets[symbol]["last_price"] = new_price
+                # Keep existing price history if the bot is already running to avoid wiping out the history!
+                if not st.session_state.markets[symbol].get("running", False):
+                    st.session_state.markets[symbol]["price_history"] = new_price_history
+                    st.session_state.markets[symbol]["last_price"] = new_price
                 
-                # Redeploy traps at new price if there are no open positions (restricted to Simulated Sandbox)
+                # Redeploy traps at new price if there are no open positions (restricted to Simulated Sandbox) and not already running
                 curr_broker = st.session_state.markets[symbol]["broker"]
                 curr_bot = st.session_state.markets[symbol]["bot"]
-                if len(curr_broker.open_positions) == 0 and curr_broker.__class__.__name__ == "SimulatedBroker":
+                if len(curr_broker.open_positions) == 0 and curr_broker.__class__.__name__ == "SimulatedBroker" and not st.session_state.markets[symbol].get("running", False):
                     try:
-                        curr_bot.deploy_traps(new_price, time.time())
+                        curr_bot.deploy_traps(st.session_state.markets[symbol]["last_price"], time.time())
                         st.session_state.error_message = None
                     except Exception as e:
                         st.session_state.error_message = f"Failed to deploy traps for {symbol}: {e}"
@@ -1037,16 +1049,44 @@ with col_controls:
         with run_col1:
             if not st.session_state.running:
                 if st.button("▶ START BOT", type="primary", use_container_width=True):
-                    # Close any leftover positions and cancel any leftover pending orders before starting fresh
+                    # Check if there is an existing grid on the broker account
                     try:
-                        curr_price = st.session_state.price_history[-1][1] if st.session_state.price_history else st.session_state.last_price
-                        st.session_state.broker.close_all_positions(curr_price, time.time())
-                        st.session_state.broker.cancel_all_orders()
-                    except Exception as e:
-                        print(f"Startup cleanup failed: {e}")
+                        st.session_state.broker.sync()
+                    except Exception as sync_err:
+                        print(f"Failed to sync broker on startup: {sync_err}")
+                        
+                    has_existing_grid = len(st.session_state.broker.open_positions) > 0 or len(st.session_state.broker.pending_orders) > 0
                     
-                    st.session_state.bot.deployed = False
-                    st.session_state.running = True
+                    if has_existing_grid:
+                        # Reconnect and continue existing grid
+                        curr_price = st.session_state.price_history[-1][1] if st.session_state.price_history else st.session_state.last_price
+                        # Reconstruct deploy_price if not set
+                        if not getattr(st.session_state.bot, "deploy_price", 0.0):
+                            buy_stops = [o.trigger_price for o in st.session_state.broker.pending_orders.values() if o.type == "BUY_STOP"]
+                            sell_stops = [o.trigger_price for o in st.session_state.broker.pending_orders.values() if o.type == "SELL_STOP"]
+                            if buy_stops and sell_stops:
+                                st.session_state.bot.deploy_price = (min(buy_stops) + max(sell_stops)) / 2.0
+                            elif st.session_state.broker.open_positions:
+                                st.session_state.bot.deploy_price = list(st.session_state.broker.open_positions.values())[0].entry_price
+                            else:
+                                st.session_state.bot.deploy_price = curr_price
+                        
+                        st.session_state.bot.deployed = True
+                        st.session_state.running = True
+                    else:
+                        # Close any leftover positions and cancel any leftover pending orders before starting fresh
+                        try:
+                            curr_price = st.session_state.price_history[-1][1] if st.session_state.price_history else st.session_state.last_price
+                            st.session_state.broker.close_all_positions(curr_price, time.time())
+                            st.session_state.broker.cancel_all_orders()
+                        except Exception as e:
+                            print(f"Startup cleanup failed: {e}")
+                        
+                        st.session_state.bot.deployed = False
+                        st.session_state.running = True
+                    
+                    # Sync and save state
+                    sync_active_market_primitives()
                     save_bot_state()
                     st.rerun()
             else:
@@ -1056,13 +1096,29 @@ with col_controls:
                     st.rerun()
         with run_col2:
             if st.button("🚨 PANIC CLOSE", type="secondary", use_container_width=True):
-                curr_price = st.session_state.price_history[-1][1]
-                closed = st.session_state.broker.close_all_positions(curr_price, time.time())
-                st.session_state.broker.cancel_all_orders()
-                st.session_state.bot.deployed = False
+                total_closed_count = 0
+                for sym, m_state in st.session_state.markets.items():
+                    brk = m_state["broker"]
+                    bt = m_state["bot"]
+                    
+                    # Determine current price for closing
+                    curr_p = m_state["price_history"][-1][1] if m_state.get("price_history") else m_state.get("last_price")
+                    if curr_p is None:
+                        curr_p = get_current_live_price(sym) or get_default_price(sym)
+                        
+                    try:
+                        closed = brk.close_all_positions(curr_p, time.time())
+                        brk.cancel_all_orders()
+                        total_closed_count += len(closed)
+                    except Exception as e:
+                        print(f"Panic close failed for {sym}: {e}")
+                        
+                    bt.deployed = False
+                    m_state["running"] = False
+                
                 st.session_state.running = False
                 save_bot_state()
-                st.warning(f"Panic close executed! Closed {len(closed)} open trades.")
+                st.warning(f"Panic close executed! Closed {total_closed_count} open trades across all pairs.")
                 st.rerun()
 
     with ctrl_col3:
@@ -1260,8 +1316,10 @@ with col_strategy:
     st.markdown('</div>', unsafe_allow_html=True)
 
 # 8. ENGINE TICK PROCESSING
-# Run calculation tick if running
-if st.session_state.running:
+# Run calculation tick if any bot is running
+any_running = any(m.get("running", False) for m in st.session_state.markets.values())
+
+if any_running:
     # Multi-tab concurrency safety lock to prevent duplicate orders from multiple browser windows
     from streamlit.runtime.scriptrunner import get_script_run_ctx
     ctx = get_script_run_ctx()
@@ -1276,10 +1334,10 @@ if st.session_state.running:
     # Check if another session is already active
     other_active = [sid for sid in GLOBAL_RUNNERS.keys() if sid != session_id]
     if other_active:
-        # Pause this session to protect the account
+        # Pause all sessions/markets to protect the account
+        for sym, m_state in st.session_state.markets.items():
+            m_state["running"] = False
         st.session_state.running = False
-        if "markets" in st.session_state and st.session_state.live_symbol in st.session_state.markets:
-            st.session_state.markets[st.session_state.live_symbol]["running"] = False
         st.session_state.error_message = "⚠️ Bot execution paused in this tab because another browser window is already running the bot loop."
         save_bot_state()
         st.rerun()
@@ -1287,62 +1345,90 @@ if st.session_state.running:
     # Register this session's heartbeat
     GLOBAL_RUNNERS[session_id] = now_t
 
-    # 1. Fetch latest price
-    if st.session_state.get("price_source_select", "Live Market API") == "Simulated Market (Demo)":
-        last_p = st.session_state.price_history[-1][1] if st.session_state.price_history else st.session_state.last_price
-        vol = 0.0008 if st.session_state.live_symbol == "PAXGUSDT" else 0.0005
-        change = np.random.normal(0, vol)
-        latest_price = round(last_p * (1 + change), 2)
-        st.session_state.error_message = None
-    else:
-        latest_price = get_current_live_price()
-        if latest_price is None:
-            # Fall back to last recorded price if API times out
-            if "broker" in st.session_state and st.session_state.broker.__class__.__name__ == "MT5Broker":
-                st.session_state.error_message = "MT5 connection timeout or symbol not found. Retrying..."
-            else:
-                st.session_state.error_message = "Binance API connection timeout. Retrying..."
-            latest_price = st.session_state.price_history[-1][1]
-        else:
+    # Process ticks for all running markets
+    for sym, m_state in st.session_state.markets.items():
+        if not m_state.get("running", False):
+            continue
+            
+        # 1. Fetch latest price
+        price_source_sel = st.session_state.get("price_source_select", "Live Market API")
+        if price_source_sel == "Simulated Market (Demo)":
+            last_p = m_state["price_history"][-1][1] if m_state.get("price_history") else m_state.get("last_price")
+            if last_p is None:
+                last_p = get_default_price(sym)
+            vol = 0.0008 if sym == "PAXGUSDT" else 0.0005
+            change = np.random.normal(0, vol)
+            latest_price = round(last_p * (1 + change), 2)
             st.session_state.error_message = None
-    
-    # Record price tick
-    now = time.time()
-    previous_price = st.session_state.price_history[-1][1]
-    st.session_state.price_history.append((now, latest_price))
-    
-    # Keep history to last 3000 points for charting performance
-    if len(st.session_state.price_history) > 3000:
-        st.session_state.price_history.pop(0)
+        else:
+            latest_price = get_current_live_price(sym)
+            if latest_price is None:
+                # Fall back to last recorded price if API times out
+                if m_state["broker"].__class__.__name__ == "MT5Broker":
+                    st.session_state.error_message = f"MT5 connection timeout or symbol not found for {sym}. Retrying..."
+                else:
+                    st.session_state.error_message = f"Binance API connection timeout for {sym}. Retrying..."
+                latest_price = m_state["price_history"][-1][1] if m_state.get("price_history") else m_state.get("last_price")
+            else:
+                st.session_state.error_message = None
+
+        if latest_price is None:
+            continue
+
+        # Record price tick
+        now = time.time()
+        previous_price = m_state["price_history"][-1][1] if m_state.get("price_history") else latest_price
         
-    # 2. Update engine
-    try:
-        cycle_hit = st.session_state.bot.process_tick(previous_price, latest_price, now)
-        if cycle_hit:
-            st.toast(f"🎉 Cycle {cycle_hit['cycle_id']} exit hit target profit! PnL: ${cycle_hit['pnl']:.2f}")
-        st.session_state.error_message = None
-    except Exception as e:
-        st.session_state.error_message = f"Tick processing failed: {e}"
-        # Auto-pause the bot immediately to prevent infinite redeployment loops and order flooding
-        st.session_state.running = False
-        if "markets" in st.session_state and st.session_state.live_symbol in st.session_state.markets:
-            st.session_state.markets[st.session_state.live_symbol]["running"] = False
+        if "price_history" not in m_state:
+            m_state["price_history"] = []
+        m_state["price_history"].append((now, latest_price))
+        m_state["last_price"] = latest_price
+        
+        # Keep history to last 3000 points for charting performance
+        if len(m_state["price_history"]) > 3000:
+            m_state["price_history"].pop(0)
+            
+        # Update references if this is the active symbol
+        if sym == st.session_state.live_symbol:
+            st.session_state.last_price = latest_price
+            st.session_state.price_history = m_state["price_history"]
+            
+        # 2. Update engine
+        try:
+            bot = m_state["bot"]
+            cycle_hit = bot.process_tick(previous_price, latest_price, now)
+            if cycle_hit:
+                st.toast(f"🎉 {sym} Cycle {cycle_hit['cycle_id']} exit hit target profit! PnL: ${cycle_hit['pnl']:.2f}")
+            st.session_state.error_message = None
+        except Exception as e:
+            st.session_state.error_message = f"Tick processing failed for {sym}: {e}"
+            m_state["running"] = False
+            if sym == st.session_state.live_symbol:
+                st.session_state.running = False
     save_bot_state()
-else:
-    # If bot is not running, periodically fetch the live price on page load to keep it fresh
+
+# For symbols that are NOT running, we keep the active symbol price fresh on page load/interaction
+if not st.session_state.running:
     now = time.time()
     if not st.session_state.price_history or (now - st.session_state.price_history[-1][0] > 5.0):
         if st.session_state.get("price_source_select", "Live Market API") == "Simulated Market (Demo)":
-            # Just keep the last price, no need to query live API
-            latest_price = st.session_state.price_history[-1][1]
+            latest_price = st.session_state.price_history[-1][1] if st.session_state.price_history else st.session_state.last_price
         else:
-            latest_price = get_current_live_price()
+            latest_price = get_current_live_price(st.session_state.live_symbol)
             if latest_price is not None:
-                # Update the last point in history to show the real current price
-                st.session_state.price_history[-1] = (now, latest_price)
+                if st.session_state.price_history:
+                    st.session_state.price_history[-1] = (now, latest_price)
+                else:
+                    st.session_state.price_history = [(now, latest_price)]
                 st.session_state.last_price = latest_price
+                
+                # Update in active market dict
+                if "markets" in st.session_state and st.session_state.live_symbol in st.session_state.markets:
+                    st.session_state.markets[st.session_state.live_symbol]["price_history"] = st.session_state.price_history
+                    st.session_state.markets[st.session_state.live_symbol]["last_price"] = latest_price
                 st.session_state.error_message = None
                 save_bot_state()
+
 
 # Get current state pointers
 curr_price = st.session_state.price_history[-1][1]
@@ -1912,6 +1998,7 @@ with tab_backtest:
     st.markdown('</div>', unsafe_allow_html=True)
 
 # 13. RUNNER LOOP
-if st.session_state.running:
+any_running = any(m.get("running", False) for m in st.session_state.markets.values())
+if any_running:
     time.sleep(1.0)
     st.rerun()

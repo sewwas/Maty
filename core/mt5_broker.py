@@ -204,7 +204,7 @@ class MT5Broker:
             "price": float(trigger_price),
             "deviation": 20,
             "magic": self.magic_number,
-            "comment": "Maty Breakout Grid",
+            "comment": f"Maty AI:{self.symbol}",
             "type_time": mt5.ORDER_TIME_GTC,
             "type_filling": mt5.ORDER_FILLING_RETURN,
         }
@@ -360,7 +360,7 @@ class MT5Broker:
             "price": price,
             "deviation": 100,  # Increased deviation to 100 points for immediate execution
             "magic": self.magic_number,
-            "comment": "Maty Close Position",
+            "comment": f"Maty Close:{self.symbol}",
             "type_filling": filling_mode,
         }
 
