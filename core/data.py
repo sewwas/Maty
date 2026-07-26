@@ -6,65 +6,132 @@ from typing import Optional, Tuple, List
 
 def get_live_price(symbol: str = "BTCUSDT") -> Optional[float]:
     """
-    Fetch the current price of a cryptocurrency from the public Binance REST API.
-    If it fails (e.g. US cloud hosting geo-blocking), falls back to Coinbase API.
+    Fetch the current price of a cryptocurrency from public REST APIs.
+    Tries Binance -> Coinbase -> OKX -> Bybit to ensure price availability across all regions/networks.
     """
+    sym = symbol.upper()
     # 1. Try Binance API
-    url = f"https://api.binance.com/api/v3/ticker/price"
-    params = {"symbol": symbol.upper()}
     try:
-        response = requests.get(url, params=params, timeout=3)
-        response.raise_for_status()
-        data = response.json()
-        return float(data["price"])
-    except Exception as e:
-        # 2. Fallback to Coinbase API (US Cloud-friendly)
-        base = symbol.upper().replace("USDT", "").replace("USD", "")
-        coinbase_url = f"https://api.coinbase.com/v2/prices/{base}-USD/spot"
-        try:
-            response = requests.get(coinbase_url, timeout=3)
-            response.raise_for_status()
+        url = "https://api.binance.com/api/v3/ticker/price"
+        response = requests.get(url, params={"symbol": sym}, timeout=1.5)
+        if response.status_code == 200:
             data = response.json()
-            return float(data["data"]["amount"])
-        except Exception as cb_err:
-            print(f"Error fetching live price for {symbol} from Binance ({e}) and Coinbase ({cb_err})")
-            return None
+            if "price" in data:
+                return float(data["price"])
+    except Exception:
+        pass
+
+    # 2. Fallback to Coinbase API
+    base = sym.replace("USDT", "").replace("USD", "")
+    try:
+        coinbase_url = f"https://api.coinbase.com/v2/prices/{base}-USD/spot"
+        response = requests.get(coinbase_url, timeout=1.5)
+        if response.status_code == 200:
+            data = response.json()
+            if "data" in data and "amount" in data["data"]:
+                return float(data["data"]["amount"])
+    except Exception:
+        pass
+
+    # 3. Fallback to OKX API
+    try:
+        okx_symbol = f"{base}-USDT"
+        okx_url = f"https://www.okx.com/api/v5/market/ticker?instId={okx_symbol}"
+        response = requests.get(okx_url, timeout=1.5)
+        if response.status_code == 200:
+            data = response.json()
+            if "data" in data and len(data["data"]) > 0 and "last" in data["data"][0]:
+                return float(data["data"][0]["last"])
+    except Exception:
+        pass
+
+    # 4. Fallback to Bybit API
+    try:
+        bybit_url = f"https://api.bybit.com/v5/market/tickers?category=spot&symbol={sym}"
+        response = requests.get(bybit_url, timeout=1.5)
+        if response.status_code == 200:
+            data = response.json()
+            if "result" in data and "list" in data["result"] and len(data["result"]["list"]) > 0:
+                return float(data["result"]["list"][0]["lastPrice"])
+    except Exception:
+        pass
+
+    print(f"Error fetching live price for {symbol} across all exchange APIs.")
+    return None
 
 def get_historical_klines(symbol: str = "BTCUSDT", interval: str = "1m", limit: int = 500) -> Optional[pd.DataFrame]:
     """
-    Fetch historical candlestick data from Binance API.
-    interval: '1m', '3m', '5m', '15m', '30m', '1h', '2h', '4h', '6h', '8h', '12h', '1d'
-    limit: max 1000
+    Fetch historical candlestick data from REST APIs.
+    Tries Binance -> Coinbase -> OKX -> Bybit fallback chain.
     """
-    url = "https://api.binance.com/api/v3/klines"
-    params = {
-        "symbol": symbol.upper(),
-        "interval": interval,
-        "limit": limit
-    }
+    sym = symbol.upper()
+    # 1. Try Binance API
     try:
-        response = requests.get(url, params=params, timeout=10)
-        response.raise_for_status()
-        data = response.json()
-        
-        # Parse fields
-        parsed_data = []
-        for item in data:
-            parsed_data.append([
-                float(item[0]) / 1000.0, # Convert open time ms to seconds Unix
-                float(item[1]),          # Open
-                float(item[2]),          # High
-                float(item[3]),          # Low
-                float(item[4]),          # Close
-                float(item[5])           # Volume
-            ])
-            
-        columns = ["timestamp", "open", "high", "low", "close", "volume"]
-        df = pd.DataFrame(parsed_data, columns=columns)
-        return df
-    except Exception as e:
-        print(f"Error fetching historical data for {symbol}: {e}")
-        return None
+        url = "https://api.binance.com/api/v3/klines"
+        params = {"symbol": sym, "interval": interval, "limit": limit}
+        response = requests.get(url, params=params, timeout=3.0)
+        if response.status_code == 200:
+            data = response.json()
+            parsed_data = []
+            for item in data:
+                parsed_data.append([
+                    float(item[0]) / 1000.0,
+                    float(item[1]),
+                    float(item[2]),
+                    float(item[3]),
+                    float(item[4]),
+                    float(item[5])
+                ])
+            return pd.DataFrame(parsed_data, columns=["timestamp", "open", "high", "low", "close", "volume"])
+    except Exception:
+        pass
+
+    # 2. Fallback to Coinbase API
+    base = sym.replace("USDT", "").replace("USD", "")
+    try:
+        cb_url = f"https://api.exchange.coinbase.com/products/{base}-USD/candles"
+        response = requests.get(cb_url, params={"granularity": 60}, timeout=3.0)
+        if response.status_code == 200:
+            data = response.json()
+            if isinstance(data, list) and len(data) > 0:
+                parsed_data = []
+                for item in reversed(data[:limit]):
+                    parsed_data.append([
+                        float(item[0]), # timestamp in seconds
+                        float(item[3]), # open
+                        float(item[2]), # high
+                        float(item[1]), # low
+                        float(item[4]), # close
+                        float(item[5])  # volume
+                    ])
+                return pd.DataFrame(parsed_data, columns=["timestamp", "open", "high", "low", "close", "volume"])
+    except Exception:
+        pass
+
+    # 3. Fallback to OKX API
+    try:
+        okx_symbol = f"{base}-USDT"
+        okx_url = f"https://www.okx.com/api/v5/market/candles?instId={okx_symbol}&limit={limit}"
+        response = requests.get(okx_url, timeout=3.0)
+        if response.status_code == 200:
+            data = response.json()
+            if "data" in data and len(data["data"]) > 0:
+                parsed_data = []
+                for item in reversed(data["data"]):
+                    parsed_data.append([
+                        float(item[0]) / 1000.0,
+                        float(item[1]), # open
+                        float(item[2]), # high
+                        float(item[3]), # low
+                        float(item[4]), # close
+                        float(item[5])  # volume
+                    ])
+                return pd.DataFrame(parsed_data, columns=["timestamp", "open", "high", "low", "close", "volume"])
+    except Exception:
+        pass
+
+    print(f"Error fetching historical data for {symbol} across all exchange APIs.")
+    return None
 
 def interpolate_ticks(df: pd.DataFrame) -> pd.DataFrame:
     """
@@ -105,20 +172,3 @@ def interpolate_ticks(df: pd.DataFrame) -> pd.DataFrame:
             
     return pd.DataFrame(ticks)
 
-def generate_simulated_ticks(start_price: float, num_ticks: int = 100, volatility: float = 0.0005, drift: float = 0.0) -> List[Tuple[float, float]]:
-    """
-    Generates a simulated random walk price path.
-    Returns a list of (timestamp, price) tuples.
-    """
-    ticks = []
-    current_price = start_price
-    current_time = time.time()
-    
-    for i in range(num_ticks):
-        # Log-normal random walk step
-        change = current_price * (np.random.normal(drift, volatility))
-        current_price += change
-        current_time += 1.0 # 1 second increments
-        ticks.append((current_time, current_price))
-        
-    return ticks

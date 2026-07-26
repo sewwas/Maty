@@ -1,4 +1,6 @@
+from typing import Optional
 import streamlit as st
+# Trigger hot reload 2
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
@@ -8,14 +10,17 @@ import textwrap
 import pickle
 import os
 
-# Global process-level shared state to prevent duplicate loop execution in multiple tabs
+# Global process-level shared state to prevent duplicate loop execution in multiple tabs.
+# NOTE: This dict lives in the Python process memory. A server restart clears it,
+# allowing a second tab to briefly claim the lock — acceptable since a restart = clean slate.
 if "GLOBAL_RUNNERS" not in globals():
-    GLOBAL_RUNNERS = {}
+    global GLOBAL_RUNNERS
+    GLOBAL_RUNNERS: dict = {}
 
 # Import core bot logic
-from core.engine import SimulatedBroker, BreakoutGridBot
-from core.mt5_broker import MT5Broker, MT5_AVAILABLE
-from core.data import get_live_price, get_historical_klines, interpolate_ticks, generate_simulated_ticks
+from core.mt5_broker import MT5Broker, SimulatedBroker, MT5_AVAILABLE
+from core.engine import BreakoutGridBot
+from core.data import get_live_price, get_historical_klines, interpolate_ticks
 
 # 1. PAGE CONFIGURATION
 st.set_page_config(
@@ -372,22 +377,32 @@ STATE_FILE = os.path.join(os.path.expanduser("~"), ".gemini", "antigravity-ide",
 os.makedirs(os.path.dirname(STATE_FILE), exist_ok=True)
 
 DEFAULT_PRICES = {
-    "BTCUSDT": 60000.0,
-    "ETHUSDT": 3300.0,
-    "SOLUSDT": 150.0,
-    "BNBUSDT": 580.0,
-    "DOGEUSDT": 0.12,
-    "PAXGUSDT": 2300.0
+    "BTCUSDT": 65000.0,
+    "ETHUSDT": 2500.0,
+    "SOLUSDT": 175.0,
+    "BNBUSDT": 600.0,
+    "DOGEUSDT": 0.14,
+    "PAXGUSDT": 2400.0
 }
 
 def get_default_price(symbol: str) -> float:
     return DEFAULT_PRICES.get(symbol.upper(), 100.0)
 
+def fmt_size(val: float) -> str:
+    if val is None:
+        return "0"
+    if val >= 100:
+        return f"{val:,.2f}".rstrip('0').rstrip('.')
+    elif val >= 1:
+        return f"{val:,.4f}".rstrip('0').rstrip('.')
+    else:
+        return f"{val:.6f}".rstrip('0').rstrip('.')
+
 def get_current_live_price(symbol: str = None) -> Optional[float]:
     if symbol is None:
         symbol = st.session_state.live_symbol
     # Check if MT5 is active and connected
-    broker = None
+    broker = None # type: ignore
     if "markets" in st.session_state and symbol in st.session_state.markets:
         broker = st.session_state.markets[symbol]["broker"]
     elif "broker" in st.session_state:
@@ -397,22 +412,36 @@ def get_current_live_price(symbol: str = None) -> Optional[float]:
         if broker.ensure_connected():
             import MetaTrader5 as mt5_ref
             exness_symbol = broker.get_exness_symbol(symbol)
+            mt5_ref.symbol_select(exness_symbol, True)
             tick = mt5_ref.symbol_info_tick(exness_symbol)
-            if tick is not None:
+            if tick is not None and getattr(tick, "bid", 0) > 0 and getattr(tick, "ask", 0) > 0:
                 # Center around the mid price to keep the buy/sell stops perfectly balanced
                 return (float(tick.bid) + float(tick.ask)) / 2.0
     return get_live_price(symbol)
 
+_sym_short = {
+    "BTCUSDT": "BTC",
+    "ETHUSDT": "ETH",
+    "SOLUSDT": "SOL",
+    "BNBUSDT": "BNB",
+    "DOGEUSDT": "DOGE",
+    "PAXGUSDT": "XAU"
+}
+
+GOLDEN_SETTINGS = {
+    "BTCUSDT": {"gap": 0.12, "offset": 0.18, "multiplier": 1.0, "order_size": 0.012, "target_profit": 10.0, "stop_loss": 250.0},
+    "ETHUSDT": {"gap": 0.12, "offset": 0.18, "multiplier": 1.0, "order_size": 0.12, "target_profit": 10.0, "stop_loss": 250.0},
+    "SOLUSDT": {"gap": 0.08, "offset": 0.12, "multiplier": 1.0, "order_size": 2.0, "target_profit": 10.0, "stop_loss": 150.0},
+    "BNBUSDT": {"gap": 0.18, "offset": 0.27, "multiplier": 1.0, "order_size": 0.08, "target_profit": 10.0, "stop_loss": 150.0},
+    "DOGEUSDT": {"gap": 0.08, "offset": 0.12, "multiplier": 1.0, "order_size": 2000.0, "target_profit": 10.0, "stop_loss": 150.0},
+    "PAXGUSDT": {"gap": 0.08, "offset": 0.12, "multiplier": 1.0, "order_size": 0.005, "target_profit": 10.0, "stop_loss": 250.0},
+}
+
+def get_coin_golden_settings(symbol: str) -> dict:
+    return GOLDEN_SETTINGS.get(symbol.upper(), {"gap": 0.12, "offset": 0.18, "multiplier": 1.0, "order_size": 0.1, "target_profit": 10.0, "stop_loss": 150.0})
+
 def get_default_order_size(symbol: str) -> float:
-    defaults = {
-        "BTCUSDT": 0.008,
-        "ETHUSDT": 0.15,
-        "SOLUSDT": 3.0,
-        "BNBUSDT": 0.8,
-        "DOGEUSDT": 3000.0,
-        "PAXGUSDT": 0.12
-    }
-    return defaults.get(symbol, 0.1)
+    return get_coin_golden_settings(symbol)["order_size"]
 
 def sync_active_market_primitives():
     if "markets" in st.session_state and "live_symbol" in st.session_state and st.session_state.live_symbol in st.session_state.markets:
@@ -429,8 +458,11 @@ def sync_active_market_primitives():
         active["strat_sl"] = st.session_state.strat_sl
         active["strat_trailing"] = st.session_state.strat_trailing
         active["strat_trailing_dist"] = st.session_state.strat_trailing_dist
-        active["strat_breakeven"] = st.session_state.get("strat_breakeven", True)
+        active["strat_breakeven"] = st.session_state.get("strat_breakeven", False)
         active["strat_breakeven_trigger"] = st.session_state.get("strat_breakeven_trigger", 0.5)
+        # Per-market price source (Live API vs Simulated)
+        _ps_key = f"price_source_select_{st.session_state.live_symbol}"
+        active["price_source"] = st.session_state.get(_ps_key, active.get("price_source", "Live Market API"))
 
 def serialize_market_state(m_state):
     broker = m_state["broker"]
@@ -462,6 +494,7 @@ def serialize_market_state(m_state):
         "last_price": m_state.get("last_price"),
         "price_history": m_state.get("price_history", []),
         "running": m_state.get("running", False),
+        "price_source": m_state.get("price_source", "Live Market API"),
         "strat_offset": m_state.get("strat_offset"),
         "strat_gap": m_state.get("strat_gap"),
         "strat_is_percent": m_state.get("strat_is_percent"),
@@ -476,7 +509,7 @@ def serialize_market_state(m_state):
         
         # Broker details
         "broker_class": broker.__class__.__name__,
-        "broker_balance": getattr(broker, "_balance", 10000.0) if broker.__class__.__name__ == "SimulatedBroker" else 0.0,
+        "broker_balance": broker._balance if isinstance(broker, SimulatedBroker) else 0.0,
         "broker_realized_pnl": broker.realized_pnl,
         "broker_closed_trades": broker.closed_trades,
         "broker_open_positions": ser_positions,
@@ -497,22 +530,37 @@ def serialize_market_state(m_state):
     return serialized
 
 def deserialize_market_state(ser, symbol):
-    from core.engine import SimulatedBroker, BreakoutGridBot, Position, Order
-    from core.mt5_broker import MT5Broker
+    from core.mt5_broker import MT5Broker, SimulatedBroker, MT5_AVAILABLE
+    from core.engine import BreakoutGridBot, Position, Order
     
-    # Recreate Broker
-    b_class = ser.get("broker_class", "SimulatedBroker")
-    if b_class == "MT5Broker":
-        broker = MT5Broker(
-            login=ser.get("broker_login", 0),
-            password=st.session_state.get("mt5_pwd", ""),
-            server=ser.get("broker_server", ""),
+    # Recreate Broker based on the saved broker class
+    broker_class = ser.get("broker_class", "SimulatedBroker")
+    if broker_class == "SimulatedBroker":
+        broker = SimulatedBroker(
             symbol=symbol,
-            symbol_suffix=ser.get("broker_suffix", ""),
-            magic_number=998877
+            initial_balance=ser.get("broker_balance", 10000.0)
         )
     else:
-        broker = SimulatedBroker(initial_balance=ser.get("broker_balance", 10000.0))
+        # MT5Broker: only attempt if MT5 is available on this machine
+        if not MT5_AVAILABLE:
+            # MT5 not installed — fall back to SimulatedBroker so the app stays usable
+            print(f"[{symbol}] MT5 not available; restoring as SimulatedBroker instead of MT5Broker.")
+            broker_class = "SimulatedBroker"
+            broker = SimulatedBroker(symbol=symbol, initial_balance=10000.0)
+        else:
+            try:
+                broker = MT5Broker(
+                    login=ser.get("broker_login", 0),
+                    password=st.session_state.get("mt5_pwd", ""),
+                    server=ser.get("broker_server", ""),
+                    symbol=symbol,
+                    symbol_suffix=ser.get("broker_suffix", ""),
+                    magic_number=998877
+                )
+            except Exception as mt5_err:
+                print(f"[{symbol}] MT5 connection failed during deserialization ({mt5_err}); falling back to SimulatedBroker.")
+                broker_class = "SimulatedBroker"
+                broker = SimulatedBroker(symbol=symbol, initial_balance=ser.get("broker_balance", 10000.0))
         
     broker.realized_pnl = ser.get("broker_realized_pnl", 0.0)
     broker.closed_trades = ser.get("broker_closed_trades", [])
@@ -523,9 +571,9 @@ def deserialize_market_state(ser, symbol):
         pos = Position(pos_dict["type"], pos_dict["entry_price"], pos_dict["size"], pos_dict["entry_time"])
         pos.position_id = pos_dict["position_id"]
         broker.open_positions[pos_id] = pos
-        if b_class == "MT5Broker":
+        if broker_class != "SimulatedBroker":
             try:
-                # Populate ticket mapping back
+                # Populate ticket mapping back (MT5Broker only)
                 ticket_num = int(pos_id.replace("live_", ""))
                 broker.ticket_to_position_id[ticket_num] = pos_id
             except:
@@ -537,55 +585,57 @@ def deserialize_market_state(ser, symbol):
         o = Order(o_dict["type"], o_dict["trigger_price"], o_dict["size"], o_dict["timestamp"])
         o.order_id = o_dict["order_id"]
         broker.pending_orders[order_id] = o
-        if b_class == "MT5Broker":
+        if broker_class != "SimulatedBroker":
             try:
                 broker.ticket_to_order_id[int(order_id)] = order_id
             except:
                 pass
                 
-    # Recreate Bot
+    # Recreate Bot using safe fallbacks
+    gs = get_coin_golden_settings(symbol)
     bot = BreakoutGridBot(
         broker,
         grid_levels=10,
-        grid_gap=ser["strat_gap"],
-        trap_offset=ser["strat_offset"],
-        order_size=ser["strat_order_size"],
-        order_size_multiplier=ser["strat_size_multiplier"],
-        target_profit=ser["strat_target_profit"],
+        grid_gap=ser.get("strat_gap", gs["gap"]),
+        trap_offset=ser.get("strat_offset", gs["offset"]),
+        order_size=ser.get("strat_order_size", gs["order_size"]),
+        order_size_multiplier=ser.get("strat_size_multiplier", gs["multiplier"]),
+        target_profit=ser.get("strat_target_profit", gs["target_profit"]),
         auto_restart=True,
-        is_percent=ser["strat_is_percent"],
-        stop_loss=ser["strat_sl"],
+        is_percent=ser.get("strat_is_percent", True),
+        stop_loss=ser.get("strat_sl", gs["stop_loss"]),
         max_cycle_duration=float('inf'),
         cancel_opposite_on_trigger=False,
-        use_trailing_stop=ser["strat_trailing"],
-        trailing_stop_distance=ser["strat_trailing_dist"],
+        use_trailing_stop=ser.get("strat_trailing", False),
+        trailing_stop_distance=ser.get("strat_trailing_dist", 1.5),
         use_breakeven=ser.get("strat_breakeven", False),
         breakeven_trigger=ser.get("strat_breakeven_trigger", 0.5)
     )
     
-    bot.deployed = ser["bot_deployed"]
-    bot.deploy_price = ser["bot_deploy_price"]
-    bot.current_cycle_id = ser["bot_current_cycle_id"]
-    bot.cycle_start_time = ser["bot_cycle_start_time"]
-    bot.cycle_history = ser["bot_cycle_history"]
+    bot.deployed = ser.get("bot_deployed", False)
+    bot.deploy_price = ser.get("bot_deploy_price", 0.0)
+    bot.current_cycle_id = ser.get("bot_current_cycle_id", 1)
+    bot.cycle_start_time = ser.get("bot_cycle_start_time", 0.0)
+    bot.cycle_history = ser.get("bot_cycle_history", [])
     bot.max_floating_pnl = ser.get("bot_max_floating_pnl", -float("inf"))
     bot.breakeven_activated = ser.get("bot_breakeven_activated", False)
     
     m_state = {
         "broker": broker,
         "bot": bot,
-        "price_history": ser["price_history"],
-        "last_price": ser["last_price"],
-        "running": ser["running"],
-        "strat_offset": ser["strat_offset"],
-        "strat_gap": ser["strat_gap"],
-        "strat_is_percent": ser["strat_is_percent"],
-        "strat_order_size": ser["strat_order_size"],
-        "strat_size_multiplier": ser["strat_size_multiplier"],
-        "strat_target_profit": ser["strat_target_profit"],
-        "strat_sl": ser["strat_sl"],
-        "strat_trailing": ser["strat_trailing"],
-        "strat_trailing_dist": ser["strat_trailing_dist"],
+        "price_history": ser.get("price_history", []),
+        "last_price": ser.get("last_price", get_default_price(symbol)),
+        "running": ser.get("running", False),
+        "price_source": ser.get("price_source", "Live Market API"),
+        "strat_offset": ser.get("strat_offset", gs["offset"]),
+        "strat_gap": ser.get("strat_gap", gs["gap"]),
+        "strat_is_percent": ser.get("strat_is_percent", True),
+        "strat_order_size": ser.get("strat_order_size", gs["order_size"]),
+        "strat_size_multiplier": ser.get("strat_size_multiplier", gs["multiplier"]),
+        "strat_target_profit": ser.get("strat_target_profit", gs["target_profit"]),
+        "strat_sl": ser.get("strat_sl", gs["stop_loss"]),
+        "strat_trailing": ser.get("strat_trailing", False),
+        "strat_trailing_dist": ser.get("strat_trailing_dist", 1.5),
         "strat_breakeven": ser.get("strat_breakeven", False),
         "strat_breakeven_trigger": ser.get("strat_breakeven_trigger", 0.5)
     }
@@ -700,16 +750,16 @@ if st.session_state.live_symbol not in st.session_state.markets:
             magic_number=998877
         )
     else:
-        broker = SimulatedBroker(initial_balance=10000.0, commission_pct=0.0, slippage_pct=0.0)
+        broker = SimulatedBroker(symbol=st.session_state.live_symbol)
     
     price_history = []
     price = None
     
     is_simulated = st.session_state.get("price_source_select", "Live Market API") == "Simulated Market (Demo)"
     
-    if is_simulated:
+    if False:
         price = get_default_price(st.session_state.live_symbol)
-        ticks = generate_simulated_ticks(price, num_ticks=120)
+        ticks = []
         now = time.time()
         time_diff = now - ticks[-1][0]
         price_history = [(t + time_diff, p) for t, p in ticks]
@@ -731,25 +781,26 @@ if st.session_state.live_symbol not in st.session_state.markets:
                 price = get_default_price(st.session_state.live_symbol)
             price_history = [(time.time(), price)]
         
+    gs = get_coin_golden_settings(st.session_state.live_symbol)
     bot = BreakoutGridBot(
         broker,
         grid_levels=10,
-        grid_gap=0.08,          # Proven: 0.08% spacing
-        trap_offset=0.12,       # Proven: 0.12% offset
-        order_size=get_default_order_size(st.session_state.live_symbol),
-        order_size_multiplier=1.5,  # Proven: 1.5x wins $8,145 over 6 months
-        target_profit=10.0,
+        grid_gap=gs["gap"],
+        trap_offset=gs["offset"],
+        order_size=gs["order_size"],
+        order_size_multiplier=gs["multiplier"],
+        target_profit=gs["target_profit"],
         auto_restart=True,
         is_percent=True,
-        stop_loss=150.0,        # Proven: $150 hard stop loss
+        stop_loss=gs["stop_loss"],
         max_cycle_duration=float('inf'),
-        cancel_opposite_on_trigger=True,  # Proven: OCO enabled
+        cancel_opposite_on_trigger=True,
         use_breakeven=False,
         breakeven_trigger=0.5
     )
     
     # Only deploy traps initially if it is SimulatedBroker; live broker requires explicit bot start
-    if broker.__class__.__name__ == "SimulatedBroker":
+    if isinstance(broker, SimulatedBroker):
         bot.deploy_traps(price, time.time())
     else:
         bot.deployed = False
@@ -760,13 +811,14 @@ if st.session_state.live_symbol not in st.session_state.markets:
         "price_history": price_history,
         "last_price": price,
         "running": False,
-        "strat_offset": 0.12,           # Proven: 0.12%
-        "strat_gap": 0.08,              # Proven: 0.08%
+        "price_source": "Live Market API",
+        "strat_offset": gs["offset"],
+        "strat_gap": gs["gap"],
         "strat_is_percent": True,
-        "strat_order_size": get_default_order_size(st.session_state.live_symbol),
-        "strat_size_multiplier": 1.5,   # Proven: 1.5x ($8,145 in 6 months)
-        "strat_target_profit": 10.0,
-        "strat_sl": 150.0,              # Proven: $150 stop loss
+        "strat_order_size": gs["order_size"],
+        "strat_size_multiplier": gs["multiplier"],
+        "strat_target_profit": gs["target_profit"],
+        "strat_sl": gs["stop_loss"],
         "strat_trailing": False,
         "strat_trailing_dist": 1.5,
         "strat_breakeven": False,
@@ -791,41 +843,56 @@ except Exception as e:
 # Initialize or sync current symbol to avoid resetting strategy parameter states on every rerun
 if "current_symbol" not in st.session_state or st.session_state.current_symbol != st.session_state.live_symbol:
     st.session_state.current_symbol = st.session_state.live_symbol
-    st.session_state.strat_offset = active_market.get("strat_offset", 0.15)
-    st.session_state.strat_gap = active_market.get("strat_gap", 0.10)
+    gs = get_coin_golden_settings(st.session_state.live_symbol)
+    # Load each coin's saved settings from its market dict (no widget key clearing needed —
+    # widget keys are now namespaced per-symbol so they are naturally isolated).
+    st.session_state.strat_offset = active_market.get("strat_offset", gs["offset"])
+    st.session_state.strat_gap = active_market.get("strat_gap", gs["gap"])
     st.session_state.strat_is_percent = active_market.get("strat_is_percent", True)
-    st.session_state.strat_order_size = active_market.get("strat_order_size", get_default_order_size(st.session_state.live_symbol))
-    st.session_state.strat_size_multiplier = active_market.get("strat_size_multiplier", 1.0)
-    st.session_state.strat_target_profit = active_market.get("strat_target_profit", 10.0)
-    st.session_state.strat_sl = active_market.get("strat_sl", float('inf'))
+    st.session_state.strat_order_size = active_market.get("strat_order_size", gs["order_size"])
+    st.session_state.strat_size_multiplier = active_market.get("strat_size_multiplier", gs["multiplier"])
+    st.session_state.strat_target_profit = active_market.get("strat_target_profit", gs["target_profit"])
+    st.session_state.strat_sl = active_market.get("strat_sl", gs["stop_loss"])
     st.session_state.strat_trailing = active_market.get("strat_trailing", False)
     st.session_state.strat_trailing_dist = active_market.get("strat_trailing_dist", 1.5)
+    st.session_state.strat_breakeven = active_market.get("strat_breakeven", False)
+    st.session_state.strat_breakeven_trigger = active_market.get("strat_breakeven_trigger", 0.5)
 
 # --- SYNC WIDGET INPUTS TO STATE VARIABLES ON RERUN BEFORE RENDERING ---
-if "strat_is_percent_select" in st.session_state:
-    st.session_state.strat_is_percent = (st.session_state.strat_is_percent_select == "Percentage (%)")
+# Widget keys are namespaced per-symbol so each coin has fully independent Streamlit state.
+_sym_key = st.session_state.live_symbol
 
-if "strat_size_multiplier_input" in st.session_state:
-    st.session_state.strat_size_multiplier = st.session_state.strat_size_multiplier_input
-if "strat_order_size_input" in st.session_state:
-    st.session_state.strat_order_size = st.session_state.strat_order_size_input
-if "strat_target_profit_input" in st.session_state:
-    st.session_state.strat_target_profit = st.session_state.strat_target_profit_input
-if "strat_trailing_input" in st.session_state:
-    st.session_state.strat_trailing = st.session_state.strat_trailing_input
-if "strat_trailing_dist_input" in st.session_state:
-    st.session_state.strat_trailing_dist = st.session_state.strat_trailing_dist_input
+_is_pct_key = f"strat_is_percent_select_{_sym_key}"
+if _is_pct_key in st.session_state:
+    st.session_state.strat_is_percent = (st.session_state[_is_pct_key] == "Percentage (%)")
+
+if f"strat_size_multiplier_input_{_sym_key}" in st.session_state:
+    st.session_state.strat_size_multiplier = st.session_state[f"strat_size_multiplier_input_{_sym_key}"]
+if f"strat_order_size_input_{_sym_key}" in st.session_state:
+    st.session_state.strat_order_size = st.session_state[f"strat_order_size_input_{_sym_key}"]
+if f"strat_target_profit_input_{_sym_key}" in st.session_state:
+    st.session_state.strat_target_profit = st.session_state[f"strat_target_profit_input_{_sym_key}"]
+if f"strat_sl_input_{_sym_key}" in st.session_state:
+    st.session_state.strat_sl = st.session_state[f"strat_sl_input_{_sym_key}"]
+if f"strat_trailing_input_{_sym_key}" in st.session_state:
+    st.session_state.strat_trailing = st.session_state[f"strat_trailing_input_{_sym_key}"]
+if f"strat_trailing_dist_input_{_sym_key}" in st.session_state:
+    st.session_state.strat_trailing_dist = st.session_state[f"strat_trailing_dist_input_{_sym_key}"]
+if f"strat_breakeven_input_{_sym_key}" in st.session_state:
+    st.session_state.strat_breakeven = st.session_state[f"strat_breakeven_input_{_sym_key}"]
+if f"strat_breakeven_trigger_input_{_sym_key}" in st.session_state:
+    st.session_state.strat_breakeven_trigger = st.session_state[f"strat_breakeven_trigger_input_{_sym_key}"] / 100.0
 
 if st.session_state.get("strat_is_percent", True):
-    if "strat_gap_input_pct" in st.session_state:
-        st.session_state.strat_gap = st.session_state.strat_gap_input_pct
-    if "strat_offset_input_pct" in st.session_state:
-        st.session_state.strat_offset = st.session_state.strat_offset_input_pct
+    if f"strat_gap_input_pct_{_sym_key}" in st.session_state:
+        st.session_state.strat_gap = st.session_state[f"strat_gap_input_pct_{_sym_key}"]
+    if f"strat_offset_input_pct_{_sym_key}" in st.session_state:
+        st.session_state.strat_offset = st.session_state[f"strat_offset_input_pct_{_sym_key}"]
 else:
-    if "strat_gap_input_usd" in st.session_state:
-        st.session_state.strat_gap = st.session_state.strat_gap_input_usd
-    if "strat_offset_input_usd" in st.session_state:
-        st.session_state.strat_offset = st.session_state.strat_offset_input_usd
+    if f"strat_gap_input_usd_{_sym_key}" in st.session_state:
+        st.session_state.strat_gap = st.session_state[f"strat_gap_input_usd_{_sym_key}"]
+    if f"strat_offset_input_usd_{_sym_key}" in st.session_state:
+        st.session_state.strat_offset = st.session_state[f"strat_offset_input_usd_{_sym_key}"]
 # -----------------------------------------------------------------------
 
 # Detect if parameters affecting grid layout or sizing have changed
@@ -854,12 +921,16 @@ bot.max_cycle_duration = float('inf')
 bot.cancel_opposite_on_trigger = False
 bot.use_trailing_stop = st.session_state.strat_trailing
 bot.trailing_stop_distance = st.session_state.strat_trailing_dist
+bot.use_breakeven = st.session_state.strat_breakeven
+bot.breakeven_trigger = st.session_state.strat_breakeven_trigger
 bot.use_bb_filter = False
 
+# Always sync active market primitives dictionary after updating bot settings
+sync_active_market_primitives()
+
 # If settings that affect grid placement/sizing changed, redeploy traps immediately
-# provided that no positions are currently open (restricted to Simulated Sandbox for safety).
-is_simulated = (broker.__class__.__name__ == "SimulatedBroker")
-if settings_changed and bot.deployed and len(broker.open_positions) == 0 and is_simulated:
+# provided that no positions are currently open.
+if settings_changed and bot.deployed and len(broker.open_positions) == 0:
     try:
         bot.deploy_traps(st.session_state.last_price, time.time())
         st.session_state.error_message = None
@@ -919,7 +990,12 @@ def init_mt5_broker(login, password, server, suffix):
 def init_simulated_broker():
     # Loop through all configured symbols and apply SimulatedBroker globally
     for sym in list(st.session_state.markets.keys()):
-        broker = SimulatedBroker(initial_balance=10000.0, commission_pct=0.0, slippage_pct=0.0)
+        existing_broker = st.session_state.markets[sym].get("broker")
+        # Preserve balance if switching back from MT5; otherwise default to $10,000
+        saved_balance = getattr(existing_broker, "_balance", 10000.0) if isinstance(existing_broker, SimulatedBroker) else 10000.0
+        broker = SimulatedBroker(symbol=sym, initial_balance=saved_balance)
+        # Reset open positions / pending orders so the simulated sandbox starts clean
+        broker.realized_pnl = 0.0
         st.session_state.markets[sym]["broker"] = broker
         st.session_state.markets[sym]["bot"].broker = broker
         
@@ -983,15 +1059,19 @@ with col_controls:
             st.session_state.live_symbol = symbol
             st.session_state.running = st.session_state.markets[symbol].get("running", False) if symbol in st.session_state.markets else False
             
+            # With per-symbol namespaced widget keys, there is no bleed between coins.
+            # Just reset current_symbol so the parameter load block re-runs for the new coin.
+            st.session_state.pop("current_symbol", None)
+            
             # Fetch fresh historical price data for the newly selected symbol to prevent huge gaps in the chart
             is_simulated = st.session_state.get("price_source_select", "Live Market API") == "Simulated Market (Demo)"
             default_p = get_default_price(symbol)
             new_price_history = []
             new_price = None
             
-            if is_simulated:
+            if False:
                 start_p = st.session_state.markets[symbol]["last_price"] if (symbol in st.session_state.markets and st.session_state.markets[symbol].get("last_price")) else default_p
-                ticks = generate_simulated_ticks(start_p, num_ticks=120)
+                ticks = []
                 now = time.time()
                 time_diff = now - ticks[-1][0]
                 new_price_history = [(t + time_diff, p) for t, p in ticks]
@@ -1018,10 +1098,16 @@ with col_controls:
                     st.session_state.markets[symbol]["price_history"] = new_price_history
                     st.session_state.markets[symbol]["last_price"] = new_price
                 
+                # Sync active session pointers immediately
+                st.session_state.broker = st.session_state.markets[symbol]["broker"]
+                st.session_state.bot = st.session_state.markets[symbol]["bot"]
+                st.session_state.price_history = st.session_state.markets[symbol]["price_history"]
+                st.session_state.last_price = st.session_state.markets[symbol]["last_price"]
+
                 # Redeploy traps at new price if there are no open positions (restricted to Simulated Sandbox) and not already running
                 curr_broker = st.session_state.markets[symbol]["broker"]
                 curr_bot = st.session_state.markets[symbol]["bot"]
-                if len(curr_broker.open_positions) == 0 and curr_broker.__class__.__name__ == "SimulatedBroker" and not st.session_state.markets[symbol].get("running", False):
+                if len(curr_broker.open_positions) == 0 and isinstance(curr_broker, SimulatedBroker) and not st.session_state.markets[symbol].get("running", False):
                     try:
                         curr_bot.deploy_traps(st.session_state.markets[symbol]["last_price"], time.time())
                         st.session_state.error_message = None
@@ -1030,6 +1116,7 @@ with col_controls:
             
             save_bot_state()  # Persist symbol change to disk immediately
             st.rerun()
+
             
         timeframe = st.selectbox(
             "Chart Timeframe",
@@ -1037,11 +1124,16 @@ with col_controls:
             key="timeframe_select"
         )
         
+        curr_ps = st.session_state.markets.get(st.session_state.live_symbol, {}).get("price_source", "Live Market API")
+        price_source_idx = 0 if curr_ps == "Live Market API" else 1
         price_source = st.selectbox(
             "Price Source",
             ["Live Market API", "Simulated Market (Demo)"],
-            key="price_source_select"
+            index=price_source_idx,
+            key=f"price_source_select_{st.session_state.live_symbol}"
         )
+        if "markets" in st.session_state and st.session_state.live_symbol in st.session_state.markets:
+            st.session_state.markets[st.session_state.live_symbol]["price_source"] = price_source
 
     with ctrl_col2:
         st.write("") # vertical spacing align
@@ -1073,6 +1165,8 @@ with col_controls:
                         
                         st.session_state.bot.deployed = True
                         st.session_state.running = True
+                        if "markets" in st.session_state and st.session_state.live_symbol in st.session_state.markets:
+                            st.session_state.markets[st.session_state.live_symbol]["running"] = True
                     else:
                         # Close any leftover positions and cancel any leftover pending orders before starting fresh
                         try:
@@ -1084,6 +1178,8 @@ with col_controls:
                         
                         st.session_state.bot.deployed = False
                         st.session_state.running = True
+                        if "markets" in st.session_state and st.session_state.live_symbol in st.session_state.markets:
+                            st.session_state.markets[st.session_state.live_symbol]["running"] = True
                     
                     # Sync and save state
                     sync_active_market_primitives()
@@ -1092,16 +1188,48 @@ with col_controls:
             else:
                 if st.button("⏸ PAUSE BOT", type="secondary", use_container_width=True):
                     st.session_state.running = False
+                    if "markets" in st.session_state and st.session_state.live_symbol in st.session_state.markets:
+                        st.session_state.markets[st.session_state.live_symbol]["running"] = False
+                    sync_active_market_primitives()
                     save_bot_state()
                     st.rerun()
         with run_col2:
-            if st.button("🚨 PANIC CLOSE", type="secondary", use_container_width=True):
+            _active_label = _sym_short.get(st.session_state.live_symbol, st.session_state.live_symbol)
+            if st.button(f"🚨 CLOSE {_active_label}", type="secondary", help=f"Emergency close trades & traps for {_active_label} only", use_container_width=True):
+                curr_m = st.session_state.markets.get(st.session_state.live_symbol)
+                if curr_m:
+                    brk = curr_m["broker"]
+                    bt = curr_m["bot"]
+                    curr_p = curr_m["price_history"][-1][1] if curr_m.get("price_history") else curr_m.get("last_price")
+                    if curr_p is None:
+                        curr_p = get_current_live_price(st.session_state.live_symbol) or get_default_price(st.session_state.live_symbol)
+                    
+                    closed_cnt = 0
+                    try:
+                        closed = brk.close_all_positions(curr_p, time.time())
+                        brk.cancel_all_orders()
+                        closed_cnt = len(closed)
+                    except Exception as e:
+                        print(f"Close active pair failed for {st.session_state.live_symbol}: {e}")
+                    
+                    bt.deployed = False
+                    curr_m["running"] = False
+                    st.session_state.running = False
+                    sync_active_market_primitives()
+                    save_bot_state()
+                    st.toast(f"Emergency closed {closed_cnt} trades for {_active_label}.")
+                    st.rerun()
+
+    with ctrl_col3:
+        st.write("") # vertical spacing align
+        panic_col, reset_col = st.columns(2)
+        with panic_col:
+            if st.button("⚡ PANIC ALL", type="secondary", help="Global emergency stop across all market pairs", use_container_width=True):
                 total_closed_count = 0
                 for sym, m_state in st.session_state.markets.items():
                     brk = m_state["broker"]
                     bt = m_state["bot"]
                     
-                    # Determine current price for closing
                     curr_p = m_state["price_history"][-1][1] if m_state.get("price_history") else m_state.get("last_price")
                     if curr_p is None:
                         curr_p = get_current_live_price(sym) or get_default_price(sym)
@@ -1117,16 +1245,10 @@ with col_controls:
                     m_state["running"] = False
                 
                 st.session_state.running = False
+                sync_active_market_primitives()
                 save_bot_state()
-                st.warning(f"Panic close executed! Closed {total_closed_count} open trades across all pairs.")
+                st.warning(f"Global panic close executed! Closed {total_closed_count} open trades across all pairs.")
                 st.rerun()
-
-    with ctrl_col3:
-        st.write("") # vertical spacing align
-        theme_col, reset_col = st.columns(2)
-        with theme_col:
-            theme_btn_text = "☀️ LIGHT" if IS_DARK else "🌙 DARK"
-            st.button(theme_btn_text, on_click=toggle_theme, use_container_width=True)
         with reset_col:
             if st.button("🔄 RESET", use_container_width=True):
                 reset_realtime_sandbox()
@@ -1135,7 +1257,7 @@ with col_controls:
     st.markdown('</div>', unsafe_allow_html=True)
 
     # Exness MT5 connection UI
-    broker_type = "Simulated Sandbox" if st.session_state.broker.__class__.__name__ == "SimulatedBroker" else "Exness MT5 Live"
+    broker_type = "Simulated Sandbox" if isinstance(st.session_state.broker, SimulatedBroker) else "Exness MT5 Live"
     status_color = "#3b82f6" if broker_type == "Simulated Sandbox" else "#f59e0b"
     
     st.markdown(f"""
@@ -1150,7 +1272,13 @@ with col_controls:
         if sys.platform != "win32":
             st.info("ℹ️ **Exness MT5 Live Trading** is only supported when running this application locally on a Windows machine with the MetaTrader 5 desktop application open in the background.")
         elif not MT5_AVAILABLE:
-            st.warning("MetaTrader 5 Python package is not available on this machine. Run: `pip install MetaTrader5` in your terminal to enable it.")
+            st.warning(
+                "⚠️ **MT5 Live Trading is blocked by Windows Application Control policy** on this machine. "
+                "The `MetaTrader5` package is installed, but its native DLL (`_core.pyd`) is unsigned and "
+                "is being blocked by AppLocker/WDAC. To resolve this, ask your IT admin to whitelist the file, "
+                "or run the app on a machine without Application Control restrictions. "
+                "**Simulated Sandbox mode is fully functional in the meantime.**"
+            )
         else:
             is_live = (broker_type == "Exness MT5 Live")
             current_login = st.session_state.broker.login if is_live else 0
@@ -1202,7 +1330,57 @@ with col_controls:
                         st.rerun()
 
 with col_strategy:
-    st.markdown('<div class="control-card"><div class="control-title">Strategy Tuning</div>', unsafe_allow_html=True)
+    _strat_sym_label = {"BTCUSDT":"BTC","ETHUSDT":"ETH","SOLUSDT":"SOL","BNBUSDT":"BNB","DOGEUSDT":"DOGE","PAXGUSDT":"XAU"}.get(st.session_state.live_symbol, st.session_state.live_symbol)
+    
+    st_header_col1, st_header_col2 = st.columns([2, 1])
+    with st_header_col1:
+        st.markdown(f'<div class="control-card"><div class="control-title">Strategy Tuning &nbsp;<span style="font-size:0.7rem;font-weight:400;opacity:0.55;border:1px solid rgba(255,255,255,0.15);border-radius:6px;padding:1px 7px;">for {_strat_sym_label}</span></div>', unsafe_allow_html=True)
+    with st_header_col2:
+        if st.button(f"🎯 DEFAULTS ({_strat_sym_label})", type="secondary", help=f"Reset strategy parameters for {_strat_sym_label} to Golden Settings defaults", use_container_width=True):
+            gs = get_coin_golden_settings(st.session_state.live_symbol)
+            st.session_state.strat_offset = gs["offset"]
+            st.session_state.strat_gap = gs["gap"]
+            st.session_state.strat_is_percent = True
+            st.session_state.strat_order_size = gs["order_size"]
+            st.session_state.strat_size_multiplier = gs["multiplier"]
+            st.session_state.strat_target_profit = gs["target_profit"]
+            st.session_state.strat_sl = gs["stop_loss"]
+            
+            # Clear per-symbol namespaced widget keys so input boxes visually reset to golden defaults
+            _sym_wk_reset = st.session_state.live_symbol
+            _strat_widget_keys = [
+                f"strat_is_percent_select_{_sym_wk_reset}",
+                f"strat_offset_input_pct_{_sym_wk_reset}", f"strat_offset_input_usd_{_sym_wk_reset}",
+                f"strat_gap_input_pct_{_sym_wk_reset}",    f"strat_gap_input_usd_{_sym_wk_reset}",
+                f"strat_target_profit_input_{_sym_wk_reset}", f"strat_sl_input_{_sym_wk_reset}",
+                f"strat_order_size_input_{_sym_wk_reset}", f"strat_size_multiplier_input_{_sym_wk_reset}",
+                f"strat_trailing_input_{_sym_wk_reset}", f"strat_trailing_dist_input_{_sym_wk_reset}",
+                f"strat_breakeven_input_{_sym_wk_reset}", f"strat_breakeven_trigger_input_{_sym_wk_reset}",
+            ]
+            for _k in _strat_widget_keys:
+                st.session_state.pop(_k, None)
+                
+            sync_active_market_primitives()
+            save_bot_state()
+            st.toast(f"Reset strategy settings for {_strat_sym_label} to Golden Defaults.")
+            st.rerun()
+
+    _cur_gap = st.session_state.strat_gap
+    _cur_off = st.session_state.strat_offset
+    _cur_is_pct = st.session_state.get("strat_is_percent", True)
+    gap_str = f"{_cur_gap:.2f}%" if _cur_is_pct else f"${_cur_gap:.1f}"
+    offset_str = f"{_cur_off:.2f}%" if _cur_is_pct else f"${_cur_off:.1f}"
+    st.markdown(
+        f'<div style="background:rgba(245,158,11,0.06);border:1px solid rgba(245,158,11,0.25);border-radius:8px;padding:8px 12px;margin:6px 0 12px 0;font-size:0.78rem;color:#fef08a;">'
+        f'📌 <strong>Active Parameters for {_strat_sym_label}:</strong> '
+        f'Gap: <code>{gap_str}</code> | Offset: <code>{offset_str}</code> | Mult: <code>{st.session_state.strat_size_multiplier:.1f}x</code> | '
+        f'Base Size: <code>{st.session_state.strat_order_size}</code> | Target Profit: <code>${st.session_state.strat_target_profit:.1f}</code> | Stop Loss: <code>${st.session_state.strat_sl:.1f}</code>'
+        f'<div style="font-size:0.7rem;color:#a1a1aa;margin-top:3px;"><i>💡 Note: Updating parameters takes effect immediately if no trades are open, or on the next grid cycle when current active trades complete.</i></div>'
+        f'</div>',
+        unsafe_allow_html=True
+    )
+
+    _sym_wk = st.session_state.live_symbol  # widget key namespace for this coin
     strat_col1, strat_col2, strat_col3 = st.columns(3)
     with strat_col1:
         # Spacing Mode selectbox
@@ -1210,7 +1388,7 @@ with col_strategy:
             "Spacing Mode",
             ["Percentage (%)", "USD Points / Pips"],
             index=0 if st.session_state.get("strat_is_percent", True) else 1,
-            key="strat_is_percent_select"
+            key=f"strat_is_percent_select_{_sym_wk}"
         )
         st.session_state.strat_is_percent = (spacing_mode == "Percentage (%)")
         
@@ -1241,7 +1419,7 @@ with col_strategy:
             value=default_offset,
             step=offset_step,
             format="%.2f" if st.session_state.strat_is_percent or default_offset % 1 != 0 else "%.1f",
-            key=f"strat_offset_input_{'pct' if st.session_state.strat_is_percent else 'usd'}"
+            key=f"strat_offset_input_{'pct' if st.session_state.strat_is_percent else 'usd'}_{_sym_wk}"
         )
         st.session_state.strat_offset = trap_offset_val
         
@@ -1252,7 +1430,7 @@ with col_strategy:
             value=default_gap,
             step=gap_step,
             format="%.2f" if st.session_state.strat_is_percent or default_gap % 1 != 0 else "%.1f",
-            key=f"strat_gap_input_{'pct' if st.session_state.strat_is_percent else 'usd'}"
+            key=f"strat_gap_input_{'pct' if st.session_state.strat_is_percent else 'usd'}_{_sym_wk}"
         )
         st.session_state.strat_gap = grid_gap_val
         
@@ -1261,16 +1439,26 @@ with col_strategy:
             "Target Profit (USD)",
             min_value=1.0,
             max_value=10000.0,
-            value=st.session_state.strat_target_profit,
+            value=float(st.session_state.strat_target_profit),
             step=1.0,
-            key="strat_target_profit_input"
+            key=f"strat_target_profit_input_{_sym_wk}"
         )
         st.session_state.strat_target_profit = target_profit_val
+
+        sl_val = st.number_input(
+            "Stop Loss (USD)",
+            min_value=5.0,
+            max_value=100000.0,
+            value=float(st.session_state.get("strat_sl", 150.0)),
+            step=10.0,
+            key=f"strat_sl_input_{_sym_wk}"
+        )
+        st.session_state.strat_sl = sl_val
 
         trailing_stop_val = st.toggle(
             "Enable Trailing Stop",
             value=st.session_state.strat_trailing,
-            key="strat_trailing_input"
+            key=f"strat_trailing_input_{_sym_wk}"
         )
         st.session_state.strat_trailing = trailing_stop_val
         
@@ -1278,12 +1466,31 @@ with col_strategy:
             "Trailing Distance (USD)",
             min_value=0.1,
             max_value=1000.0,
-            value=st.session_state.strat_trailing_dist,
+            value=float(st.session_state.strat_trailing_dist),
             step=0.5,
             disabled=not trailing_stop_val,
-            key="strat_trailing_dist_input"
+            key=f"strat_trailing_dist_input_{_sym_wk}"
         )
         st.session_state.strat_trailing_dist = trailing_dist_val
+
+        breakeven_val = st.toggle(
+            "Enable Breakeven Protection",
+            value=st.session_state.get("strat_breakeven", False),
+            key=f"strat_breakeven_input_{_sym_wk}"
+        )
+        st.session_state.strat_breakeven = breakeven_val
+
+        be_trigger_pct = int(round(st.session_state.get("strat_breakeven_trigger", 0.5) * 100))
+        breakeven_trigger_val = st.number_input(
+            "Breakeven Trigger (% Target)",
+            min_value=10,
+            max_value=90,
+            value=be_trigger_pct,
+            step=5,
+            disabled=not breakeven_val,
+            key=f"strat_breakeven_trigger_input_{_sym_wk}"
+        )
+        st.session_state.strat_breakeven_trigger = breakeven_trigger_val / 100.0
         
     with strat_col3:
         order_size_val = st.number_input(
@@ -1293,7 +1500,7 @@ with col_strategy:
             value=st.session_state.strat_order_size,
             step=0.0001 if st.session_state.strat_order_size < 0.1 else 0.01,
             format="%.5f" if st.session_state.strat_order_size < 0.01 else "%.3f" if st.session_state.strat_order_size < 1.0 else "%.1f",
-            key="strat_order_size_input"
+            key=f"strat_order_size_input_{_sym_wk}"
         )
         st.session_state.strat_order_size = order_size_val
 
@@ -1304,18 +1511,72 @@ with col_strategy:
             value=st.session_state.strat_size_multiplier,
             step=0.1,
             format="%.2f" if st.session_state.strat_size_multiplier % 0.1 != 0 else "%.1f",
-            key="strat_size_multiplier_input"
+            key=f"strat_size_multiplier_input_{_sym_wk}"
         )
         st.session_state.strat_size_multiplier = size_mult_val
         
-        # Calculate progression directly from configured base order size
-        progression = [f"{st.session_state.strat_order_size * (st.session_state.strat_size_multiplier ** i):.5f}" for i in range(5)]
-        clean_prog = [p.rstrip('0').rstrip('.') for p in progression]
-        st.caption(f"📐 Sizing progression: {' ➔ '.join(clean_prog)} ...")
+        # Calculate 10-level Martingale progression directly from configured base order size, respecting broker volume limits
+        mt5_vol_min, mt5_vol_step = 0.0, 0.0
+        cur_brk = st.session_state.get("broker")
+        if cur_brk and cur_brk.__class__.__name__ == "MT5Broker" and cur_brk.ensure_connected():
+            import MetaTrader5 as mt5_ref
+            ex_s = cur_brk.get_exness_symbol(st.session_state.live_symbol)
+            inf = mt5_ref.symbol_info(ex_s)
+            if inf:
+                mt5_vol_min = inf.volume_min
+                mt5_vol_step = inf.volume_step
+
+        def calc_level_sz(base_s, mult_s, idx):
+            sz = round(base_s * (mult_s ** idx), 8)
+            if mt5_vol_step > 0:
+                sz = round(round(sz / mt5_vol_step) * mt5_vol_step, 8)
+            if mt5_vol_min > 0 and sz < mt5_vol_min:
+                sz = mt5_vol_min
+            return sz
+
+        progression_10 = [fmt_size(calc_level_sz(st.session_state.strat_order_size, st.session_state.strat_size_multiplier, i)) for i in range(10)]
+        st.caption(f"📐 10-Level Martingale Progression:  \nL1–L5: {' ➔ '.join(progression_10[:5])}  \nL6–L10: {' ➔ '.join(progression_10[5:])}")
+        if mt5_vol_min > 0 and st.session_state.strat_order_size < mt5_vol_min:
+            st.warning(f"⚠️ Note: Exness MT5 requires minimum **{fmt_size(mt5_vol_min)} lots** for {st.session_state.live_symbol}. Order sizes below this will be clamped to {fmt_size(mt5_vol_min)} by the broker.")
         
     st.markdown('</div>', unsafe_allow_html=True)
 
-# 8. ENGINE TICK PROCESSING
+# ── Per-market status bar ─────────────────────────────────────────────────────
+# Shows all configured markets at a glance: running state, open positions, P&L
+_sym_short = {"BTCUSDT":"BTC","ETHUSDT":"ETH","SOLUSDT":"SOL",
+              "BNBUSDT":"BNB","DOGEUSDT":"DOGE","PAXGUSDT":"XAU"}
+_status_chips = []
+for _s, _m in st.session_state.markets.items():
+    _brk = _m.get("broker")
+    _is_running = _m.get("running", False)
+    _open_pos = len(_brk.open_positions) if _brk else 0
+    _pnl = sum(p.get_pnl(_m["price_history"][-1][1] if _m.get("price_history") else _m.get("last_price", 0))
+               for p in _brk.open_positions.values()) if _brk and _open_pos > 0 else 0.0
+    _realized = getattr(_brk, "realized_pnl", 0.0) if _brk else 0.0
+    _is_active = (_s == st.session_state.live_symbol)
+    _label = _sym_short.get(_s, _s)
+    _dot = "🟢" if _is_running else ("🟡" if _open_pos > 0 else "⚫")
+    _pnl_txt = f"+${_pnl:.2f}" if _pnl >= 0 else f"-${abs(_pnl):.2f}"
+    _border = "2px solid #f59e0b" if _is_active else "1px solid rgba(255,255,255,0.08)"
+    _bg = "rgba(245,158,11,0.08)" if _is_active else "rgba(255,255,255,0.03)"
+    _status_chips.append(
+        f'<div style="display:inline-flex;align-items:center;gap:6px;padding:4px 10px;'
+        f'border-radius:8px;border:{_border};background:{_bg};margin:2px 4px 2px 0;'
+        f'font-size:0.72rem;font-weight:500;white-space:nowrap;">'
+        f'{_dot} <strong>{_label}</strong>'
+        f'{" ▶ RUNNING" if _is_running else (" ⏸ PAUSED" if _open_pos > 0 else " IDLE")}'
+        f' &nbsp;|&nbsp; {_open_pos} pos &nbsp;|&nbsp; '
+        f'<span style="color:{"#22c55e" if _pnl >= 0 else "#ef4444"}">{_pnl_txt}</span>'
+        f'</div>'
+    )
+st.markdown(
+    f'<div style="display:flex;flex-wrap:wrap;align-items:center;gap:2px;'
+    f'padding:6px 2px;margin-bottom:4px;">'
+    f'<span style="font-size:0.68rem;color:var(--text-muted);margin-right:6px;font-weight:600;">'
+    f'ALL MARKETS:</span>' + "".join(_status_chips) + "</div>",
+    unsafe_allow_html=True
+)
+
 # Run calculation tick if any bot is running
 any_running = any(m.get("running", False) for m in st.session_state.markets.values())
 
@@ -1346,72 +1607,73 @@ if any_running:
     GLOBAL_RUNNERS[session_id] = now_t
 
     # Process ticks for all running markets
-    for sym, m_state in st.session_state.markets.items():
+    for sym, m_state in list(st.session_state.markets.items()):
         if not m_state.get("running", False):
             continue
             
-        # 1. Fetch latest price
-        price_source_sel = st.session_state.get("price_source_select", "Live Market API")
-        if price_source_sel == "Simulated Market (Demo)":
-            last_p = m_state["price_history"][-1][1] if m_state.get("price_history") else m_state.get("last_price")
-            if last_p is None:
-                last_p = get_default_price(sym)
-            vol = 0.0008 if sym == "PAXGUSDT" else 0.0005
-            change = np.random.normal(0, vol)
-            latest_price = round(last_p * (1 + change), 2)
-            st.session_state.error_message = None
-        else:
-            latest_price = get_current_live_price(sym)
-            if latest_price is None:
-                # Fall back to last recorded price if API times out
-                if m_state["broker"].__class__.__name__ == "MT5Broker":
-                    st.session_state.error_message = f"MT5 connection timeout or symbol not found for {sym}. Retrying..."
-                else:
-                    st.session_state.error_message = f"Binance API connection timeout for {sym}. Retrying..."
-                latest_price = m_state["price_history"][-1][1] if m_state.get("price_history") else m_state.get("last_price")
-            else:
-                st.session_state.error_message = None
-
-        if latest_price is None:
-            continue
-
-        # Record price tick
-        now = time.time()
-        previous_price = m_state["price_history"][-1][1] if m_state.get("price_history") else latest_price
-        
-        if "price_history" not in m_state:
-            m_state["price_history"] = []
-        m_state["price_history"].append((now, latest_price))
-        m_state["last_price"] = latest_price
-        
-        # Keep history to last 3000 points for charting performance
-        if len(m_state["price_history"]) > 3000:
-            m_state["price_history"].pop(0)
-            
-        # Update references if this is the active symbol
-        if sym == st.session_state.live_symbol:
-            st.session_state.last_price = latest_price
-            st.session_state.price_history = m_state["price_history"]
-            
-        # 2. Update engine
         try:
+            # 1. Fetch latest price
+            price_source_sel = m_state.get("price_source", "Live Market API")
+            if price_source_sel == "Simulated Market (Demo)":
+                last_p = m_state["price_history"][-1][1] if m_state.get("price_history") else m_state.get("last_price")
+                if last_p is None:
+                    last_p = get_default_price(sym)
+                vol = 0.0008 if sym == "PAXGUSDT" else 0.0005
+                change = np.random.normal(0, vol)
+                latest_price = round(last_p * (1 + change), 2)
+            else:
+                latest_price = get_current_live_price(sym)
+                if latest_price is None:
+                    latest_price = m_state["price_history"][-1][1] if m_state.get("price_history") else m_state.get("last_price")
+
+            if latest_price is None:
+                continue
+
+            # Record price tick
+            now = time.time()
+            previous_price = m_state["price_history"][-1][1] if m_state.get("price_history") else latest_price
+            
+            if "price_history" not in m_state:
+                m_state["price_history"] = []
+            m_state["price_history"].append((now, latest_price))
+            m_state["last_price"] = latest_price
+            
+            # Keep history to last 3000 points for charting performance
+            if len(m_state["price_history"]) > 3000:
+                m_state["price_history"].pop(0)
+                
+            # Update references if this is the active symbol
+            if sym == st.session_state.live_symbol:
+                st.session_state.last_price = latest_price
+                st.session_state.price_history = m_state["price_history"]
+                
+            # 2. Update engine
             bot = m_state["bot"]
             cycle_hit = bot.process_tick(previous_price, latest_price, now)
             if cycle_hit:
                 st.toast(f"🎉 {sym} Cycle {cycle_hit['cycle_id']} exit hit target profit! PnL: ${cycle_hit['pnl']:.2f}")
-            st.session_state.error_message = None
+            if sym == st.session_state.live_symbol:
+                st.session_state.error_message = None
         except Exception as e:
-            st.session_state.error_message = f"Tick processing failed for {sym}: {e}"
+            import traceback
+            err_str = f"Tick processing failed for {sym}: {e}\n{traceback.format_exc()}"
+            print(err_str)
             m_state["running"] = False
             if sym == st.session_state.live_symbol:
                 st.session_state.running = False
+                st.session_state.error_message = f"Tick processing failed for {sym}: {e}"
+            
+            with open(r"C:\Users\User\.gemini\antigravity-ide\brain\da951b75-b0be-4f19-83f9-09e3c668b4ce\scratch\last_error.txt", "w") as f:
+                f.write(err_str)
+                
     save_bot_state()
 
 # For symbols that are NOT running, we keep the active symbol price fresh on page load/interaction
 if not st.session_state.running:
     now = time.time()
     if not st.session_state.price_history or (now - st.session_state.price_history[-1][0] > 5.0):
-        if st.session_state.get("price_source_select", "Live Market API") == "Simulated Market (Demo)":
+        active_ps = st.session_state.markets.get(st.session_state.live_symbol, {}).get("price_source", "Live Market API")
+        if active_ps == "Simulated Market (Demo)":
             latest_price = st.session_state.price_history[-1][1] if st.session_state.price_history else st.session_state.last_price
         else:
             latest_price = get_current_live_price(st.session_state.live_symbol)
@@ -1430,11 +1692,24 @@ if not st.session_state.running:
                 save_bot_state()
 
 
-# Get current state pointers
-curr_price = st.session_state.price_history[-1][1]
+# Get current state pointers — always use live_symbol as the authoritative source
+# so the chart updates correctly after a symbol switch + rerun
+_active_sym = st.session_state.live_symbol
+if "price_history" in st.session_state and st.session_state.price_history and len(st.session_state.price_history) > 0 and st.session_state.price_history[-1][1] is not None:
+    curr_price = st.session_state.price_history[-1][1]
+elif "last_price" in st.session_state and st.session_state.last_price is not None:
+    curr_price = st.session_state.last_price
+else:
+    curr_price = get_default_price(_active_sym)
 broker_instance = st.session_state.broker
 bot_instance = st.session_state.bot
-display_symbol = "XAUUSD" if symbol == "PAXGUSDT" else symbol
+broker_type = "Simulated Sandbox" if isinstance(broker_instance, SimulatedBroker) else "Exness MT5 Live"
+display_symbol = "XAUUSD" if _active_sym == "PAXGUSDT" else _active_sym
+_coin_label_map = {
+    "BTCUSDT": "BTC/USD", "ETHUSDT": "ETH/USD", "SOLUSDT": "SOL/USD",
+    "BNBUSDT": "BNB/USD", "DOGEUSDT": "DOGE/USD", "PAXGUSDT": "XAU/USD",
+}
+chart_coin_label = _coin_label_map.get(_active_sym, display_symbol)
 
 # 9. KPI METRIC CARDS
 kpi1, kpi2, kpi3, kpi4, kpi5 = st.columns(5)
@@ -1601,12 +1876,25 @@ for pos_id, pos in list(broker_instance.open_positions.items()):
     )
 
 fig.update_layout(PLOT_LAYOUT)
-fig.update_layout(xaxis_rangeslider_visible=False)
+fig.update_layout(
+    xaxis_rangeslider_visible=False,
+    # Reset Y-axis autorange on every render so it scales correctly to the active coin's price
+    yaxis=dict(autorange=True, fixedrange=False),
+    title=None,  # Title rendered via markdown below
+)
 fig.update_xaxes(showgrid=True, gridcolor="rgba(255,255,255,0.05)" if IS_DARK else "rgba(0,0,0,0.05)")
 fig.update_yaxes(showgrid=True, gridcolor="rgba(255,255,255,0.05)" if IS_DARK else "rgba(0,0,0,0.05)")
 
 with st.container(border=True):
-    st.markdown(f'<div class="brand" style="margin-bottom: 5px;"><span class="chart-title">Real-Time Market Traps & Execution Chart ({timeframe_choice})</span></div><div class="chart-subtitle">Real-time prices, trap levels, and executed orders (10 Stops above, 10 Stops below)</div>', unsafe_allow_html=True)
+    st.markdown(
+        f'<div class="brand" style="margin-bottom: 5px;">'
+        f'<span class="chart-title">'
+        f'{chart_coin_label} &nbsp;·&nbsp; Real-Time Traps &amp; Execution Chart'
+        f'<span style="font-size:0.7rem; font-weight:400; opacity:0.6; margin-left:8px;">({timeframe_choice})</span>'
+        f'</span></div>'
+        f'<div class="chart-subtitle">Live price, grid trap levels and executed orders for <strong>{chart_coin_label}</strong> — 10 stops above &amp; 10 below</div>',
+        unsafe_allow_html=True
+    )
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
 # 11. TABLES
@@ -1620,7 +1908,7 @@ with col_tables1:
             pnl_style = "color: var(--green);" if pnl >= 0 else "color: var(--red);"
             badge_type = "green" if pos.type == "BUY" else "red"
             badge_html = render_badge(pos.type, badge_type)
-            rows_html += f"<tr><td>{pos.position_id}</td><td>{badge_html}</td><td>${pos.entry_price:,.2f}</td><td>{pos.size:.4f}</td><td style='{pnl_style} font-weight: bold;'>${pnl:+,.2f}</td></tr>"
+            rows_html += f"<tr><td>{pos.position_id}</td><td>{badge_html}</td><td>${pos.entry_price:,.2f}</td><td>{fmt_size(pos.size)}</td><td style='{pnl_style} font-weight: bold;'>${pnl:+,.2f}</td></tr>"
         table_html = f"""
         <div class="table-wrap">
             <h4>Active Positions</h4>
@@ -1659,7 +1947,7 @@ with col_tables1:
         for p in other_pos:
             badge_type = "green" if p["type"] == "BUY" else "red"
             badge_html = render_badge(p["type"], badge_type)
-            rows_other_html += f"<tr><td>{p['ticket']}</td><td>{p['symbol']}</td><td>{badge_html}</td><td>${p['price']:,.2f}</td><td>{p['volume']:.4f}</td><td style='font-weight: bold; color: {'var(--green)' if p['profit'] >= 0 else 'var(--red)'};'>${p['profit']:+,.2f}</td><td>Magic: {p['magic']}</td></tr>"
+            rows_other_html += f"<tr><td>{p['ticket']}</td><td>{p['symbol']}</td><td>{badge_html}</td><td>${p['price']:,.2f}</td><td>{fmt_size(p['volume'])}</td><td style='font-weight: bold; color: {'var(--green)' if p['profit'] >= 0 else 'var(--red)'};'>${p['profit']:+,.2f}</td><td>Magic: {p['magic']}</td></tr>"
         
         other_table_html = f"""
         <div class="table-wrap" style="margin-top: 15px; border-color: rgba(245, 158, 11, 0.25);">
@@ -1696,7 +1984,7 @@ with col_tables2:
         for o in sorted_orders:
             badge_type = "green" if "BUY" in o.type else "red"
             badge_html = render_badge(o.type, badge_type)
-            rows_html += f"<tr><td>{o.order_id}</td><td>{badge_html}</td><td>${o.trigger_price:,.2f}</td><td>{o.size:.4f}</td></tr>"
+            rows_html += f"<tr><td>{o.order_id}</td><td>{badge_html}</td><td>${o.trigger_price:,.2f}</td><td>{fmt_size(o.size)}</td></tr>"
         table_html = f"""
         <div class="table-wrap">
             <h4>Active Grid Traps (Pending Orders)</h4>
@@ -1792,7 +2080,7 @@ with tab_trades:
             badge_type = "green" if t["type"] == "BUY" else "red"
             badge_html = render_badge(t["type"], badge_type)
             
-            rows_html += f"<tr><td>{t['position_id']}</td><td>{badge_html}</td><td>${t['entry_price']:,.2f}</td><td>${t['exit_price']:,.2f}</td><td>{t['size']:.4f}</td><td>${t['commission']:,.4f}</td><td style='{pnl_style} font-weight: bold;'>${t['pnl']:+,.2f}</td><td>{dt_entry}</td><td>{dt_exit}</td></tr>"
+            rows_html += f"<tr><td>{t['position_id']}</td><td>{badge_html}</td><td>${t['entry_price']:,.2f}</td><td>${t['exit_price']:,.2f}</td><td>{fmt_size(t['size'])}</td><td>${t['commission']:,.4f}</td><td style='{pnl_style} font-weight: bold;'>${t['pnl']:+,.2f}</td><td>{dt_entry}</td><td>{dt_exit}</td></tr>"
         trades_html = f"""
         <div class="table-wrap">
             <table class="data-table">
@@ -1842,9 +2130,9 @@ with tab_backtest:
                 df_ticks = interpolate_ticks(df_klines)
                 
                 # Setup backtest broker & bot with zero fees
-                bt_broker = SimulatedBroker(initial_balance=bt_balance, commission_pct=0.0, slippage_pct=0.0)
+                bt_broker = SimulatedBroker(symbol=symbol_to_fetch, initial_balance=bt_balance)
                 start_price = df_ticks.iloc[0]["price"]
-                bt_order_size = 500.0 / start_price
+                bt_order_size = st.session_state.strat_order_size
                 
                 bt_bot = BreakoutGridBot(
                     bt_broker,

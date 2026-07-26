@@ -1,14 +1,22 @@
 import time
 import os
-from typing import Dict, List, Optional
+import sys
+from typing import Dict, List, Optional, Any
 from core.engine import Order, Position
 
-# Try to import MetaTrader 5, default to None if not installed (e.g., in clean development environments)
+# Try to import MetaTrader 5, default to None if not installed or blocked by policy
 try:
     import MetaTrader5 as mt5
+    # Sanity-check: if _core loaded as an empty shell (e.g. AppLocker blocked the DLL
+    # mid-import), the module exists but has no usable attributes.
+    if not hasattr(mt5, 'initialize'):
+        raise ImportError("MetaTrader5 _core DLL is blocked or failed to initialise.")
     MT5_AVAILABLE = True
-except ImportError:
+except (ImportError, Exception):
+    from typing import Any
+    mt5: Any = None
     MT5_AVAILABLE = False
+
 
 class MT5Broker:
     def __init__(self, login: int, password: str, server: str, symbol: str, symbol_suffix: str = "", magic_number: int = 998877):
@@ -46,7 +54,7 @@ class MT5Broker:
 
     def get_exness_symbol(self, ui_symbol: str) -> str:
         """
-        Maps UI symbol (e.g., BTCUSDT) to Exness MT5 symbol (e.g., BTCUSDm)
+        Maps UI symbol (e.g., BTCUSDT) to Exness MT5 symbol (e.g., BTCUSDm) and enables it in Market Watch.
         """
         symbol_map = {
             "BTCUSDT": "BTCUSD",
@@ -59,16 +67,18 @@ class MT5Broker:
         base_sym = symbol_map.get(ui_symbol, ui_symbol)
         candidate = f"{base_sym}{self.symbol_suffix}"
         
-        # If the broker does not support XAUUSD, check if they use "GOLD" instead (e.g. some Exness/other broker setups)
-        if ui_symbol == "PAXGUSDT" and MT5_AVAILABLE:
-            # Check symbol validity in MT5 terminal
-            info = mt5.symbol_info(candidate)
-            if info is None:
-                fallback_candidate = f"GOLD{self.symbol_suffix}"
-                fallback_info = mt5.symbol_info(fallback_candidate)
-                if fallback_info is not None:
-                    return fallback_candidate
-                    
+        if MT5_AVAILABLE:
+            mt5.symbol_select(candidate, True)
+            # If the broker does not support XAUUSD, check if they use "GOLD" instead (e.g. some Exness/other broker setups)
+            if ui_symbol == "PAXGUSDT":
+                info = mt5.symbol_info(candidate)
+                if info is None:
+                    fallback_candidate = f"GOLD{self.symbol_suffix}"
+                    mt5.symbol_select(fallback_candidate, True)
+                    fallback_info = mt5.symbol_info(fallback_candidate)
+                    if fallback_info is not None:
+                        return fallback_candidate
+                        
         return candidate
 
     def ensure_connected(self) -> bool:
@@ -113,12 +123,12 @@ class MT5Broker:
         account_info = mt5.account_info()
         return account_info.balance if account_info else 0.0
 
-    def get_equity(self, current_price: float = None) -> float:
+    def get_equity(self, current_price: Optional[float] = None) -> float:
         self.ensure_connected()
         account_info = mt5.account_info()
         return account_info.equity if account_info else 0.0
 
-    def get_floating_pnl(self, current_price: float = None) -> float:
+    def get_floating_pnl(self, current_price: Optional[float] = None) -> float:
         if not self.ensure_connected():
             return 0.0
             
@@ -132,7 +142,7 @@ class MT5Broker:
                     pnl += pos.profit
         return pnl
 
-    def place_order(self, type: str, trigger_price: float, size: float, timestamp: float, symbol: str = None) -> Order:
+    def place_order(self, type: str, trigger_price: float, size: float, timestamp: float, symbol: Optional[str] = None) -> Order:
         """
         Places a pending Buy Stop or Sell Stop order on the MT5 terminal.
         """
@@ -266,7 +276,7 @@ class MT5Broker:
                 print(f"Failed to cancel MT5 order {ticket}: {result.comment}")
         return None
 
-    def cancel_all_orders(self, symbol: str = None):
+    def cancel_all_orders(self, symbol: Optional[str] = None):
         """
         Cancels all pending orders placed by this bot magic number.
         """
@@ -332,17 +342,8 @@ class MT5Broker:
             return None
         pos = positions[0]
 
-        # Determine filling mode based on symbol properties
-        filling_mode = mt5.ORDER_FILLING_FOK  # Default fallback
-        info = mt5.symbol_info(pos.symbol)
-        if info is not None:
-            filling_flags = info.type_filling_mode
-            if filling_flags & mt5.SYMBOL_FILLING_FOK:
-                filling_mode = mt5.ORDER_FILLING_FOK
-            elif filling_flags & mt5.SYMBOL_FILLING_IOC:
-                filling_mode = mt5.ORDER_FILLING_IOC
-            else:
-                filling_mode = mt5.ORDER_FILLING_RETURN
+        # Default to IOC for Crypto/Forex, rely on robust retry loop to fallback if rejected
+        filling_mode = mt5.ORDER_FILLING_IOC
 
         # Opposite type to close it
         close_type = mt5.ORDER_TYPE_SELL if pos.type == mt5.POSITION_TYPE_BUY else mt5.ORDER_TYPE_BUY
@@ -370,25 +371,36 @@ class MT5Broker:
             
         success_codes = [mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_PLACED]
         
-        # Fallback loop for alternative filling modes if invalid fill occurs
-        if result.retcode in [mt5.TRADE_RETCODE_INVALID_FILL, 10014]:
-            fallback_modes = [mt5.ORDER_FILLING_FOK, mt5.ORDER_FILLING_IOC, mt5.ORDER_FILLING_RETURN]
-            for mode in fallback_modes:
-                if mode != filling_mode:
-                    request["type_filling"] = mode
-                    # Refresh tick price
-                    tick = mt5.symbol_info_tick(pos.symbol)
-                    request["price"] = tick.ask if close_type == mt5.ORDER_TYPE_BUY else tick.bid
-                    result = mt5.order_send(request)
-                    if result is not None and result.retcode in success_codes:
-                        break
+        # Robust Retry Loop (Max 5 attempts for requotes/invalid fills)
+        import time
+        attempts = 0
+        while result is not None and result.retcode not in success_codes and attempts < 5:
+            attempts += 1
+            # Requotes, Price Changed, Price Off, Invalid Price
+            if result.retcode in [10004, 10009, 10011, 10015, 10016]:
+                tick = mt5.symbol_info_tick(pos.symbol)
+                request["price"] = tick.ask if close_type == mt5.ORDER_TYPE_BUY else tick.bid
+            # Invalid fill mode
+            elif result.retcode in [mt5.TRADE_RETCODE_INVALID_FILL, 10014]:
+                if request["type_filling"] == mt5.ORDER_FILLING_FOK:
+                    request["type_filling"] = mt5.ORDER_FILLING_IOC
+                elif request["type_filling"] == mt5.ORDER_FILLING_IOC:
+                    request["type_filling"] = mt5.ORDER_FILLING_RETURN
+                else:
+                    request["type_filling"] = mt5.ORDER_FILLING_FOK
+            else:
+                # Other unrecoverable error
+                break
+                
+            result = mt5.order_send(request)
+            time.sleep(0.1)
                         
         if result is not None and result.retcode in success_codes:
             # Remove from local track
             self.ticket_to_position_id.pop(ticket, None)
             local_pos = self.open_positions.pop(position_id, None)
             
-            pnl = result.profit if result.profit is not None else 0.0
+            pnl = getattr(pos, 'profit', 0.0)
             record = {
                 "position_id": position_id,
                 "type": local_pos.type if local_pos else ("BUY" if pos.type == mt5.POSITION_TYPE_BUY else "SELL"),
@@ -407,7 +419,7 @@ class MT5Broker:
             print(f"Failed to close position {ticket}: {getattr(result, 'comment', 'N/A')} (Retcode: {getattr(result, 'retcode', 'N/A')})")
         return None
 
-    def close_all_positions(self, exit_price: float, timestamp: float, symbol: str = None) -> List[dict]:
+    def close_all_positions(self, exit_price: float, timestamp: float, symbol: Optional[str] = None) -> List[dict]:
         """
         Closes all open positions matching this bot's magic number.
         """
@@ -452,7 +464,7 @@ class MT5Broker:
 
         return closed_records
 
-    def process_tick(self, previous_price: float, current_price: float, timestamp: float, symbol: str = None) -> List[Position]:
+    def process_tick(self, previous_price: float, current_price: float, timestamp: float, symbol: Optional[str] = None) -> List[Position]:
         """
         Synchronizes with the live MT5 account state.
         Detects if any pending orders were filled by the broker.
@@ -497,25 +509,19 @@ class MT5Broker:
         # 4. Process the removed pending orders
         triggered_positions = []
         for ticket, order_id in removed_orders:
-            local_order = self.pending_orders.pop(order_id, None)
+            self.pending_orders.pop(order_id, None)
             self.ticket_to_order_id.pop(ticket, None)
 
-            if local_order:
-                # If it's now in the active positions, it was triggered/filled
-                if ticket in mt5_positions_dict:
-                    mt5_pos = mt5_positions_dict[ticket]
-                    pos_type = "BUY" if mt5_pos.type == mt5.POSITION_TYPE_BUY else "SELL"
-                    
-                    # Create Position object
-                    new_pos = Position(pos_type, mt5_pos.price_open, mt5_pos.volume, mt5_pos.time)
-                    
-                    # Store mapping
-                    self.ticket_to_position_id[ticket] = new_pos.position_id
-                    self.open_positions[new_pos.position_id] = new_pos
-                    triggered_positions.append(new_pos)
-                else:
-                    # The order was cancelled manually or timed out
-                    print(f"Pending order {ticket} was cancelled or expired on MT5.")
+        # 4.5 Sync ALL active MT5 positions into our local tracking
+        for p_ticket, mt5_pos in mt5_positions_dict.items():
+            if p_ticket not in self.ticket_to_position_id:
+                # This is a NEW position that wasn't tracked locally yet!
+                pos_type = "BUY" if mt5_pos.type == mt5.POSITION_TYPE_BUY else "SELL"
+                new_pos = Position(pos_type, mt5_pos.price_open, mt5_pos.volume, mt5_pos.time)
+                
+                self.ticket_to_position_id[p_ticket] = new_pos.position_id
+                self.open_positions[new_pos.position_id] = new_pos
+                triggered_positions.append(new_pos)
 
         # 5. Clean up any open positions that were closed directly in MT5 by the user or broker
         for ticket, pos_id in list(self.ticket_to_position_id.items()):
@@ -702,3 +708,152 @@ class MT5Broker:
 
         # Sort closed trades by exit time descending so newest shows first in UI
         self.closed_trades = sorted(self.closed_trades, key=lambda x: x["exit_time"], reverse=True)
+
+
+class SimulatedBroker:
+    """
+    A fully in-memory broker that simulates order placement and position management
+    without requiring a MetaTrader 5 terminal. Used for the Simulated Sandbox mode.
+    Implements the same interface as MT5Broker so it is a drop-in replacement.
+    """
+
+    def __init__(self, symbol: str = "BTCUSDT", initial_balance: float = 10000.0):
+        self.symbol = symbol
+        self._balance = initial_balance
+
+        self.pending_orders: Dict[str, Order] = {}
+        self.open_positions: Dict[str, Position] = {}
+        self.closed_trades: List[dict] = []
+        self.realized_pnl = 0.0
+
+        # Stub attributes to satisfy any attribute-access checks identical to MT5Broker
+        self.login = 0
+        self.server = ""
+        self.symbol_suffix = ""
+        self.magic_number = 0
+
+    # ------------------------------------------------------------------
+    # Connection stubs – always "connected" in simulation
+    # ------------------------------------------------------------------
+
+    def ensure_connected(self) -> bool:
+        return True
+
+    def sync(self):
+        """No-op: state is always in sync for a simulated broker."""
+        pass
+
+    def get_all_account_positions(self) -> list:
+        return []
+
+    def get_exness_symbol(self, ui_symbol: str) -> str:
+        return ui_symbol
+
+    # ------------------------------------------------------------------
+    # Account info
+    # ------------------------------------------------------------------
+
+    @property
+    def balance(self) -> float:
+        return self._balance
+
+    def get_equity(self, current_price: Optional[float] = None) -> float:
+        return self._balance + self.get_floating_pnl(current_price)
+
+    def get_floating_pnl(self, current_price: Optional[float] = None) -> float:
+        if current_price is None:
+            return 0.0
+        return sum(pos.get_pnl(current_price) for pos in self.open_positions.values())
+
+    # ------------------------------------------------------------------
+    # Reset
+    # ------------------------------------------------------------------
+
+    def reset(self):
+        self.pending_orders.clear()
+        self.open_positions.clear()
+        self.closed_trades.clear()
+        self.realized_pnl = 0.0
+
+    # ------------------------------------------------------------------
+    # Order management
+    # ------------------------------------------------------------------
+
+    def place_order(self, type: str, trigger_price: float, size: float, timestamp: float, symbol: Optional[str] = None) -> Order:
+        order = Order(type, trigger_price, size, timestamp)
+        self.pending_orders[order.order_id] = order
+        return order
+
+    def cancel_order(self, order_id: str) -> Optional[Order]:
+        return self.pending_orders.pop(order_id, None)
+
+    def cancel_all_orders(self, symbol: Optional[str] = None):
+        self.pending_orders.clear()
+
+    # ------------------------------------------------------------------
+    # Position management
+    # ------------------------------------------------------------------
+
+    def close_position(self, position_id: str, exit_price: float, timestamp: float) -> Optional[dict]:
+        pos = self.open_positions.pop(position_id, None)
+        if pos is None:
+            return None
+        pnl = pos.get_pnl(exit_price)
+        self._balance += pnl
+        self.realized_pnl += pnl
+        record = {
+            "position_id": position_id,
+            "type": pos.type,
+            "entry_price": pos.entry_price,
+            "exit_price": exit_price,
+            "size": pos.size,
+            "pnl": pnl,
+            "entry_time": pos.entry_time,
+            "exit_time": timestamp,
+            "commission": 0.0,
+        }
+        self.closed_trades.append(record)
+        return record
+
+    def close_all_positions(self, exit_price: float, timestamp: float, symbol: Optional[str] = None) -> List[dict]:
+        records = []
+        for pos_id in list(self.open_positions.keys()):
+            record = self.close_position(pos_id, exit_price, timestamp)
+            if record:
+                records.append(record)
+        return records
+
+    # ------------------------------------------------------------------
+    # Tick processing – simulates order triggering locally
+    # ------------------------------------------------------------------
+
+    def process_tick(self, previous_price: float, current_price: float, timestamp: float, symbol: Optional[str] = None) -> List[Position]:
+        """
+        Check each pending order to see if the price has crossed its trigger level.
+        If so, convert the order into an open position.
+        """
+        triggered_positions: List[Position] = []
+        for order_id, order in list(self.pending_orders.items()):
+            triggered = False
+            if order.type == "BUY_STOP":
+                # BUY_STOP triggers when price rises through the trigger level
+                triggered = previous_price < order.trigger_price <= current_price
+            elif order.type == "SELL_STOP":
+                # SELL_STOP triggers when price falls through the trigger level
+                triggered = previous_price > order.trigger_price >= current_price
+
+            if triggered:
+                del self.pending_orders[order_id]
+                pos_type = "BUY" if order.type == "BUY_STOP" else "SELL"
+                pos = Position(pos_type, order.trigger_price, order.size, timestamp)
+                self.open_positions[pos.position_id] = pos
+                triggered_positions.append(pos)
+
+        return triggered_positions
+
+    # ------------------------------------------------------------------
+    # History sync stubs (no-op for simulated broker)
+    # ------------------------------------------------------------------
+
+    def sync_history_from_mt5(self):
+        pass

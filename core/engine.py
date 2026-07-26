@@ -1,6 +1,9 @@
 import uuid
 import time
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Any, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from core.mt5_broker import MT5Broker
 
 class Order:
     def __init__(self, type: str, trigger_price: float, size: float, timestamp: float):
@@ -60,151 +63,11 @@ class Position:
             "pnl": pnl
         }
 
-class SimulatedBroker:
-    def __init__(self, initial_balance: float = 10000.0, commission_pct: float = 0.0, slippage_pct: float = 0.0):
-        self.initial_balance = initial_balance
-        self.balance = initial_balance
-        self.commission_pct = commission_pct
-        self.slippage_pct = slippage_pct
-        
-        self.pending_orders: Dict[str, Order] = {}
-        self.open_positions: Dict[str, Position] = {}
-        self.closed_trades: List[dict] = []
-        self.realized_pnl = 0.0
-
-    def reset(self):
-        self.balance = self.initial_balance
-        self.pending_orders.clear()
-        self.open_positions.clear()
-        self.closed_trades.clear()
-        self.realized_pnl = 0.0
-
-    def place_order(self, type: str, trigger_price: float, size: float, timestamp: float) -> Order:
-        order = Order(type, trigger_price, size, timestamp)
-        self.pending_orders[order.order_id] = order
-        return order
-
-    def cancel_order(self, order_id: str) -> Optional[Order]:
-        return self.pending_orders.pop(order_id, None)
-
-    def cancel_all_orders(self):
-        self.pending_orders.clear()
-
-    def get_floating_pnl(self, current_price: float) -> float:
-        return sum(pos.get_pnl(current_price) for pos in self.open_positions.values())
-
-    def sync(self):
-        pass
-
-    def get_all_account_positions(self) -> list:
-        return []
-
-    def get_equity(self, current_price: float) -> float:
-        return self.balance + self.get_floating_pnl(current_price)
-
-    def close_position(self, position_id: str, exit_price: float, timestamp: float) -> Optional[dict]:
-        pos = self.open_positions.pop(position_id, None)
-        if not pos:
-            return None
-
-        # Apply slippage (against the trade exit)
-        if pos.type == "BUY":
-            fill_exit_price = exit_price * (1 - self.slippage_pct)
-        else:
-            fill_exit_price = exit_price * (1 + self.slippage_pct)
-
-        # Calculate trade PnL
-        pnl = (fill_exit_price - pos.entry_price) * pos.size if pos.type == "BUY" else (pos.entry_price - fill_exit_price) * pos.size
-        
-        # Calculate exit commission
-        trade_value = pos.size * fill_exit_price
-        exit_commission = trade_value * self.commission_pct
-
-        # Update balance and statistics
-        self.balance += pnl - exit_commission
-        self.realized_pnl += pnl - exit_commission
-
-        trade_record = {
-            "position_id": pos.position_id,
-            "type": pos.type,
-            "entry_price": pos.entry_price,
-            "exit_price": fill_exit_price,
-            "size": pos.size,
-            "pnl": pnl - exit_commission,
-            "entry_time": pos.entry_time,
-            "exit_time": timestamp,
-            "commission": exit_commission
-        }
-        self.closed_trades.append(trade_record)
-        return trade_record
-
-    def close_all_positions(self, exit_price: float, timestamp: float) -> List[dict]:
-        closed_records = []
-        # Copy keys to avoid modification during iteration
-        for pos_id in list(self.open_positions.keys()):
-            record = self.close_position(pos_id, exit_price, timestamp)
-            if record:
-                closed_records.append(record)
-        return closed_records
-
-    def process_tick(self, previous_price: float, current_price: float, timestamp: float) -> List[Position]:
-        """
-        Check if any pending orders are triggered.
-        Handles tick movements.
-        """
-        triggered_positions = []
-        orders_to_trigger = []
-
-        # Find orders that were triggered in this price movement
-        for order in list(self.pending_orders.values()):
-            triggered = False
-            if order.type == "BUY_STOP":
-                # Triggered if price crosses upwards past the trigger price
-                if previous_price <= order.trigger_price <= current_price or current_price >= order.trigger_price:
-                    triggered = True
-            elif order.type == "SELL_STOP":
-                # Triggered if price crosses downwards past the trigger price
-                if previous_price >= order.trigger_price >= current_price or current_price <= order.trigger_price:
-                    triggered = True
-
-            if triggered:
-                orders_to_trigger.append(order)
-
-        # Sort triggered orders so that they trigger in the order of distance to prevent wrong sequence (simulated)
-        # e.g., if price jumps, the closest order triggers first
-        orders_to_trigger.sort(key=lambda o: abs(o.trigger_price - previous_price))
-
-        for order in orders_to_trigger:
-            if order.order_id not in self.pending_orders:
-                continue
-
-            # Remove from pending
-            self.pending_orders.pop(order.order_id)
-
-            # Apply slippage (against the entry)
-            if order.type == "BUY_STOP":
-                fill_price = order.trigger_price * (1 + self.slippage_pct)
-                pos_type = "BUY"
-            else:
-                fill_price = order.trigger_price * (1 - self.slippage_pct)
-                pos_type = "SELL"
-
-            # Commission
-            trade_value = order.size * fill_price
-            entry_commission = trade_value * self.commission_pct
-            self.balance -= entry_commission
-
-            # Open position
-            pos = Position(pos_type, fill_price, order.size, timestamp)
-            self.open_positions[pos.position_id] = pos
-            triggered_positions.append(pos)
-
-        return triggered_positions
 
 class BreakoutGridBot:
     def __init__(
         self,
-        broker: SimulatedBroker,
+        broker: 'MT5Broker',
         grid_levels: int = 5,
         grid_gap: float = 10.0,
         trap_offset: float = 5.0,
@@ -247,11 +110,11 @@ class BreakoutGridBot:
         self.current_cycle_id = 1
         
         self.cycle_history = []
-        self.cycle_start_time = None
+        self.cycle_start_time = 0.0
         self.max_floating_pnl = -float("inf")
         self.breakeven_activated = False  # True once pnl has crossed the breakeven threshold
 
-    def deploy_traps(self, current_price: float, timestamp: float, bb_width: float = None):
+    def deploy_traps(self, current_price: float, timestamp: float, bb_width: Optional[float] = None):
         """
         Cancel existing traps and place a new grid of traps centered around current_price.
         If use_bb_filter is True, deployment will be skipped if bb_width is missing or > threshold.
@@ -277,13 +140,13 @@ class BreakoutGridBot:
             # Place Buy Stop orders above the current price
             for i in range(self.grid_levels):
                 trigger_price = current_price + offset_val + (i * gap_val)
-                level_size = self.order_size * (self.order_size_multiplier ** i)
+                level_size = round(self.order_size * (self.order_size_multiplier ** i), 8)
                 self.broker.place_order("BUY_STOP", trigger_price, level_size, timestamp)
 
             # Place Sell Stop orders below the current price
             for i in range(self.grid_levels):
                 trigger_price = current_price - offset_val - (i * gap_val)
-                level_size = self.order_size * (self.order_size_multiplier ** i)
+                level_size = round(self.order_size * (self.order_size_multiplier ** i), 8)
                 self.broker.place_order("SELL_STOP", trigger_price, level_size, timestamp)
 
             self.deployed = True
@@ -297,7 +160,7 @@ class BreakoutGridBot:
             self.deployed = False
             raise e
 
-    def process_tick(self, previous_price: float, current_price: float, timestamp: float, bb_width: float = None) -> Optional[dict]:
+    def process_tick(self, previous_price: float, current_price: float, timestamp: float, bb_width: Optional[float] = None) -> Optional[dict]:
         """
         Processes a single price tick.
         Evaluates profit targets, stop losses, and cycle timeouts.
@@ -350,9 +213,10 @@ class BreakoutGridBot:
                 if self.max_floating_pnl > 0:
                     if float_pnl <= (self.max_floating_pnl - self.trailing_stop_distance):
                         trailing_stop_hit = True
-            else:
-                if float_pnl >= self.target_profit:
-                    target_hit = True
+            
+            # Always check for target profit, even if trailing stop is enabled
+            if float_pnl >= self.target_profit:
+                target_hit = True
                     
             if float_pnl <= -self.stop_loss:
                 stop_loss_hit = True
@@ -458,6 +322,5 @@ class BreakoutGridBot:
                 "exit_reason": reason
             }
             self.cycle_history.append(summary)
-            
-        # Reverse to show newest cycle first in UI
-        self.cycle_history.reverse()
+            # History is kept oldest-first (same order as process_tick appends).
+            # The UI renders it with reversed() to show newest-first.
