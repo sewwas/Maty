@@ -92,6 +92,7 @@ else:
 
 st.markdown(f"""
 <style>
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
 {vars_css}
 
 /* Hide default streamlit headers/footers */
@@ -129,6 +130,11 @@ html, body, [data-testid="stAppViewContainer"], [data-testid="stApp"], .main, .b
     flex-direction: column;
     justify-content: space-between;
     min-height: 90px;
+    transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}}
+.metric-card:hover {{
+    border-color: rgba(59,130,246,0.35);
+    box-shadow: 0 4px 20px rgba(59,130,246,0.08);
 }}
 .metric-label {{
     font-size: 0.76rem;
@@ -180,24 +186,32 @@ html, body, [data-testid="stAppViewContainer"], [data-testid="stApp"], .main, .b
     margin-bottom: 0.8rem;
 }}
 
-/* Form Control Cards */
+/* Form Control Cards — gradient top accent */
 .control-card {{
     background: var(--card);
     border: 1px solid var(--border);
+    border-top: 2px solid var(--accent);
     border-radius: var(--radius);
     padding: 1.2rem;
     box-shadow: var(--shadow);
     margin-bottom: 1rem;
+    transition: box-shadow 0.2s ease;
+}}
+.control-card:hover {{
+    box-shadow: 0 4px 24px rgba(59,130,246,0.07);
 }}
 .control-title {{
     font-size: 0.85rem;
-    font-weight: 600;
+    font-weight: 700;
     color: var(--text);
     margin-bottom: 1rem;
-    border-bottom: 1px solid var(--border-subtle);
     padding-bottom: 0.5rem;
+    border-bottom: 1px solid var(--border-subtle);
     text-transform: uppercase;
-    letter-spacing: 0.05em;
+    letter-spacing: 0.07em;
+    display: flex;
+    align-items: center;
+    gap: 6px;
 }}
 
 /* Data Table custom design */
@@ -235,6 +249,18 @@ html, body, [data-testid="stAppViewContainer"], [data-testid="stApp"], .main, .b
 .data-table tr:last-child td {{
     border-bottom: none;
 }}
+.data-table tbody tr:hover td {{
+    background: rgba(59,130,246,0.03);
+}}
+.data-table tfoot td {{
+    border-top: 2px solid var(--border);
+    border-bottom: none !important;
+    font-weight: 700;
+    background: var(--bg-subtle);
+    color: var(--text-muted);
+    font-family: 'DM Sans', sans-serif;
+    font-size: 0.74rem;
+}}
 
 /* Badge styles */
 .badge {{
@@ -242,7 +268,7 @@ html, body, [data-testid="stAppViewContainer"], [data-testid="stApp"], .main, .b
     padding: 2px 8px;
     border-radius: 5px;
     font-size: 0.7rem;
-    font-weight: 500;
+    font-weight: 600;
 }}
 .badge-green {{ color: var(--green); background: var(--green-muted); }}
 .badge-red {{ color: var(--red); background: var(--red-muted); }}
@@ -289,8 +315,145 @@ html, body, [data-testid="stAppViewContainer"], [data-testid="stApp"], .main, .b
     align-items: center;
     gap: 0.5rem;
 }}
-.brand-logo span {{
-    color: var(--accent);
+.brand-logo span {{ color: var(--accent); }}
+.brand-meta {{
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 0.72rem;
+    color: var(--text-muted);
+}}
+.brand-badge {{
+    padding: 3px 10px;
+    border-radius: 20px;
+    font-size: 0.68rem;
+    font-weight: 600;
+    letter-spacing: 0.03em;
+}}
+
+/* Pulse animation for RUNNING status dot */
+@keyframes pulse-dot {{
+    0%   {{ box-shadow: 0 0 0 0 rgba(34,197,94,0.65); }}
+    70%  {{ box-shadow: 0 0 0 7px rgba(34,197,94,0); }}
+    100% {{ box-shadow: 0 0 0 0 rgba(34,197,94,0); }}
+}}
+.pulse-dot {{
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--green);
+    animation: pulse-dot 1.8s infinite;
+    flex-shrink: 0;
+    vertical-align: middle;
+}}
+.idle-dot {{
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--text-dim);
+    flex-shrink: 0;
+    vertical-align: middle;
+}}
+
+/* KPI mega strip bar */
+.kpi-bar {{
+    display: flex;
+    gap: 0;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-top: 2px solid rgba(59,130,246,0.4);
+    border-radius: var(--radius);
+    margin-bottom: 1rem;
+    overflow: hidden;
+}}
+.kpi-item {{
+    flex: 1;
+    padding: 0.75rem 1rem;
+    border-right: 1px solid var(--border-subtle);
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    transition: background 0.15s ease;
+}}
+.kpi-item:last-child {{ border-right: none; }}
+.kpi-item:hover {{ background: var(--card-hover); }}
+.kpi-lbl {{
+    font-size: 0.67rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-muted);
+    font-weight: 600;
+}}
+.kpi-val {{
+    font-size: 1.05rem;
+    font-weight: 700;
+    font-family: 'JetBrains Mono', monospace;
+    letter-spacing: -0.01em;
+    color: var(--text);
+}}
+.kpi-sub {{
+    font-size: 0.66rem;
+    color: var(--text-dim);
+}}
+
+/* Active params glassmorphism banner */
+.params-banner {{
+    background: linear-gradient(135deg, rgba(59,130,246,0.06) 0%, rgba(245,158,11,0.04) 100%);
+    border: 1px solid rgba(59,130,246,0.18);
+    border-radius: var(--radius);
+    padding: 10px 14px;
+    margin: 6px 0 12px 0;
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+}}
+.params-banner-header {{
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    font-size: 0.77rem;
+    font-weight: 700;
+    color: var(--text);
+    letter-spacing: 0.01em;
+}}
+.params-banner-pills {{
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+}}
+.param-pill {{
+    background: rgba(255,255,255,0.04);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 3px 9px;
+    font-size: 0.7rem;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    white-space: nowrap;
+    transition: border-color 0.15s;
+}}
+.param-pill:hover {{ border-color: rgba(59,130,246,0.4); }}
+.param-pill-label {{
+    color: var(--text-muted);
+    font-size: 0.63rem;
+    font-family: 'DM Sans', sans-serif;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}}
+.param-pill-value {{
+    color: var(--text);
+    font-weight: 600;
+    font-family: 'JetBrains Mono', monospace;
+}}
+.params-banner-note {{
+    font-size: 0.67rem;
+    color: var(--text-dim);
+    padding-top: 2px;
+    border-top: 1px solid var(--border-subtle);
 }}
 
 /* Pill styled tabs overriding */
@@ -304,18 +467,14 @@ button[data-baseweb="tab"] {{
     border-radius: 7px !important;
     transition: all 0.2s ease !important;
 }}
-button[data-baseweb="tab"]:hover {{
-    color: var(--text) !important;
-}}
+button[data-baseweb="tab"]:hover {{ color: var(--text) !important; }}
 button[data-baseweb="tab"][aria-selected="true"] {{
     color: var(--text) !important;
     background: var(--card) !important;
     border-color: var(--border) !important;
     box-shadow: var(--shadow) !important;
 }}
-[data-baseweb="tab-highlight"], [data-baseweb="tab-border"] {{
-    display: none !important;
-}}
+[data-baseweb="tab-highlight"], [data-baseweb="tab-border"] {{ display: none !important; }}
 [data-baseweb="tab-list"] {{
     gap: 4px !important;
     background: var(--bg-subtle) !important;
@@ -1014,10 +1173,25 @@ if not st.session_state.price_history:
     reset_realtime_sandbox()
 
 # 6. HEADER RENDERING
+_now_str = datetime.now().strftime("%a %d %b %Y  %H:%M:%S")
+_active_markets_count = sum(1 for m in st.session_state.markets.values() if m.get("running", False))
+_broker_type_hdr = "Simulated Sandbox" if isinstance(st.session_state.broker, SimulatedBroker) else "MT5 Live"
+_broker_color = "#3b82f6" if _broker_type_hdr == "Simulated Sandbox" else "#f59e0b"
+_running_dot = '<span class="pulse-dot"></span>' if _active_markets_count > 0 else '<span class="idle-dot"></span>'
 st.markdown(f"""
 <div class="brand-container">
     <div class="brand-logo">
         ◆ MATY <span>BREAKOUT GRID BOT</span>
+    </div>
+    <div class="brand-meta">
+        {_running_dot}
+        <span style="font-weight:600;color:{'var(--green)' if _active_markets_count > 0 else 'var(--text-dim)'}">
+            {_active_markets_count} RUNNING
+        </span>
+        &nbsp;·&nbsp;
+        <span class="brand-badge" style="background:{_broker_color}18;color:{_broker_color};border:1px solid {_broker_color}33;">{_broker_type_hdr}</span>
+        &nbsp;·&nbsp;
+        <span style="font-family:'JetBrains Mono',monospace;font-size:0.7rem;">{_now_str}</span>
     </div>
 </div>
 """, unsafe_allow_html=True)
@@ -1370,12 +1544,25 @@ with col_strategy:
     _cur_is_pct = st.session_state.get("strat_is_percent", True)
     gap_str = f"{_cur_gap:.2f}%" if _cur_is_pct else f"${_cur_gap:.1f}"
     offset_str = f"{_cur_off:.2f}%" if _cur_is_pct else f"${_cur_off:.1f}"
+    _is_running_strat = st.session_state.running
+    _run_dot_html = '<span class="pulse-dot"></span> <span style="color:var(--green);font-size:0.68rem;font-weight:700;">RUNNING</span>' if _is_running_strat else '<span class="idle-dot"></span> <span style="color:var(--text-dim);font-size:0.68rem;font-weight:700;">IDLE</span>'
+    _pills = [
+        ("GAP",    gap_str),
+        ("OFFSET", offset_str),
+        ("MULT",   f"{st.session_state.strat_size_multiplier:.1f}x"),
+        ("SIZE",   fmt_size(st.session_state.strat_order_size)),
+        ("TARGET", f"${st.session_state.strat_target_profit:.1f}"),
+        ("STOP",   f"${st.session_state.strat_sl:.1f}"),
+    ]
+    _pills_html = "".join(
+        f'<span class="param-pill"><span class="param-pill-label">{lbl}</span><span class="param-pill-value">{val}</span></span>'
+        for lbl, val in _pills
+    )
     st.markdown(
-        f'<div style="background:rgba(245,158,11,0.06);border:1px solid rgba(245,158,11,0.25);border-radius:8px;padding:8px 12px;margin:6px 0 12px 0;font-size:0.78rem;color:#fef08a;">'
-        f'📌 <strong>Active Parameters for {_strat_sym_label}:</strong> '
-        f'Gap: <code>{gap_str}</code> | Offset: <code>{offset_str}</code> | Mult: <code>{st.session_state.strat_size_multiplier:.1f}x</code> | '
-        f'Base Size: <code>{st.session_state.strat_order_size}</code> | Target Profit: <code>${st.session_state.strat_target_profit:.1f}</code> | Stop Loss: <code>${st.session_state.strat_sl:.1f}</code>'
-        f'<div style="font-size:0.7rem;color:#a1a1aa;margin-top:3px;"><i>💡 Note: Updating parameters takes effect immediately if no trades are open, or on the next grid cycle when current active trades complete.</i></div>'
+        f'<div class="params-banner">'
+        f'<div class="params-banner-header">📌 Active Parameters &nbsp;&mdash;&nbsp; <strong>{_strat_sym_label}</strong>&nbsp;&nbsp;{_run_dot_html}</div>'
+        f'<div class="params-banner-pills">{_pills_html}</div>'
+        f'<div class="params-banner-note">💡 Changes apply immediately if no trades are open, or activate on the next cycle completion.</div>'
         f'</div>',
         unsafe_allow_html=True
     )
@@ -1711,7 +1898,65 @@ _coin_label_map = {
 }
 chart_coin_label = _coin_label_map.get(_active_sym, display_symbol)
 
-# 9. KPI METRIC CARDS
+# 9. KPI METRIC CARDS — full-width strip + 5 per-coin cards
+# All-markets combined totals for the KPI strip
+_all_real_pnl = sum(m.get("broker").realized_pnl for m in st.session_state.markets.values() if m.get("broker"))
+_all_open_pos = sum(len(m.get("broker").open_positions) for m in st.session_state.markets.values() if m.get("broker"))
+_all_float_pnl = sum(
+    m.get("broker").get_floating_pnl(
+        m.get("price_history", [])[-1][1] if m.get("price_history") else m.get("last_price", 0)
+    )
+    for m in st.session_state.markets.values() if m.get("broker")
+)
+_all_cycles = sum(len(m.get("bot").cycle_history) for m in st.session_state.markets.values() if m.get("bot"))
+_all_wins = sum(
+    sum(1 for c in m.get("bot").cycle_history if c.get("exit_reason") == "TARGET_PROFIT")
+    for m in st.session_state.markets.values() if m.get("bot")
+)
+_win_rate = (_all_wins / _all_cycles * 100) if _all_cycles > 0 else 0.0
+_total_pnl_color = "var(--green)" if _all_real_pnl >= 0 else "var(--red)"
+_float_color = "var(--green)" if _all_float_pnl >= 0 else "var(--red)"
+
+# Price change calculation
+_price_change_pct = ""
+if len(st.session_state.price_history) >= 2:
+    _p_first = st.session_state.price_history[0][1]
+    _p_last  = curr_price
+    if _p_first > 0:
+        _chg = (_p_last - _p_first) / _p_first * 100
+        _price_change_pct = f"{'↑' if _chg >= 0 else '↓'} {abs(_chg):.2f}%"
+
+st.markdown(f"""
+<div class="kpi-bar">
+    <div class="kpi-item">
+        <div class="kpi-lbl">📡 {chart_coin_label} Price</div>
+        <div class="kpi-val">${curr_price:,.2f}</div>
+        <div class="kpi-sub" style="color:{'var(--green)' if '↑' in _price_change_pct else 'var(--red)' if '↓' in _price_change_pct else 'var(--text-dim)'}">{_price_change_pct or 'Session Start'}</div>
+    </div>
+    <div class="kpi-item">
+        <div class="kpi-lbl">💰 Total Realized PnL</div>
+        <div class="kpi-val" style="color:{_total_pnl_color}">${_all_real_pnl:+,.2f}</div>
+        <div class="kpi-sub">All {len(st.session_state.markets)} markets combined</div>
+    </div>
+    <div class="kpi-item">
+        <div class="kpi-lbl">📈 Floating PnL</div>
+        <div class="kpi-val" style="color:{_float_color}">${_all_float_pnl:+,.2f}</div>
+        <div class="kpi-sub">{_all_open_pos} open position{'' if _all_open_pos == 1 else 's'}</div>
+    </div>
+    <div class="kpi-item">
+        <div class="kpi-lbl">🎯 Win Rate</div>
+        <div class="kpi-val">{_win_rate:.1f}%</div>
+        <div class="kpi-sub">{_all_wins} TP hits / {_all_cycles} cycles</div>
+    </div>
+    <div class="kpi-item">
+        <div class="kpi-lbl">⚡ Active Markets</div>
+        <div class="kpi-val">{_active_markets_count} / {len(st.session_state.markets)}</div>
+        <div class="kpi-sub">{'Running' if _active_markets_count > 0 else 'All idle'}</div>
+    </div>
+</div>
+""", unsafe_allow_html=True)
+
+# Per-active-coin 5-card metric row
 kpi1, kpi2, kpi3, kpi4, kpi5 = st.columns(5)
 with kpi1:
     metric_card("Current Price", f"${curr_price:,.2f}")
@@ -2036,36 +2281,78 @@ tab_cycles, tab_trades, tab_backtest = st.tabs(["🔄 Completed Cycles", "📜 D
 with tab_cycles:
     if bot_instance.cycle_history:
         rows_html = ""
+        _c_total_pnl = 0.0
+        _c_wins = 0
+        _c_losses = 0
         for cycle in reversed(bot_instance.cycle_history):
-            pnl_style = "color: var(--green);" if cycle["pnl"] >= 0 else "color: var(--red);"
-            dt_str = datetime.fromtimestamp(cycle["exit_time"]).strftime("%H:%M:%S")
-            duration = cycle["exit_time"] - cycle["start_time"]
-            
-            rows_html += f"<tr><td>Cycle #{cycle['cycle_id']}</td><td>${cycle['deploy_price']:,.2f}</td><td>${cycle['exit_price']:,.2f}</td><td>{cycle['trades_count']} trades</td><td>{duration:.1f}s</td><td style='{pnl_style} font-weight: bold;'>${cycle['pnl']:+,.2f}</td><td>{dt_str}</td></tr>"
+            _c_total_pnl += cycle["pnl"]
+            pnl_color = "var(--green)" if cycle["pnl"] >= 0 else "var(--red)"
+            dt_str = datetime.fromtimestamp(cycle["exit_time"]).strftime("%m/%d %H:%M:%S")
+            dur_s = cycle["exit_time"] - cycle["start_time"]
+            dur_str = f"{int(dur_s//60)}m {int(dur_s%60)}s" if dur_s >= 60 else f"{dur_s:.1f}s"
+            reason = cycle.get("exit_reason", "")
+            if reason == "TARGET_PROFIT":
+                reason_badge = '<span class="badge badge-green">✓ TARGET</span>'
+                _c_wins += 1
+            elif reason == "STOP_LOSS":
+                reason_badge = '<span class="badge badge-red">✗ STOP</span>'
+                _c_losses += 1
+            elif reason == "TRAILING_STOP":
+                reason_badge = '<span class="badge badge-amber">⟳ TRAIL</span>'
+                _c_wins += 1
+            elif reason == "BREAKEVEN":
+                reason_badge = '<span class="badge badge-blue">⊘ B/E</span>'
+            elif reason == "TIMEOUT":
+                reason_badge = '<span class="badge badge-amber">⏱ TIMEOUT</span>'
+            else:
+                reason_badge = f'<span class="badge badge-blue">{reason}</span>'
+            rows_html += (
+                f"<tr>"
+                f"<td style='color:var(--text-muted);'>#{cycle['cycle_id']}</td>"
+                f"<td>${cycle['deploy_price']:,.2f}</td>"
+                f"<td>${cycle['exit_price']:,.2f}</td>"
+                f"<td>{cycle['trades_count']}</td>"
+                f"<td style='color:var(--text-muted);'>{dur_str}</td>"
+                f"<td>{reason_badge}</td>"
+                f"<td style='color:{pnl_color};font-weight:700;'>${cycle['pnl']:+,.2f}</td>"
+                f"<td style='color:var(--text-dim);'>{dt_str}</td>"
+                f"</tr>"
+            )
+        _c_total = len(bot_instance.cycle_history)
+        _c_wr = _c_wins / _c_total * 100 if _c_total > 0 else 0
+        _foot_pnl_color = "var(--green)" if _c_total_pnl >= 0 else "var(--red)"
+        footer_html = (
+            f"<tfoot><tr>"
+            f"<td colspan='4'>📊 {_c_total} Cycles &nbsp;·&nbsp; {_c_wins}W / {_c_losses}L &nbsp;·&nbsp; Win Rate: {_c_wr:.1f}%</td>"
+            f"<td></td><td></td>"
+            f"<td style='color:{_foot_pnl_color};'>${_c_total_pnl:+,.2f} Total</td>"
+            f"<td></td>"
+            f"</tr></tfoot>"
+        )
         cycles_html = f"""
         <div class="table-wrap">
             <table class="data-table">
                 <thead>
                     <tr>
-                        <th>Cycle ID</th>
+                        <th>Cycle</th>
                         <th>Deploy Price</th>
                         <th>Exit Price</th>
-                        <th>Execution Stats</th>
+                        <th>Fills</th>
                         <th>Duration</th>
-                        <th>Total Net PnL</th>
+                        <th>Exit Reason</th>
+                        <th>Net PnL</th>
                         <th>Completed At</th>
                     </tr>
                 </thead>
-                <tbody>
-                    {rows_html}
-                </tbody>
+                <tbody>{rows_html}</tbody>
+                {footer_html}
             </table>
         </div>
         """
     else:
         cycles_html = """
         <div class="table-wrap">
-            <p style='font-size:0.8rem; color:#71717a; margin: 0;'>No completed breakout cycles yet</p>
+            <div class="empty-state"><div class="empty-state-icon">🔄</div>No completed breakout cycles yet — start the bot to begin trading</div>
         </div>
         """
     st.markdown(textwrap.dedent(cycles_html), unsafe_allow_html=True)
