@@ -28,3 +28,10 @@ This guarantees that the settings provided above are the mathematical "sweet spo
 
 
 .venv\Scripts\python.exe -m streamlit run app.py
+
+---
+## 🔄 After Every Cycle
+
+> **Cycle ends → Grid closes → New grid opens immediately.**
+
+Always. Whether Take Profit or Stop Loss — the bot resets and restarts instantly at the current price.

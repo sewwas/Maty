@@ -446,7 +446,7 @@ class MT5Broker:
                     if record:
                         closed_records.append(record)
                     else:
-                        raise RuntimeError(f"Failed to close active position {pos.ticket} on Exness MT5!")
+                        print(f"Warning: Failed to close position {pos.ticket}. Skipping and continuing with remaining positions.")
                         
         # Wait up to 1.5 seconds for MT5 to confirm all matching positions are closed on the server
         import time
@@ -675,7 +675,9 @@ class MT5Broker:
                     position_deals[pid] = []
                 position_deals[pid].append(d)
 
-        # Clear and rebuild closed trades
+        # Only clear and rebuild if we got results — prevents wiping history on API blips
+        if not position_deals:
+            return
         self.closed_trades.clear()
         self.realized_pnl = 0.0
 

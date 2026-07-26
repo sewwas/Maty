@@ -532,7 +532,7 @@ PLOT_LAYOUT = dict(
 )
 
 # --- STATE PERSISTENCE HELPERS ---
-STATE_FILE = os.path.join(os.path.expanduser("~"), ".gemini", "antigravity-ide", "bot_state.pkl")
+STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bot_state.pkl")
 os.makedirs(os.path.dirname(STATE_FILE), exist_ok=True)
 
 DEFAULT_PRICES = {
@@ -1058,11 +1058,10 @@ else:
 bot = st.session_state.bot
 broker = st.session_state.broker
 
+# Only compare grid-placement settings — size/TP/SL are locked mid-cycle and should not trigger redeployment
 settings_changed = (
     bot.grid_gap != st.session_state.strat_gap or
     bot.trap_offset != st.session_state.strat_offset or
-    bot.order_size != st.session_state.strat_order_size or
-    bot.order_size_multiplier != st.session_state.strat_size_multiplier or
     bot.is_percent != st.session_state.strat_is_percent
 )
 
@@ -1070,18 +1069,20 @@ settings_changed = (
 bot.grid_levels = 10
 bot.grid_gap = st.session_state.strat_gap
 bot.trap_offset = st.session_state.strat_offset
-bot.order_size = st.session_state.strat_order_size
-bot.order_size_multiplier = st.session_state.strat_size_multiplier
-bot.target_profit = st.session_state.strat_target_profit
 bot.auto_restart = True
 bot.is_percent = st.session_state.strat_is_percent
-bot.stop_loss = st.session_state.strat_sl
 bot.max_cycle_duration = float('inf')
 bot.cancel_opposite_on_trigger = False
-bot.use_trailing_stop = st.session_state.strat_trailing
-bot.trailing_stop_distance = st.session_state.strat_trailing_dist
-bot.use_breakeven = st.session_state.strat_breakeven
-bot.breakeven_trigger = st.session_state.strat_breakeven_trigger
+# Lock all cycle-affecting settings when positions are open — prevent mid-cycle manipulation
+if len(broker.open_positions) == 0:
+    bot.order_size = st.session_state.strat_order_size
+    bot.order_size_multiplier = st.session_state.strat_size_multiplier
+    bot.target_profit = st.session_state.strat_target_profit
+    bot.stop_loss = st.session_state.strat_sl
+    bot.use_trailing_stop = st.session_state.strat_trailing
+    bot.trailing_stop_distance = st.session_state.strat_trailing_dist
+    bot.use_breakeven = st.session_state.strat_breakeven
+    bot.breakeven_trigger = st.session_state.strat_breakeven_trigger
 bot.use_bb_filter = False
 
 # Always sync active market primitives dictionary after updating bot settings
@@ -1243,28 +1244,21 @@ with col_controls:
             new_price_history = []
             new_price = None
             
-            if False:
-                start_p = st.session_state.markets[symbol]["last_price"] if (symbol in st.session_state.markets and st.session_state.markets[symbol].get("last_price")) else default_p
-                ticks = []
-                now = time.time()
-                time_diff = now - ticks[-1][0]
-                new_price_history = [(t + time_diff, p) for t, p in ticks]
-                new_price = new_price_history[-1][1]
-            else:
-                try:
-                    df_hist = get_historical_klines(symbol, interval="1m", limit=30)
-                    if df_hist is not None and not df_hist.empty:
-                        df_ticks = interpolate_ticks(df_hist)
-                        new_price_history = list(zip(df_ticks["timestamp"], df_ticks["price"]))
-                        new_price = new_price_history[-1][1]
-                except Exception as e:
-                    print(f"Error fetching klines on symbol switch: {e}")
-                
+
+            try:
+                df_hist = get_historical_klines(symbol, interval="1m", limit=30)
+                if df_hist is not None and not df_hist.empty:
+                    df_ticks = interpolate_ticks(df_hist)
+                    new_price_history = list(zip(df_ticks["timestamp"], df_ticks["price"]))
+                    new_price = new_price_history[-1][1]
+            except Exception as e:
+                print(f"Error fetching klines on symbol switch: {e}")
+            
+            if new_price is None:
+                new_price = get_current_live_price(symbol)
                 if new_price is None:
-                    new_price = get_current_live_price(symbol)
-                    if new_price is None:
-                        new_price = st.session_state.markets[symbol]["last_price"] if (symbol in st.session_state.markets and st.session_state.markets[symbol].get("last_price")) else default_p
-                    new_price_history = [(time.time(), new_price)]
+                    new_price = st.session_state.markets[symbol]["last_price"] if (symbol in st.session_state.markets and st.session_state.markets[symbol].get("last_price")) else default_p
+                new_price_history = [(time.time(), new_price)]
             
             if symbol in st.session_state.markets:
                 # Keep existing price history if the bot is already running to avoid wiping out the history!
@@ -1825,9 +1819,9 @@ if any_running:
             m_state["price_history"].append((now, latest_price))
             m_state["last_price"] = latest_price
             
-            # Keep history to last 3000 points for charting performance
+            # Keep history to last 3000 points for charting performance (slicing is O(1) vs pop(0) O(n))
             if len(m_state["price_history"]) > 3000:
-                m_state["price_history"].pop(0)
+                m_state["price_history"] = m_state["price_history"][-3000:]
                 
             # Update references if this is the active symbol
             if sym == st.session_state.live_symbol:
@@ -1838,7 +1832,12 @@ if any_running:
             bot = m_state["bot"]
             cycle_hit = bot.process_tick(previous_price, latest_price, now)
             if cycle_hit:
-                st.toast(f"🎉 {sym} Cycle {cycle_hit['cycle_id']} exit hit target profit! PnL: ${cycle_hit['pnl']:.2f}")
+                _reason = cycle_hit.get('exit_reason', 'EXIT')
+                _icon = "🎉" if _reason == "TARGET_PROFIT" else "🛑" if _reason == "STOP_LOSS" else "⏱️"
+                _label = {"TARGET_PROFIT": "Target Profit hit", "STOP_LOSS": "Stop Loss hit",
+                          "TRAILING_STOP": "Trailing Stop hit", "BREAKEVEN": "Breakeven exit",
+                          "TIMEOUT": "Cycle timeout"}.get(_reason, _reason)
+                st.toast(f"{_icon} {sym} Cycle {cycle_hit['cycle_id']}: {_label}! PnL: ${cycle_hit['pnl']:+.2f}")
             if sym == st.session_state.live_symbol:
                 st.session_state.error_message = None
         except Exception as e:
@@ -1850,7 +1849,9 @@ if any_running:
                 st.session_state.running = False
                 st.session_state.error_message = f"Tick processing failed for {sym}: {e}"
             
-            with open(r"C:\Users\User\.gemini\antigravity-ide\brain\da951b75-b0be-4f19-83f9-09e3c668b4ce\scratch\last_error.txt", "w") as f:
+            import pathlib
+            _log_path = pathlib.Path(__file__).parent / "last_error.txt"
+            with open(_log_path, "w") as f:
                 f.write(err_str)
                 
     save_bot_state()
@@ -2302,8 +2303,10 @@ with tab_cycles:
                 _c_wins += 1
             elif reason == "BREAKEVEN":
                 reason_badge = '<span class="badge badge-blue">⊘ B/E</span>'
+                _c_wins += 1  # breakeven = capital protected
             elif reason == "TIMEOUT":
                 reason_badge = '<span class="badge badge-amber">⏱ TIMEOUT</span>'
+                _c_losses += 1  # timeout = inconclusive, counts as loss
             else:
                 reason_badge = f'<span class="badge badge-blue">{reason}</span>'
             rows_html += (
@@ -2416,26 +2419,26 @@ with tab_backtest:
             else:
                 df_ticks = interpolate_ticks(df_klines)
                 
-                # Setup backtest broker & bot with zero fees
+                # Setup backtest broker & bot — use the live bot's locked values so backtest
+                # reflects exactly what the live bot is actually running (not the unlocked UI sidebar)
                 bt_broker = SimulatedBroker(symbol=symbol_to_fetch, initial_balance=bt_balance)
                 start_price = df_ticks.iloc[0]["price"]
-                bt_order_size = st.session_state.strat_order_size
                 
                 bt_bot = BreakoutGridBot(
                     bt_broker,
                     grid_levels=10,
-                    grid_gap=st.session_state.strat_gap,
-                    trap_offset=st.session_state.strat_offset,
-                    order_size=bt_order_size,
-                    order_size_multiplier=st.session_state.strat_size_multiplier,
-                    target_profit=st.session_state.strat_target_profit,
+                    grid_gap=bot_instance.grid_gap,
+                    trap_offset=bot_instance.trap_offset,
+                    order_size=bot_instance.order_size,
+                    order_size_multiplier=bot_instance.order_size_multiplier,
+                    target_profit=bot_instance.target_profit,
                     auto_restart=True,
-                    is_percent=st.session_state.strat_is_percent,
-                    stop_loss=st.session_state.strat_sl,
+                    is_percent=bot_instance.is_percent,
+                    stop_loss=bot_instance.stop_loss,
                     max_cycle_duration=float('inf'),
                     cancel_opposite_on_trigger=False,
-                    use_trailing_stop=st.session_state.strat_trailing,
-                    trailing_stop_distance=st.session_state.strat_trailing_dist
+                    use_trailing_stop=bot_instance.use_trailing_stop,
+                    trailing_stop_distance=bot_instance.trailing_stop_distance
                 )
                 
                 equity_history = []

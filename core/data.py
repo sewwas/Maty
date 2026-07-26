@@ -133,7 +133,7 @@ def get_historical_klines(symbol: str = "BTCUSDT", interval: str = "1m", limit: 
     print(f"Error fetching historical data for {symbol} across all exchange APIs.")
     return None
 
-def interpolate_ticks(df: pd.DataFrame) -> pd.DataFrame:
+def interpolate_ticks(df: pd.DataFrame, bar_seconds: float = 60.0) -> pd.DataFrame:
     """
     Interpolates 4 ticks (Open -> High/Low -> Low/High -> Close) for each bar.
     This simulates inner-candle price movements, crucial for breakout grid order triggering.
@@ -142,6 +142,8 @@ def interpolate_ticks(df: pd.DataFrame) -> pd.DataFrame:
         Open -> Low -> High -> Close
     If it's a red bar (Close < Open):
         Open -> High -> Low -> Close
+
+    bar_seconds: duration of each candle in seconds (default 60 for 1m bars).
     """
     ticks = []
     
@@ -160,9 +162,8 @@ def interpolate_ticks(df: pd.DataFrame) -> pd.DataFrame:
             # Red candle: Open -> High -> Low -> Close
             path = [o, h, l, c]
             
-        # Distribute timestamp across the bar
-        # Assuming 1-minute interval = 60 seconds
-        dt = 15.0 # 60 / 4
+        # Distribute timestamp evenly across the bar
+        dt = bar_seconds / 4.0
         for i, val in enumerate(path):
             ticks.append({
                 "timestamp": t + (i * dt),
