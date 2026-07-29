@@ -45,4 +45,6 @@ Thumbs.db
 *.log
 .system_generated/
 *.pkl
+last_error.txt
+tmp*
 
