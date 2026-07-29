@@ -266,6 +266,26 @@ class MT5Broker:
                 comment = getattr(result, 'comment', err)
                 # MT5 retcode 10017 = TRADE_RETCODE_TRADE_DISABLED:
                 # Broker/account does not permit trading on this symbol.
+                if retcode == 10033 or (comment and "orders limit reached" in str(comment).lower()):
+                    print(f"Notice: MT5 pending orders limit reached for {exness_symbol}. Purging stale pending orders on symbol...")
+                    try:
+                        self.cancel_all_orders()
+                        # Retry placement once
+                        result = mt5.order_send(request)
+                        if result is not None and result.retcode in success_codes:
+                            comment = result.comment
+                        else:
+                            raise RuntimeError(
+                                f"MT5 Pending Orders Limit Reached for {exness_symbol}. "
+                                f"Your MT5 account has reached the maximum pending orders allowed by Exness. "
+                                f"Please click 🧹 CLEAN UP in the dashboard or delete old pending orders in MT5."
+                            )
+                    except Exception as purge_err:
+                        raise RuntimeError(
+                            f"MT5 Pending Orders Limit Reached for {exness_symbol}. "
+                            f"Your MT5 account has reached the maximum pending orders allowed by Exness. "
+                            f"Please click 🧹 CLEAN UP in the dashboard or delete old pending orders in MT5."
+                        )
                 if retcode == 10027 or (comment and "autotrading disabled" in str(comment).lower()):
                     raise RuntimeError(
                         f"AutoTrading is turned OFF in your MT5 Terminal. "
