@@ -2036,12 +2036,12 @@ if any_running:
                 _icon = {
                     "TARGET_PROFIT": "🎉", "RUNNER_EXPANSION": "🚀",
                     "STOP_LOSS": "🛑", "TRAILING_STOP": "🔔",
-                    "BREAKEVEN": "🛡️", "TIMEOUT": "⏱️"
+                    "BREAKEVEN": "🛡️", "EARLY_RANGE_EXIT": "🛡️", "TIMEOUT": "⏱️"
                 }.get(_reason, "📋")
                 _label = {
                     "TARGET_PROFIT": "Target Profit hit", "RUNNER_EXPANSION": "Runner Profit!",
                     "STOP_LOSS": "Stop Loss hit", "TRAILING_STOP": "Trailing Stop hit",
-                    "BREAKEVEN": "Breakeven exit", "TIMEOUT": "Cycle timeout"
+                    "BREAKEVEN": "Breakeven exit", "EARLY_RANGE_EXIT": "Smart Early Range Exit", "TIMEOUT": "Cycle timeout"
                 }.get(_reason, _reason)
                 st.toast(f"{_icon} {sym} Cycle {cycle_hit['cycle_id']}: {_label}! PnL: ${cycle_hit['pnl']:+.2f}")
             if sym == st.session_state.live_symbol:

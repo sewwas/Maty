@@ -538,12 +538,18 @@ class BreakoutGridBot:
                     if trailing_level > 0 and float_pnl <= trailing_level and float_pnl >= friction_floor:
                         trailing_stop_hit = True
                     
-            if self.stop_loss > 0 and float_pnl <= -self.stop_loss:
-                stop_loss_hit = True
+            # 4. SMART EARLY RANGE EXIT (On 3+ Level Fills during Range Chop)
+            # When 3 or more grid levels fill and price recovers back to friction_floor (+$3.00),
+            # exit immediately to clear the grid & free up capital instead of risking levels 6-10!
+            early_range_hit = False
+            if len(self.broker.open_positions) >= 3 and not self.in_runner_mode:
+                if float_pnl >= friction_floor:
+                    early_range_hit = True
 
-        if target_hit or runner_hit or trailing_stop_hit or stop_loss_hit or timeout_hit or breakeven_hit:
+        if target_hit or runner_hit or trailing_stop_hit or stop_loss_hit or timeout_hit or breakeven_hit or early_range_hit:
             if runner_hit:          reason = "RUNNER_EXPANSION"
             elif target_hit:        reason = "TARGET_PROFIT"
+            elif early_range_hit:   reason = "EARLY_RANGE_EXIT"
             elif trailing_stop_hit: reason = "TRAILING_STOP"
             elif breakeven_hit:     reason = "BREAKEVEN"
             elif stop_loss_hit:     reason = "STOP_LOSS"
