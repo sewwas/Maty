@@ -271,30 +271,33 @@ class BreakoutGridBot:
 
         placed_count = 0
         try:
+            buy_placed = 0
+            sell_placed = 0
             # Check and place missing BUY_STOP levels ONLY if total BUY levels < self.grid_levels
             if len(buy_pending) + len(buy_open) < self.grid_levels:
                 for i in range(self.grid_levels):
-                    if len(buy_pending) + len(buy_open) + placed_count >= self.grid_levels:
+                    if len(buy_pending) + len(buy_open) + buy_placed >= self.grid_levels:
                         break
                     target_price = center_price + offset_val + (i * gap_val)
                     # Only place if target price is above current_price and level doesn't exist in pending OR open positions
                     if target_price > current_price and not any(abs(target_price - ex) < (gap_val * 0.4) for ex in existing_buy_levels):
                         level_size = self.calculate_level_size(base_size, mult, i)
                         self.broker.place_order("BUY_STOP", target_price, level_size, timestamp)
-                        placed_count += 1
+                        buy_placed += 1
 
             # Check and place missing SELL_STOP levels ONLY if total SELL levels < self.grid_levels
             if len(sell_pending) + len(sell_open) < self.grid_levels:
                 for i in range(self.grid_levels):
-                    if len(sell_pending) + len(sell_open) + placed_count >= (self.grid_levels * 2):
+                    if len(sell_pending) + len(sell_open) + sell_placed >= self.grid_levels:
                         break
                     target_price = center_price - offset_val - (i * gap_val)
                     # Only place if target price is below current_price and level doesn't exist in pending OR open positions
                     if target_price < current_price and not any(abs(target_price - ex) < (gap_val * 0.4) for ex in existing_sell_levels):
                         level_size = self.calculate_level_size(base_size, mult, i)
                         self.broker.place_order("SELL_STOP", target_price, level_size, timestamp)
-                        placed_count += 1
+                        sell_placed += 1
 
+            placed_count = buy_placed + sell_placed
             self.deployed = True
         except Exception as e:
             print(f"Notice: Grid repair encountered non-critical order placement error: {e}")
@@ -489,7 +492,9 @@ class BreakoutGridBot:
             if self.in_runner_mode:
                 lock_pct = 0.90 if is_reversing else getattr(self, 'profit_lock_pct', 0.80)
                 hard_min_floor = max(self.target_profit * 0.50, friction_floor + 2.00)
-                runner_floor = max(hard_min_floor, self.max_floating_pnl * lock_pct)
+                # Cushion peak floor so 1-tick spread noise ($2.50) right after target hit doesn't trigger exit immediately
+                cushioned_peak_floor = max(hard_min_floor, self.max_floating_pnl - max(2.50, self.max_floating_pnl * (1.0 - lock_pct)))
+                runner_floor = min(cushioned_peak_floor, self.max_floating_pnl * lock_pct)
                 if float_pnl <= runner_floor:
                     runner_hit = True
             else:
@@ -499,30 +504,33 @@ class BreakoutGridBot:
 
             # 2. MULTI-STAGE RATCHETED BREAKEVEN PROTECTION
             if self.use_breakeven:
-                # Stage 1: 50% Target Profit hit -> Lock floor at friction_floor (covers fees/spread)
+                # Stage 1: 50% Target Profit hit -> Lock floor below current PnL (capped by friction_floor)
                 if float_pnl >= self.target_profit * getattr(self, "breakeven_trigger", 0.5):
                     self.breakeven_activated = True
-                    self.ratchet_floor = max(getattr(self, "ratchet_floor", 0.0), friction_floor)
+                    stage1_target = min(float_pnl - 1.00, friction_floor)
+                    self.ratchet_floor = max(getattr(self, "ratchet_floor", 0.0), max(1.00, stage1_target))
                 
-                # Stage 2: 75% Target Profit hit -> Ratchet floor up to 50% TP
+                # Stage 2: 75% Target Profit hit -> Ratchet floor up to 50% TP (never exceeding float_pnl - 1.00)
                 if float_pnl >= self.target_profit * 0.75:
-                    self.ratchet_floor = max(getattr(self, "ratchet_floor", 0.0), max(friction_floor + 2.00, self.target_profit * 0.50))
+                    stage2_target = min(float_pnl - 1.00, max(friction_floor + 2.00, self.target_profit * 0.50))
+                    self.ratchet_floor = max(getattr(self, "ratchet_floor", 0.0), stage2_target)
 
-                # Stage 3: 90% Target Profit hit -> Ratchet floor up to 70% TP
+                # Stage 3: 90% Target Profit hit -> Ratchet floor up to 70% TP (never exceeding float_pnl - 1.00)
                 if float_pnl >= self.target_profit * 0.90:
-                    self.ratchet_floor = max(getattr(self, "ratchet_floor", 0.0), max(friction_floor + 4.00, self.target_profit * 0.70))
+                    stage3_target = min(float_pnl - 1.00, max(friction_floor + 4.00, self.target_profit * 0.70))
+                    self.ratchet_floor = max(getattr(self, "ratchet_floor", 0.0), stage3_target)
 
             if self.use_breakeven and self.breakeven_activated and not self.in_runner_mode:
-                active_ratchet = getattr(self, "ratchet_floor", friction_floor)
-                if float_pnl <= active_ratchet:
+                active_ratchet = getattr(self, "ratchet_floor", 0.0)
+                if active_ratchet > 0 and float_pnl <= active_ratchet:
                     breakeven_hit = True
 
             # 3. TRAILING STOP (when not in runner mode)
             if self.use_trailing_stop and not self.in_runner_mode:
                 if self.max_floating_pnl >= self.trailing_stop_distance:
                     trail_dist = self.trailing_stop_distance * (1.5 if avg_delta > 0 else 1.0)
-                    trailing_level = max(friction_floor, self.max_floating_pnl - trail_dist)
-                    if friction_floor <= float_pnl <= trailing_level:
+                    trailing_level = self.max_floating_pnl - trail_dist
+                    if trailing_level > 0 and float_pnl <= trailing_level and float_pnl >= friction_floor:
                         trailing_stop_hit = True
                     
             if self.stop_loss > 0 and float_pnl <= -self.stop_loss:

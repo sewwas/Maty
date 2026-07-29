@@ -217,11 +217,14 @@ class MT5Broker:
                         trigger_price = max_allowed_price
                         print(f"Adjusted SELL_STOP trigger price to {trigger_price} to satisfy dynamic Stop Level ({stop_level_pts} pts).")
 
-            # 1. Round price to the nearest tick size (e.g. 0.01 or 0.1)
+            # 1. Round price to nearest tick size and exact symbol digits precision
             tick_size = info.trade_tick_size
+            digits = getattr(info, 'digits', 2)
             if tick_size > 0:
                 price_steps = round(trigger_price / tick_size)
-                trigger_price = round(price_steps * tick_size, 8)
+                trigger_price = round(price_steps * tick_size, digits)
+            else:
+                trigger_price = round(trigger_price, digits)
                 
             # 2. Round size/volume to the nearest volume step and clamp within min/max volume limits
             vol_min = info.volume_min
@@ -260,6 +263,23 @@ class MT5Broker:
             if result and result.retcode in [mt5.TRADE_RETCODE_INVALID_FILL, 10014]:
                 request["type_filling"] = mt5.ORDER_FILLING_IOC
                 result = mt5.order_send(request)
+                
+            # Retry handler for invalid price / invalid stops / requote errors
+            if result and result.retcode in [10015, 10016, 10004, 10011, 10013]:
+                tick = mt5.symbol_info_tick(exness_symbol)
+                info = mt5.symbol_info(exness_symbol)
+                if tick and info:
+                    point = info.point if info.point > 0 else 0.01
+                    spread_pts = (tick.ask - tick.bid) / point if point > 0 else 0
+                    stop_level_pts = int(max(info.trade_stops_level, spread_pts * 2.5)) + 2
+                    stop_level_dist = stop_level_pts * point
+                    digits = getattr(info, 'digits', 2)
+                    if type == "BUY_STOP":
+                        adjusted_p = max(trigger_price, tick.ask + stop_level_dist)
+                    else:
+                        adjusted_p = min(trigger_price, tick.bid - stop_level_dist)
+                    request["price"] = float(round(adjusted_p, digits))
+                    result = mt5.order_send(request)
                 
             if result is None or result.retcode not in success_codes:
                 retcode = getattr(result, 'retcode', None)
@@ -353,9 +373,11 @@ class MT5Broker:
 
         if symbol is None:
             symbol = self.symbol
-        # Get active orders
+        # Get active orders: try symbol query first; if empty, query full account to ensure zero missed cancellations
         exness_symbol = self.get_exness_symbol(symbol) if symbol else None
-        orders = mt5.orders_get(symbol=exness_symbol) if exness_symbol else mt5.orders_get()
+        orders = mt5.orders_get(symbol=exness_symbol) if exness_symbol else None
+        if not orders:
+            orders = mt5.orders_get()
         
         if orders:
             for mt5_order in orders:
@@ -370,7 +392,9 @@ class MT5Broker:
         import time
         for _ in range(15):
             orders_still_active = False
-            active_orders = mt5.orders_get(symbol=exness_symbol) if exness_symbol else mt5.orders_get()
+            active_orders = mt5.orders_get(symbol=exness_symbol) if exness_symbol else None
+            if not active_orders:
+                active_orders = mt5.orders_get()
             if active_orders:
                 for o in active_orders:
                     if o.magic == self.magic_number:
@@ -510,7 +534,9 @@ class MT5Broker:
         except Exception as cancel_err:
             print(f"Notice: Pre-close order cancellation: {cancel_err}")
 
-        positions = mt5.positions_get(symbol=exness_symbol) if exness_symbol else mt5.positions_get()
+        positions = mt5.positions_get(symbol=exness_symbol) if exness_symbol else None
+        if not positions:
+            positions = mt5.positions_get()
         closed_records = []
 
         if positions:
@@ -533,7 +559,9 @@ class MT5Broker:
         import time
         for _ in range(15):
             positions_still_active = False
-            active_positions = mt5.positions_get(symbol=exness_symbol) if exness_symbol else mt5.positions_get()
+            active_positions = mt5.positions_get(symbol=exness_symbol) if exness_symbol else None
+            if not active_positions:
+                active_positions = mt5.positions_get()
             if active_positions:
                 for p in active_positions:
                     if p.magic == self.magic_number:
@@ -558,7 +586,9 @@ class MT5Broker:
         exness_symbol = self.get_exness_symbol(symbol) if symbol else None
         
         # 1. Fetch current pending orders from MT5
-        mt5_orders = mt5.orders_get(symbol=exness_symbol) if exness_symbol else mt5.orders_get()
+        mt5_orders = mt5.orders_get(symbol=exness_symbol) if exness_symbol else None
+        if not mt5_orders:
+            mt5_orders = mt5.orders_get()
         if mt5_orders is None:
             print(f"Failed to fetch pending orders from MT5 (Connection error): {mt5.last_error()}")
             return []
@@ -583,7 +613,9 @@ class MT5Broker:
                 removed_orders.append((ticket, order_id))
 
         # 3. Fetch active positions from MT5
-        mt5_positions = mt5.positions_get(symbol=exness_symbol) if exness_symbol else mt5.positions_get()
+        mt5_positions = mt5.positions_get(symbol=exness_symbol) if exness_symbol else None
+        if not mt5_positions:
+            mt5_positions = mt5.positions_get()
         if mt5_positions is None:
             print(f"Failed to fetch active positions from MT5 (Connection error): {mt5.last_error()}")
             return []
@@ -614,7 +646,17 @@ class MT5Broker:
         # 5. Clean up any open positions that were closed directly in MT5 by the user or broker
         for ticket, pos_id in list(self.ticket_to_position_id.items()):
             if ticket not in mt5_positions_dict:
-                # Position was closed outside the bot
+                # Double-check specific ticket to guard against transient symbol-level MT5 API query response blips
+                try:
+                    single_pos = mt5.positions_get(ticket=ticket)
+                    if single_pos and len(single_pos) > 0:
+                        # Position is still active on MT5 server! Keep tracking locally
+                        mt5_positions_dict[ticket] = single_pos[0]
+                        continue
+                except Exception:
+                    pass
+
+                # Position was truly closed outside the bot
                 local_pos = self.open_positions.pop(pos_id, None)
                 self.ticket_to_position_id.pop(ticket, None)
                 
@@ -677,7 +719,9 @@ class MT5Broker:
         exness_symbol = self.get_exness_symbol(self.symbol) if self.symbol else None
         
         # 1. Sync pending orders
-        mt5_orders = mt5.orders_get(symbol=exness_symbol) if exness_symbol else mt5.orders_get()
+        mt5_orders = mt5.orders_get(symbol=exness_symbol) if exness_symbol else None
+        if not mt5_orders:
+            mt5_orders = mt5.orders_get()
         if mt5_orders is not None:
             self.pending_orders.clear()
             self.ticket_to_order_id.clear()
@@ -691,7 +735,9 @@ class MT5Broker:
                     self.ticket_to_order_id[o.ticket] = local_order.order_id
 
         # 2. Sync active positions
-        mt5_positions = mt5.positions_get(symbol=exness_symbol) if exness_symbol else mt5.positions_get()
+        mt5_positions = mt5.positions_get(symbol=exness_symbol) if exness_symbol else None
+        if not mt5_positions:
+            mt5_positions = mt5.positions_get()
         if mt5_positions is not None:
             self.open_positions.clear()
             self.ticket_to_position_id.clear()
