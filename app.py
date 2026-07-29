@@ -1028,6 +1028,7 @@ if st.session_state.live_symbol not in st.session_state.markets:
         "last_price": price,
         "running": False,
         "price_source": "Live Market API",
+        "strat_grid_levels": gs.get("grid_levels", 10),
         "strat_offset": gs["offset"],
         "strat_gap": gs["gap"],
         "strat_is_percent": True,
@@ -1069,6 +1070,7 @@ if "current_symbol" not in st.session_state or st.session_state.current_symbol !
     gs = get_coin_golden_settings(st.session_state.live_symbol)
     # Load each coin's saved settings from its market dict (no widget key clearing needed —
     # widget keys are now namespaced per-symbol so they are naturally isolated).
+    st.session_state.strat_grid_levels = active_market.get("strat_grid_levels", gs.get("grid_levels", 10))
     st.session_state.strat_offset = active_market.get("strat_offset", gs["offset"])
     st.session_state.strat_gap = active_market.get("strat_gap", gs["gap"])
     st.session_state.strat_is_percent = active_market.get("strat_is_percent", True)
@@ -1756,6 +1758,19 @@ with col_strategy:
             key=f"strat_gap_input_{'pct' if st.session_state.strat_is_percent else 'usd'}_{_sym_wk}"
         )
         st.session_state.strat_gap = grid_gap_val
+
+        grid_levels_val = st.number_input(
+            "Grid Levels per Side",
+            min_value=1,
+            max_value=30,
+            value=int(st.session_state.get("strat_grid_levels", 10)),
+            step=1,
+            help="Number of pending stop orders placed per side (e.g. 10 = 10 BUY_STOP + 10 SELL_STOP = 20 total orders; 20 = 20 BUY_STOP + 20 SELL_STOP = 40 total orders).",
+            key=f"strat_grid_levels_input_{_sym_wk}"
+        )
+        st.session_state.strat_grid_levels = grid_levels_val
+        if hasattr(st.session_state, "bot") and st.session_state.bot:
+            st.session_state.bot.grid_levels = grid_levels_val
         
     with strat_col2:
         target_profit_val = st.number_input(
