@@ -568,6 +568,13 @@ class MT5Broker:
             for o in mt5_orders:
                 if o.magic == self.magic_number:
                     mt5_order_tickets.add(o.ticket)
+                    if o.ticket not in self.ticket_to_order_id:
+                        # Auto-sync existing MT5 pending orders into local memory so they render on live charts & tables
+                        order_type = "BUY_STOP" if o.type in [mt5.ORDER_TYPE_BUY_STOP, 4] else "SELL_STOP"
+                        local_order = Order(order_type, o.price_open, o.volume_initial, o.time_setup)
+                        local_order.order_id = f"mt5_{o.ticket}"
+                        self.ticket_to_order_id[o.ticket] = local_order.order_id
+                        self.pending_orders[local_order.order_id] = local_order
 
         # 2. Find local pending orders that are NO LONGER present on MT5 (i.e., triggered or deleted)
         removed_orders = []
