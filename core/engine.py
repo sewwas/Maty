@@ -157,26 +157,31 @@ class BreakoutGridBot:
         Ensures strict level lot scaling so adjacent levels don't collapse to the same size,
         and clamps high levels to safe maximum volume limits.
         """
-        if mult <= 1.0 or level_idx == 0:
+        if mult == 1.0 or level_idx == 0:
             return round(base_size, 8)
 
         # Calculate raw size with exponential multiplier
         raw_size = base_size * (mult ** level_idx)
         size = round(raw_size, 8)
 
-        # Ensure strict progression if multiplier > 1.0:
-        # level i must be strictly larger than level i-1
-        prev_raw = base_size * (mult ** (level_idx - 1))
-        prev_size = round(prev_raw, 8)
-        
-        # If rounding collapsed them to the same size, enforce at least 1 min volume step increase
-        if size <= prev_size:
-            size = prev_size + 0.01
+        if mult > 1.0:
+            # Ensure strict progression if multiplier > 1.0:
+            # level i must be strictly larger than level i-1
+            prev_raw = base_size * (mult ** (level_idx - 1))
+            prev_size = round(prev_raw, 8)
+            
+            # If rounding collapsed them to the same size, enforce at least 1 min volume step increase
+            if size <= prev_size:
+                size = prev_size + 0.01
 
-        # Clamp to safe max order size cap if set (default 50.0 lots)
-        max_cap = getattr(self, "max_order_size", 50.0)
-        if max_cap > 0 and size > max_cap:
-            size = max_cap
+            # Clamp to safe max order size cap if set (default 50.0 lots)
+            max_cap = getattr(self, "max_order_size", 50.0)
+            if max_cap > 0 and size > max_cap:
+                size = max_cap
+        else:
+            # Anti-Martingale (mult < 1.0): Ensure size doesn't drop below 0.001
+            if size < 0.001:
+                size = 0.001
 
         return round(size, 8)
 
