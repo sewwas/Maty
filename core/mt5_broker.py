@@ -18,8 +18,31 @@ except (ImportError, Exception):
     MT5_AVAILABLE = False
 
 
+SYMBOL_MAGIC_NUMBERS = {
+    "BTCUSDT": 998871,
+    "ETHUSDT": 998872,
+    "SOLUSDT": 998873,
+    "BNBUSDT": 998874,
+    "DOGEUSDT": 998875,
+    "PAXGUSDT": 998876
+}
+
+class TradeDisabledError(RuntimeError):
+    """
+    Raised when MT5 returns retcode 10017 (Trade disabled) for a symbol.
+    This means the broker/account does not permit trading on that instrument.
+    The bot should skip this symbol gracefully rather than crashing.
+    """
+    pass
+
+def get_symbol_magic_number(symbol: str) -> int:
+    if not symbol:
+        return 998877
+    return SYMBOL_MAGIC_NUMBERS.get(symbol.upper(), 998870 + (abs(hash(symbol)) % 1000))
+
+
 class MT5Broker:
-    def __init__(self, login: int, password: str, server: str, symbol: str, symbol_suffix: str = "", magic_number: int = 998877):
+    def __init__(self, login: int, password: str, server: str, symbol: str, symbol_suffix: str = "", magic_number: Optional[int] = None):
         """
         Interfaces with MetaTrader 5 for real money trading on Exness.
         """
@@ -31,7 +54,7 @@ class MT5Broker:
         self.server = server
         self.symbol = symbol
         self.symbol_suffix = symbol_suffix
-        self.magic_number = magic_number
+        self.magic_number = magic_number if (magic_number is not None and magic_number != 998877) else get_symbol_magic_number(symbol)
 
         self.pending_orders: Dict[str, Order] = {}
         self.open_positions: Dict[str, Position] = {}
@@ -69,15 +92,25 @@ class MT5Broker:
         
         if MT5_AVAILABLE:
             mt5.symbol_select(candidate, True)
+            info = mt5.symbol_info(candidate)
+            if info is not None:
+                return candidate
+
+            # Auto-detect Exness symbol suffixes if candidate failed (e.g. BTCUSDm on Exness Standard)
+            for suff in ["m", "c", "_i", ".a", ""]:
+                alt_candidate = f"{base_sym}{suff}"
+                mt5.symbol_select(alt_candidate, True)
+                alt_info = mt5.symbol_info(alt_candidate)
+                if alt_info is not None:
+                    return alt_candidate
+
             # If the broker does not support XAUUSD, check if they use "GOLD" instead (e.g. some Exness/other broker setups)
             if ui_symbol == "PAXGUSDT":
-                info = mt5.symbol_info(candidate)
-                if info is None:
-                    fallback_candidate = f"GOLD{self.symbol_suffix}"
-                    mt5.symbol_select(fallback_candidate, True)
-                    fallback_info = mt5.symbol_info(fallback_candidate)
-                    if fallback_info is not None:
-                        return fallback_candidate
+                fallback_candidate = f"GOLD{self.symbol_suffix}"
+                mt5.symbol_select(fallback_candidate, True)
+                fallback_info = mt5.symbol_info(fallback_candidate)
+                if fallback_info is not None:
+                    return fallback_candidate
                         
         return candidate
 
@@ -119,12 +152,10 @@ class MT5Broker:
 
     @property
     def balance(self) -> float:
-        self.ensure_connected()
         account_info = mt5.account_info()
         return account_info.balance if account_info else 0.0
 
     def get_equity(self, current_price: Optional[float] = None) -> float:
-        self.ensure_connected()
         account_info = mt5.account_info()
         return account_info.equity if account_info else 0.0
 
@@ -139,7 +170,7 @@ class MT5Broker:
         if positions:
             for pos in positions:
                 if pos.magic == self.magic_number:
-                    pnl += pos.profit
+                    pnl += pos.profit + getattr(pos, 'commission', 0.0) + getattr(pos, 'swap', 0.0)
         return pnl
 
     def place_order(self, type: str, trigger_price: float, size: float, timestamp: float, symbol: Optional[str] = None) -> Order:
@@ -197,7 +228,7 @@ class MT5Broker:
             vol_max = info.volume_max
             vol_step = info.volume_step
             if vol_step > 0:
-                size_steps = round(size / vol_step)
+                size_steps = round((size / vol_step) + 1e-9)
                 size = round(size_steps * vol_step, 8)
             if size < vol_min:
                 size = vol_min
@@ -231,7 +262,21 @@ class MT5Broker:
                 result = mt5.order_send(request)
                 
             if result is None or result.retcode not in success_codes:
-                raise RuntimeError(f"Failed to place {type} on MT5. Error: {getattr(result, 'comment', err)}")
+                retcode = getattr(result, 'retcode', None)
+                comment = getattr(result, 'comment', err)
+                # MT5 retcode 10017 = TRADE_RETCODE_TRADE_DISABLED:
+                # Broker/account does not permit trading on this symbol.
+                if retcode == 10027 or (comment and "autotrading disabled" in str(comment).lower()):
+                    raise RuntimeError(
+                        f"AutoTrading is turned OFF in your MT5 Terminal. "
+                        f"Please click the green 'Algo Trading' button at the top of your MT5 desktop application (or press Ctrl + E) to turn it ON."
+                    )
+                if retcode == 10017 or (comment and "trade disabled" in str(comment).lower()):
+                    raise TradeDisabledError(
+                        f"Symbol '{exness_symbol}' is not available for trading on this MT5 account. "
+                        f"Exness may not offer {type} on this instrument. (Retcode: 10017)"
+                    )
+                raise RuntimeError(f"Failed to place {type} on MT5. Error: {comment}")
 
         # Create local Order representation
         order = Order(type, trigger_price, size, timestamp)
@@ -401,6 +446,16 @@ class MT5Broker:
             local_pos = self.open_positions.pop(position_id, None)
             
             pnl = getattr(pos, 'profit', 0.0)
+            comm = 0.0
+            try:
+                time.sleep(0.05)
+                deals = mt5.history_deals_get(position=ticket)
+                if deals:
+                    comm = sum(getattr(d, 'commission', 0.0) + getattr(d, 'fee', 0.0) for d in deals)
+                    pnl = sum(d.profit + getattr(d, 'commission', 0.0) + getattr(d, 'fee', 0.0) + getattr(d, 'swap', 0.0) for d in deals)
+            except Exception as deal_err:
+                print(f"Notice: Could not fetch MT5 deal history for position {ticket}: {deal_err}")
+
             record = {
                 "position_id": position_id,
                 "type": local_pos.type if local_pos else ("BUY" if pos.type == mt5.POSITION_TYPE_BUY else "SELL"),
@@ -410,7 +465,7 @@ class MT5Broker:
                 "pnl": pnl,
                 "entry_time": pos.time,
                 "exit_time": timestamp,
-                "commission": 0.0
+                "commission": comm
             }
             self.closed_trades.append(record)
             self.realized_pnl += pnl
@@ -429,6 +484,12 @@ class MT5Broker:
         if symbol is None:
             symbol = self.symbol
         exness_symbol = self.get_exness_symbol(symbol) if symbol else None
+        # Pre-exit order cleanup: cancel pending orders FIRST to eliminate execution race conditions
+        try:
+            self.cancel_all_orders()
+        except Exception as cancel_err:
+            print(f"Notice: Pre-close order cancellation: {cancel_err}")
+
         positions = mt5.positions_get(symbol=exness_symbol) if exness_symbol else mt5.positions_get()
         closed_records = []
 
@@ -538,6 +599,7 @@ class MT5Broker:
                 pos_type = local_pos.type if local_pos else "BUY"
                 
                 history_success = False
+                comm = 0.0
                 try:
                     # Request deals matching this position ticket
                     deals = mt5.history_deals_get(position=ticket)
@@ -548,7 +610,8 @@ class MT5Broker:
                         exit_deal = deals[-1]
                         entry_price = entry_deal.price
                         exit_price = exit_deal.price
-                        pnl = sum(d.profit + d.commission + d.swap for d in deals) # net profit
+                        comm = sum(getattr(d, 'commission', 0.0) + getattr(d, 'fee', 0.0) for d in deals)
+                        pnl = sum(d.profit + getattr(d, 'commission', 0.0) + getattr(d, 'fee', 0.0) + getattr(d, 'swap', 0.0) for d in deals) # net profit
                         size = exit_deal.volume
                         pos_type = "BUY" if entry_deal.type == mt5.DEAL_TYPE_BUY else "SELL"
                         history_success = True
@@ -568,7 +631,7 @@ class MT5Broker:
                     "pnl": pnl,
                     "entry_time": local_pos.entry_time if local_pos else timestamp - 60,
                     "exit_time": timestamp,
-                    "commission": 0.0
+                    "commission": comm
                 }
                 self.closed_trades.append(record)
                 self.realized_pnl += pnl
@@ -691,7 +754,8 @@ class MT5Broker:
                 
                 # Check exit type indicator to make sure it is closed
                 if exit_deal.entry in [mt5_ref.DEAL_ENTRY_OUT, mt5_ref.DEAL_ENTRY_OUT_BY, 1, 3]:
-                    pnl = sum(d.profit + d.commission + d.swap for d in d_list)
+                    comm = sum(getattr(d, 'commission', 0.0) + getattr(d, 'fee', 0.0) for d in d_list)
+                    pnl = sum(d.profit + getattr(d, 'commission', 0.0) + getattr(d, 'fee', 0.0) + getattr(d, 'swap', 0.0) for d in d_list)
                     pos_type = "BUY" if entry_deal.type == mt5_ref.DEAL_TYPE_BUY else "SELL"
                     
                     record = {
@@ -703,7 +767,7 @@ class MT5Broker:
                         "pnl": pnl,
                         "entry_time": entry_deal.time,
                         "exit_time": exit_deal.time,
-                        "commission": 0.0
+                        "commission": comm
                     }
                     self.closed_trades.append(record)
                     self.realized_pnl += pnl
@@ -719,9 +783,10 @@ class SimulatedBroker:
     Implements the same interface as MT5Broker so it is a drop-in replacement.
     """
 
-    def __init__(self, symbol: str = "BTCUSDT", initial_balance: float = 10000.0):
+    def __init__(self, symbol: str = "BTCUSDT", initial_balance: float = 10000.0, commission_rate: float = 0.0):
         self.symbol = symbol
         self._balance = initial_balance
+        self.commission_rate = commission_rate
 
         self.pending_orders: Dict[str, Order] = {}
         self.open_positions: Dict[str, Position] = {}
@@ -800,7 +865,9 @@ class SimulatedBroker:
         pos = self.open_positions.pop(position_id, None)
         if pos is None:
             return None
-        pnl = pos.get_pnl(exit_price)
+        raw_pnl = pos.get_pnl(exit_price)
+        comm = -abs(pos.size * exit_price * self.commission_rate) if self.commission_rate > 0 else 0.0
+        pnl = raw_pnl + comm
         self._balance += pnl
         self.realized_pnl += pnl
         record = {
@@ -812,7 +879,7 @@ class SimulatedBroker:
             "pnl": pnl,
             "entry_time": pos.entry_time,
             "exit_time": timestamp,
-            "commission": 0.0,
+            "commission": comm,
         }
         self.closed_trades.append(record)
         return record

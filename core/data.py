@@ -10,6 +10,9 @@ def get_live_price(symbol: str = "BTCUSDT") -> Optional[float]:
     Tries Binance -> Coinbase -> OKX -> Bybit to ensure price availability across all regions/networks.
     """
     sym = symbol.upper()
+    if sym in ("XAUUSD", "GOLD"):
+        sym = "PAXGUSDT"
+    
     # 1. Try Binance API
     try:
         url = "https://api.binance.com/api/v3/ticker/price"
@@ -22,7 +25,7 @@ def get_live_price(symbol: str = "BTCUSDT") -> Optional[float]:
         pass
 
     # 2. Fallback to Coinbase API
-    base = sym.replace("USDT", "").replace("USD", "")
+    base = "PAXG" if sym == "PAXGUSDT" else sym.replace("USDT", "").replace("USD", "")
     try:
         coinbase_url = f"https://api.coinbase.com/v2/prices/{base}-USD/spot"
         response = requests.get(coinbase_url, timeout=1.5)
@@ -65,6 +68,8 @@ def get_historical_klines(symbol: str = "BTCUSDT", interval: str = "1m", limit: 
     Tries Binance -> Coinbase -> OKX -> Bybit fallback chain.
     """
     sym = symbol.upper()
+    if sym in ("XAUUSD", "GOLD"):
+        sym = "PAXGUSDT"
     # 1. Try Binance API
     try:
         url = "https://api.binance.com/api/v3/klines"
@@ -87,7 +92,7 @@ def get_historical_klines(symbol: str = "BTCUSDT", interval: str = "1m", limit: 
         pass
 
     # 2. Fallback to Coinbase API
-    base = sym.replace("USDT", "").replace("USD", "")
+    base = "PAXG" if sym == "PAXGUSDT" else sym.replace("USDT", "").replace("USD", "")
     try:
         cb_url = f"https://api.exchange.coinbase.com/products/{base}-USD/candles"
         response = requests.get(cb_url, params={"granularity": 60}, timeout=3.0)

@@ -18,7 +18,7 @@ if "GLOBAL_RUNNERS" not in globals():
     GLOBAL_RUNNERS: dict = {}
 
 # Import core bot logic
-from core.mt5_broker import MT5Broker, SimulatedBroker, MT5_AVAILABLE
+from core.mt5_broker import MT5Broker, SimulatedBroker, MT5_AVAILABLE, get_symbol_magic_number, TradeDisabledError
 from core.engine import BreakoutGridBot
 from core.data import get_live_price, get_historical_klines, interpolate_ticks
 
@@ -456,6 +456,52 @@ html, body, [data-testid="stAppViewContainer"], [data-testid="stApp"], .main, .b
     border-top: 1px solid var(--border-subtle);
 }}
 
+/* Glassmorphism & Hover Animations */
+.metric-card, .chart-wrap, .control-card, .table-wrap, .kpi-bar, .params-banner {{
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1) !important;
+}}
+
+.metric-card:hover, .control-card:hover, .table-wrap:hover {{
+    border-color: rgba(59, 130, 246, 0.4) !important;
+    box-shadow: 0 8px 30px rgba(59, 130, 246, 0.12) !important;
+    transform: translateY(-1px);
+}}
+
+/* Custom Streamlit Button Styling Overrides */
+div.stButton > button {{
+    border-radius: var(--radius) !important;
+    font-weight: 600 !important;
+    font-size: 0.82rem !important;
+    letter-spacing: 0.02em !important;
+    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1) !important;
+    padding: 0.55rem 1rem !important;
+    border: 1px solid var(--border) !important;
+    background: var(--card) !important;
+    color: var(--text) !important;
+}}
+
+div.stButton > button:hover {{
+    border-color: var(--accent) !important;
+    box-shadow: 0 4px 16px rgba(59, 130, 246, 0.2) !important;
+    color: var(--text) !important;
+    transform: translateY(-1px);
+}}
+
+/* Primary Button Styling Override */
+div.stButton > button[kind="primary"] {{
+    background: linear-gradient(135deg, #10b981 0%, #059669 100%) !important;
+    border: 1px solid #10b981 !important;
+    color: #ffffff !important;
+    box-shadow: 0 4px 14px rgba(16, 185, 129, 0.25) !important;
+}}
+
+div.stButton > button[kind="primary"]:hover {{
+    box-shadow: 0 6px 20px rgba(16, 185, 129, 0.4) !important;
+    transform: translateY(-1px);
+}}
+
 /* Pill styled tabs overriding */
 button[data-baseweb="tab"] {{
     background: transparent !important;
@@ -571,8 +617,7 @@ def get_current_live_price(symbol: str = None) -> Optional[float]:
         if broker.ensure_connected():
             import MetaTrader5 as mt5_ref
             exness_symbol = broker.get_exness_symbol(symbol)
-            mt5_ref.symbol_select(exness_symbol, True)
-            tick = mt5_ref.symbol_info_tick(exness_symbol)
+            tick = mt5_ref.symbol_info_tick(exness_symbol)  # symbol_select already done in get_exness_symbol
             if tick is not None and getattr(tick, "bid", 0) > 0 and getattr(tick, "ask", 0) > 0:
                 # Center around the mid price to keep the buy/sell stops perfectly balanced
                 return (float(tick.bid) + float(tick.ask)) / 2.0
@@ -587,17 +632,26 @@ _sym_short = {
     "PAXGUSDT": "XAU"
 }
 
+_coin_label_map = {
+    "BTCUSDT": "BTC/USD",
+    "ETHUSDT": "ETH/USD",
+    "SOLUSDT": "SOL/USD",
+    "BNBUSDT": "BNB/USD",
+    "DOGEUSDT": "DOGE/USD",
+    "PAXGUSDT": "XAU/USD",
+}
+
 GOLDEN_SETTINGS = {
-    "BTCUSDT": {"gap": 0.12, "offset": 0.18, "multiplier": 1.0, "order_size": 0.012, "target_profit": 10.0, "stop_loss": 250.0},
-    "ETHUSDT": {"gap": 0.12, "offset": 0.18, "multiplier": 1.0, "order_size": 0.12, "target_profit": 10.0, "stop_loss": 250.0},
-    "SOLUSDT": {"gap": 0.08, "offset": 0.12, "multiplier": 1.0, "order_size": 2.0, "target_profit": 10.0, "stop_loss": 150.0},
-    "BNBUSDT": {"gap": 0.18, "offset": 0.27, "multiplier": 1.0, "order_size": 0.08, "target_profit": 10.0, "stop_loss": 150.0},
-    "DOGEUSDT": {"gap": 0.08, "offset": 0.12, "multiplier": 1.0, "order_size": 2000.0, "target_profit": 10.0, "stop_loss": 150.0},
-    "PAXGUSDT": {"gap": 0.08, "offset": 0.12, "multiplier": 1.0, "order_size": 0.005, "target_profit": 10.0, "stop_loss": 250.0},
+    "BTCUSDT": {"gap": 0.22, "offset": 0.33, "multiplier": 1.5, "order_size": 0.01, "target_profit": 10.0, "stop_loss": 250.0},
+    "ETHUSDT": {"gap": 0.22, "offset": 0.33, "multiplier": 1.5, "order_size": 0.10, "target_profit": 10.0, "stop_loss": 250.0},
+    "SOLUSDT": {"gap": 0.08, "offset": 0.12, "multiplier": 1.5, "order_size": 1.50, "target_profit": 10.0, "stop_loss": 150.0},
+    "BNBUSDT": {"gap": 0.12, "offset": 0.18, "multiplier": 1.5, "order_size": 0.08, "target_profit": 10.0, "stop_loss": 150.0},
+    "DOGEUSDT": {"gap": 0.08, "offset": 0.12, "multiplier": 1.5, "order_size": 1500.0, "target_profit": 10.0, "stop_loss": 150.0},
+    "PAXGUSDT": {"gap": 0.10, "offset": 0.15, "multiplier": 1.5, "order_size": 0.01, "target_profit": 10.0, "stop_loss": 250.0},
 }
 
 def get_coin_golden_settings(symbol: str) -> dict:
-    return GOLDEN_SETTINGS.get(symbol.upper(), {"gap": 0.12, "offset": 0.18, "multiplier": 1.0, "order_size": 0.1, "target_profit": 10.0, "stop_loss": 150.0})
+    return GOLDEN_SETTINGS.get(symbol.upper(), {"gap": 0.22, "offset": 0.33, "multiplier": 1.5, "order_size": 0.01, "target_profit": 10.0, "stop_loss": 250.0})
 
 def get_default_order_size(symbol: str) -> float:
     return get_coin_golden_settings(symbol)["order_size"]
@@ -619,6 +673,8 @@ def sync_active_market_primitives():
         active["strat_trailing_dist"] = st.session_state.strat_trailing_dist
         active["strat_breakeven"] = st.session_state.get("strat_breakeven", False)
         active["strat_breakeven_trigger"] = st.session_state.get("strat_breakeven_trigger", 0.5)
+        active["strat_smart_trailing"] = st.session_state.get("strat_smart_trailing", True)
+        active["strat_profit_lock_pct"] = st.session_state.get("strat_profit_lock_pct", 0.80)
         # Per-market price source (Live API vs Simulated)
         _ps_key = f"price_source_select_{st.session_state.live_symbol}"
         active["price_source"] = st.session_state.get(_ps_key, active.get("price_source", "Live Market API"))
@@ -651,7 +707,7 @@ def serialize_market_state(m_state):
         
     serialized = {
         "last_price": m_state.get("last_price"),
-        "price_history": m_state.get("price_history", []),
+        "price_history": [],  # not persisted — rebuilt from live API on startup
         "running": m_state.get("running", False),
         "price_source": m_state.get("price_source", "Live Market API"),
         "strat_offset": m_state.get("strat_offset"),
@@ -665,6 +721,8 @@ def serialize_market_state(m_state):
         "strat_trailing_dist": m_state.get("strat_trailing_dist"),
         "strat_breakeven": m_state.get("strat_breakeven", False),
         "strat_breakeven_trigger": m_state.get("strat_breakeven_trigger", 0.5),
+        "strat_smart_trailing": m_state.get("strat_smart_trailing", True),
+        "strat_profit_lock_pct": m_state.get("strat_profit_lock_pct", 0.80),
         
         # Broker details
         "broker_class": broker.__class__.__name__,
@@ -684,7 +742,8 @@ def serialize_market_state(m_state):
         "bot_cycle_start_time": bot.cycle_start_time,
         "bot_cycle_history": bot.cycle_history,
         "bot_max_floating_pnl": getattr(bot, "max_floating_pnl", -float("inf")),
-        "bot_breakeven_activated": getattr(bot, "breakeven_activated", False)
+        "bot_breakeven_activated": getattr(bot, "breakeven_activated", False),
+        "bot_in_runner_mode": getattr(bot, "in_runner_mode", False)
     }
     return serialized
 
@@ -714,7 +773,7 @@ def deserialize_market_state(ser, symbol):
                     server=ser.get("broker_server", ""),
                     symbol=symbol,
                     symbol_suffix=ser.get("broker_suffix", ""),
-                    magic_number=998877
+                    magic_number=get_symbol_magic_number(symbol)
                 )
             except Exception as mt5_err:
                 print(f"[{symbol}] MT5 connection failed during deserialization ({mt5_err}); falling back to SimulatedBroker.")
@@ -768,7 +827,9 @@ def deserialize_market_state(ser, symbol):
         use_trailing_stop=ser.get("strat_trailing", False),
         trailing_stop_distance=ser.get("strat_trailing_dist", 1.5),
         use_breakeven=ser.get("strat_breakeven", False),
-        breakeven_trigger=ser.get("strat_breakeven_trigger", 0.5)
+        breakeven_trigger=ser.get("strat_breakeven_trigger", 0.5),
+        use_smart_trailing=ser.get("strat_smart_trailing", True),
+        profit_lock_pct=ser.get("strat_profit_lock_pct", 0.80)
     )
     
     bot.deployed = ser.get("bot_deployed", False)
@@ -778,6 +839,7 @@ def deserialize_market_state(ser, symbol):
     bot.cycle_history = ser.get("bot_cycle_history", [])
     bot.max_floating_pnl = ser.get("bot_max_floating_pnl", -float("inf"))
     bot.breakeven_activated = ser.get("bot_breakeven_activated", False)
+    bot.in_runner_mode = ser.get("bot_in_runner_mode", False)
     
     m_state = {
         "broker": broker,
@@ -796,7 +858,10 @@ def deserialize_market_state(ser, symbol):
         "strat_trailing": ser.get("strat_trailing", False),
         "strat_trailing_dist": ser.get("strat_trailing_dist", 1.5),
         "strat_breakeven": ser.get("strat_breakeven", False),
-        "strat_breakeven_trigger": ser.get("strat_breakeven_trigger", 0.5)
+        "strat_breakeven_trigger": ser.get("strat_breakeven_trigger", 0.5),
+        "strat_smart_trailing": ser.get("strat_smart_trailing", True),
+        "strat_profit_lock_pct": ser.get("strat_profit_lock_pct", 0.80),
+        "strat_use_adaptive_gap": ser.get("strat_use_adaptive_gap", False)
     }
     return m_state
 
@@ -906,7 +971,7 @@ if st.session_state.live_symbol not in st.session_state.markets:
             server=mt5_template.server,
             symbol=st.session_state.live_symbol,
             symbol_suffix=mt5_template.symbol_suffix,
-            magic_number=998877
+            magic_number=get_symbol_magic_number(st.session_state.live_symbol)
         )
     else:
         broker = SimulatedBroker(symbol=st.session_state.live_symbol)
@@ -916,29 +981,21 @@ if st.session_state.live_symbol not in st.session_state.markets:
     
     is_simulated = st.session_state.get("price_source_select", "Live Market API") == "Simulated Market (Demo)"
     
-    if False:
-        price = get_default_price(st.session_state.live_symbol)
-        ticks = []
-        now = time.time()
-        time_diff = now - ticks[-1][0]
-        price_history = [(t + time_diff, p) for t, p in ticks]
-        price = price_history[-1][1]
-    else:
-        try:
-            df_hist = get_historical_klines(st.session_state.live_symbol, interval="1m", limit=30)
-            if df_hist is not None and not df_hist.empty:
-                df_ticks = interpolate_ticks(df_hist)
-                ticks = list(zip(df_ticks["timestamp"], df_ticks["price"]))
-                price_history = ticks
-                price = ticks[-1][1]
-        except Exception as e:
-            print(f"Error pre-populating historical klines for {st.session_state.live_symbol}: {e}")
-            
+    try:
+        df_hist = get_historical_klines(st.session_state.live_symbol, interval="1m", limit=30)
+        if df_hist is not None and not df_hist.empty:
+            df_ticks = interpolate_ticks(df_hist)
+            ticks = list(zip(df_ticks["timestamp"], df_ticks["price"]))
+            price_history = ticks
+            price = ticks[-1][1]
+    except Exception as e:
+        print(f"Error pre-populating historical klines for {st.session_state.live_symbol}: {e}")
+        
+    if price is None:
+        price = get_live_price(st.session_state.live_symbol)
         if price is None:
-            price = get_live_price(st.session_state.live_symbol)
-            if price is None:
-                price = get_default_price(st.session_state.live_symbol)
-            price_history = [(time.time(), price)]
+            price = get_default_price(st.session_state.live_symbol)
+        price_history = [(time.time(), price)]
         
     gs = get_coin_golden_settings(st.session_state.live_symbol)
     bot = BreakoutGridBot(
@@ -981,7 +1038,10 @@ if st.session_state.live_symbol not in st.session_state.markets:
         "strat_trailing": False,
         "strat_trailing_dist": 1.5,
         "strat_breakeven": False,
-        "strat_breakeven_trigger": 0.5
+        "strat_breakeven_trigger": 0.5,
+        "strat_smart_trailing": True,
+        "strat_profit_lock_pct": 0.85,
+        "strat_use_adaptive_gap": True
     }
 
 # Sync references to current active market
@@ -993,9 +1053,13 @@ st.session_state.last_price = active_market["last_price"]
 st.session_state.running = active_market["running"]
 
 try:
-    st.session_state.broker.sync()
-    if hasattr(st.session_state.bot, "sync_cycle_history_from_trades"):
-        st.session_state.bot.sync_cycle_history_from_trades()
+    for _m_sym, _m_data in st.session_state.markets.items():
+        _brk = _m_data.get("broker")
+        _bot = _m_data.get("bot")
+        if _brk:
+            _brk.sync()
+            if _bot and hasattr(_bot, "sync_cycle_history_from_trades"):
+                _bot.sync_cycle_history_from_trades()
 except Exception as e:
     print(f"Failed to synchronize broker state: {e}")
 
@@ -1016,6 +1080,9 @@ if "current_symbol" not in st.session_state or st.session_state.current_symbol !
     st.session_state.strat_trailing_dist = active_market.get("strat_trailing_dist", 1.5)
     st.session_state.strat_breakeven = active_market.get("strat_breakeven", False)
     st.session_state.strat_breakeven_trigger = active_market.get("strat_breakeven_trigger", 0.5)
+    st.session_state.strat_smart_trailing = active_market.get("strat_smart_trailing", True)
+    st.session_state.strat_profit_lock_pct = active_market.get("strat_profit_lock_pct", 0.85)
+    st.session_state.strat_use_adaptive_gap = active_market.get("strat_use_adaptive_gap", True)
 
 # --- SYNC WIDGET INPUTS TO STATE VARIABLES ON RERUN BEFORE RENDERING ---
 # Widget keys are namespaced per-symbol so each coin has fully independent Streamlit state.
@@ -1041,6 +1108,12 @@ if f"strat_breakeven_input_{_sym_key}" in st.session_state:
     st.session_state.strat_breakeven = st.session_state[f"strat_breakeven_input_{_sym_key}"]
 if f"strat_breakeven_trigger_input_{_sym_key}" in st.session_state:
     st.session_state.strat_breakeven_trigger = st.session_state[f"strat_breakeven_trigger_input_{_sym_key}"] / 100.0
+if f"strat_smart_trailing_input_{_sym_key}" in st.session_state:
+    st.session_state.strat_smart_trailing = st.session_state[f"strat_smart_trailing_input_{_sym_key}"]
+if f"strat_profit_lock_pct_input_{_sym_key}" in st.session_state:
+    st.session_state.strat_profit_lock_pct = st.session_state[f"strat_profit_lock_pct_input_{_sym_key}"] / 100.0
+if f"strat_use_adaptive_gap_input_{_sym_key}" in st.session_state:
+    st.session_state.strat_use_adaptive_gap = st.session_state[f"strat_use_adaptive_gap_input_{_sym_key}"]
 
 if st.session_state.get("strat_is_percent", True):
     if f"strat_gap_input_pct_{_sym_key}" in st.session_state:
@@ -1058,11 +1131,13 @@ else:
 bot = st.session_state.bot
 broker = st.session_state.broker
 
-# Only compare grid-placement settings — size/TP/SL are locked mid-cycle and should not trigger redeployment
+# Only compare grid-placement settings and lot size settings — TP/SL/Trailing are locked mid-cycle
 settings_changed = (
     bot.grid_gap != st.session_state.strat_gap or
     bot.trap_offset != st.session_state.strat_offset or
-    bot.is_percent != st.session_state.strat_is_percent
+    bot.is_percent != st.session_state.strat_is_percent or
+    bot.order_size != st.session_state.strat_order_size or
+    bot.order_size_multiplier != st.session_state.strat_size_multiplier
 )
 
 # Apply settings to the bot instance
@@ -1072,21 +1147,27 @@ bot.trap_offset = st.session_state.strat_offset
 bot.auto_restart = True
 bot.is_percent = st.session_state.strat_is_percent
 bot.max_cycle_duration = float('inf')
-bot.cancel_opposite_on_trigger = False
-# Lock all cycle-affecting settings when positions are open — prevent mid-cycle manipulation
+bot.cancel_opposite_on_trigger = True
+# Target Profit, Stop Loss, Trailing Stop, and Breakeven exit levels update dynamically even during active cycles
+bot.target_profit = st.session_state.strat_target_profit
+bot.stop_loss = st.session_state.strat_sl
+bot.use_trailing_stop = st.session_state.strat_trailing
+bot.trailing_stop_distance = st.session_state.strat_trailing_dist
+bot.use_breakeven = st.session_state.strat_breakeven
+bot.breakeven_trigger = st.session_state.strat_breakeven_trigger
+bot.use_smart_trailing = st.session_state.get("strat_smart_trailing", True)
+bot.profit_lock_pct = st.session_state.get("strat_profit_lock_pct", 0.80)
+bot.use_adaptive_gap = st.session_state.get("strat_use_adaptive_gap", False)
+
+# Lock lot size settings when positions are open — prevent mid-cycle trap volume mismatches
 if len(broker.open_positions) == 0:
     bot.order_size = st.session_state.strat_order_size
     bot.order_size_multiplier = st.session_state.strat_size_multiplier
-    bot.target_profit = st.session_state.strat_target_profit
-    bot.stop_loss = st.session_state.strat_sl
-    bot.use_trailing_stop = st.session_state.strat_trailing
-    bot.trailing_stop_distance = st.session_state.strat_trailing_dist
-    bot.use_breakeven = st.session_state.strat_breakeven
-    bot.breakeven_trigger = st.session_state.strat_breakeven_trigger
 bot.use_bb_filter = False
 
-# Always sync active market primitives dictionary after updating bot settings
+# Always sync active market primitives dictionary after updating bot settings and persist to disk
 sync_active_market_primitives()
+save_bot_state()
 
 # If settings that affect grid placement/sizing changed, redeploy traps immediately
 # provided that no positions are currently open.
@@ -1100,7 +1181,15 @@ if settings_changed and bot.deployed and len(broker.open_positions) == 0:
 # Helper to reset real-time dashboard data
 def reset_realtime_sandbox():
     clear_bot_state()
+    # Stop bot and cancel orders BEFORE deleting state to prevent KeyError on next rerun
+    st.session_state.running = False
     if "markets" in st.session_state and st.session_state.live_symbol in st.session_state.markets:
+        m = st.session_state.markets[st.session_state.live_symbol]
+        try:
+            m["broker"].cancel_all_orders()
+        except Exception:
+            pass
+        m["running"] = False
         del st.session_state.markets[st.session_state.live_symbol]
     if "current_symbol" in st.session_state:
         del st.session_state.current_symbol
@@ -1115,7 +1204,7 @@ def init_mt5_broker(login, password, server, suffix):
                 server=server,
                 symbol=sym,
                 symbol_suffix=suffix,
-                magic_number=998877
+                magic_number=get_symbol_magic_number(sym)
             )
             st.session_state.markets[sym]["broker"] = broker
             st.session_state.markets[sym]["bot"].broker = broker
@@ -1164,8 +1253,14 @@ def init_simulated_broker():
     st.session_state.broker = active_market["broker"]
     st.session_state.bot = active_market["bot"]
     
-    # Deploy simulated traps
-    st.session_state.bot.deploy_traps(st.session_state.last_price, time.time())
+    # Deploy simulated traps for ALL configured symbols at their current prices
+    for sym in list(st.session_state.markets.keys()):
+        sym_bot = st.session_state.markets[sym]["bot"]
+        sym_price = st.session_state.markets[sym].get("last_price") or get_default_price(sym)
+        try:
+            sym_bot.deploy_traps(sym_price, time.time())
+        except Exception as e:
+            print(f"Failed to deploy traps for {sym} on sandbox init: {e}")
     st.session_state.mt5_startup_error = None
     save_bot_state()
 
@@ -1201,10 +1296,12 @@ st.markdown(f"""
 col_controls, col_strategy = st.columns([5, 7])
 
 with col_controls:
-    st.markdown('<div class="control-card"><div class="control-title">Execution Controls</div>', unsafe_allow_html=True)
-    ctrl_col1, ctrl_col2, ctrl_col3 = st.columns([4, 5, 3])
+    st.markdown('<div class="control-title">🎮 Execution & Market Controls</div>', unsafe_allow_html=True)
     
-    with ctrl_col1:
+    # --- SECTION A: MARKET SELECTORS (3 COLUMNS) ---
+    sel_col1, sel_col2, sel_col3 = st.columns([4, 4, 4])
+    
+    with sel_col1:
         market_options = {
             "BTCUSDT (Bitcoin)": "BTCUSDT",
             "ETHUSDT (Ethereum)": "ETHUSDT",
@@ -1222,7 +1319,7 @@ with col_controls:
                 break
                 
         selected_label = st.selectbox(
-            "Cryptocurrency / Market",
+            "Market / Symbol",
             list(market_options.keys()),
             index=default_idx,
             key="symbol_select_dropdown"
@@ -1234,17 +1331,12 @@ with col_controls:
             st.session_state.live_symbol = symbol
             st.session_state.running = st.session_state.markets[symbol].get("running", False) if symbol in st.session_state.markets else False
             
-            # With per-symbol namespaced widget keys, there is no bleed between coins.
-            # Just reset current_symbol so the parameter load block re-runs for the new coin.
             st.session_state.pop("current_symbol", None)
             
-            # Fetch fresh historical price data for the newly selected symbol to prevent huge gaps in the chart
-            is_simulated = st.session_state.get("price_source_select", "Live Market API") == "Simulated Market (Demo)"
             default_p = get_default_price(symbol)
             new_price_history = []
             new_price = None
             
-
             try:
                 df_hist = get_historical_klines(symbol, interval="1m", limit=30)
                 if df_hist is not None and not df_hist.empty:
@@ -1261,20 +1353,23 @@ with col_controls:
                 new_price_history = [(time.time(), new_price)]
             
             if symbol in st.session_state.markets:
-                # Keep existing price history if the bot is already running to avoid wiping out the history!
                 if not st.session_state.markets[symbol].get("running", False):
                     st.session_state.markets[symbol]["price_history"] = new_price_history
                     st.session_state.markets[symbol]["last_price"] = new_price
                 
-                # Sync active session pointers immediately
                 st.session_state.broker = st.session_state.markets[symbol]["broker"]
                 st.session_state.bot = st.session_state.markets[symbol]["bot"]
                 st.session_state.price_history = st.session_state.markets[symbol]["price_history"]
                 st.session_state.last_price = st.session_state.markets[symbol]["last_price"]
 
-                # Redeploy traps at new price if there are no open positions (restricted to Simulated Sandbox) and not already running
                 curr_broker = st.session_state.markets[symbol]["broker"]
                 curr_bot = st.session_state.markets[symbol]["bot"]
+                curr_gs = get_coin_golden_settings(symbol)
+                curr_bot.order_size = st.session_state.markets[symbol].get("strat_order_size", curr_gs["order_size"])
+                curr_bot.order_size_multiplier = st.session_state.markets[symbol].get("strat_size_multiplier", curr_gs["multiplier"])
+                curr_bot.grid_gap = st.session_state.markets[symbol].get("strat_gap", curr_gs["gap"])
+                curr_bot.trap_offset = st.session_state.markets[symbol].get("strat_offset", curr_gs["offset"])
+                curr_bot.is_percent = st.session_state.markets[symbol].get("strat_is_percent", True)
                 if len(curr_broker.open_positions) == 0 and isinstance(curr_broker, SimulatedBroker) and not st.session_state.markets[symbol].get("running", False):
                     try:
                         curr_bot.deploy_traps(st.session_state.markets[symbol]["last_price"], time.time())
@@ -1282,16 +1377,17 @@ with col_controls:
                     except Exception as e:
                         st.session_state.error_message = f"Failed to deploy traps for {symbol}: {e}"
             
-            save_bot_state()  # Persist symbol change to disk immediately
+            save_bot_state()
             st.rerun()
 
-            
+    with sel_col2:
         timeframe = st.selectbox(
             "Chart Timeframe",
             ["5 Seconds", "1 Minute"],
             key="timeframe_select"
         )
-        
+
+    with sel_col3:
         curr_ps = st.session_state.markets.get(st.session_state.live_symbol, {}).get("price_source", "Live Market API")
         price_source_idx = 0 if curr_ps == "Live Market API" else 1
         price_source = st.selectbox(
@@ -1303,126 +1399,172 @@ with col_controls:
         if "markets" in st.session_state and st.session_state.live_symbol in st.session_state.markets:
             st.session_state.markets[st.session_state.live_symbol]["price_source"] = price_source
 
-    with ctrl_col2:
-        st.write("") # vertical spacing align
-        run_col1, run_col2 = st.columns(2)
-        with run_col1:
-            if not st.session_state.running:
-                if st.button("▶ START BOT", type="primary", use_container_width=True):
-                    # Check if there is an existing grid on the broker account
-                    try:
-                        st.session_state.broker.sync()
-                    except Exception as sync_err:
-                        print(f"Failed to sync broker on startup: {sync_err}")
-                        
-                    has_existing_grid = len(st.session_state.broker.open_positions) > 0 or len(st.session_state.broker.pending_orders) > 0
-                    
-                    if has_existing_grid:
-                        # Reconnect and continue existing grid
-                        curr_price = st.session_state.price_history[-1][1] if st.session_state.price_history else st.session_state.last_price
-                        # Reconstruct deploy_price if not set
-                        if not getattr(st.session_state.bot, "deploy_price", 0.0):
-                            buy_stops = [o.trigger_price for o in st.session_state.broker.pending_orders.values() if o.type == "BUY_STOP"]
-                            sell_stops = [o.trigger_price for o in st.session_state.broker.pending_orders.values() if o.type == "SELL_STOP"]
-                            if buy_stops and sell_stops:
-                                st.session_state.bot.deploy_price = (min(buy_stops) + max(sell_stops)) / 2.0
-                            elif st.session_state.broker.open_positions:
-                                st.session_state.bot.deploy_price = list(st.session_state.broker.open_positions.values())[0].entry_price
-                            else:
-                                st.session_state.bot.deploy_price = curr_price
-                        
-                        st.session_state.bot.deployed = True
-                        st.session_state.running = True
-                        if "markets" in st.session_state and st.session_state.live_symbol in st.session_state.markets:
-                            st.session_state.markets[st.session_state.live_symbol]["running"] = True
-                    else:
-                        # Close any leftover positions and cancel any leftover pending orders before starting fresh
-                        try:
-                            curr_price = st.session_state.price_history[-1][1] if st.session_state.price_history else st.session_state.last_price
-                            st.session_state.broker.close_all_positions(curr_price, time.time())
-                            st.session_state.broker.cancel_all_orders()
-                        except Exception as e:
-                            print(f"Startup cleanup failed: {e}")
-                        
-                        st.session_state.bot.deployed = False
-                        st.session_state.running = True
-                        if "markets" in st.session_state and st.session_state.live_symbol in st.session_state.markets:
-                            st.session_state.markets[st.session_state.live_symbol]["running"] = True
-                    
-                    # Sync and save state
-                    sync_active_market_primitives()
-                    save_bot_state()
-                    st.rerun()
-            else:
-                if st.button("⏸ PAUSE BOT", type="secondary", use_container_width=True):
-                    st.session_state.running = False
-                    if "markets" in st.session_state and st.session_state.live_symbol in st.session_state.markets:
-                        st.session_state.markets[st.session_state.live_symbol]["running"] = False
-                    sync_active_market_primitives()
-                    save_bot_state()
-                    st.rerun()
-        with run_col2:
-            _active_label = _sym_short.get(st.session_state.live_symbol, st.session_state.live_symbol)
-            if st.button(f"🚨 CLOSE {_active_label}", type="secondary", help=f"Emergency close trades & traps for {_active_label} only", use_container_width=True):
-                curr_m = st.session_state.markets.get(st.session_state.live_symbol)
-                if curr_m:
-                    brk = curr_m["broker"]
-                    bt = curr_m["bot"]
-                    curr_p = curr_m["price_history"][-1][1] if curr_m.get("price_history") else curr_m.get("last_price")
-                    if curr_p is None:
-                        curr_p = get_current_live_price(st.session_state.live_symbol) or get_default_price(st.session_state.live_symbol)
-                    
-                    closed_cnt = 0
-                    try:
-                        closed = brk.close_all_positions(curr_p, time.time())
-                        brk.cancel_all_orders()
-                        closed_cnt = len(closed)
-                    except Exception as e:
-                        print(f"Close active pair failed for {st.session_state.live_symbol}: {e}")
-                    
-                    bt.deployed = False
-                    curr_m["running"] = False
-                    st.session_state.running = False
-                    sync_active_market_primitives()
-                    save_bot_state()
-                    st.toast(f"Emergency closed {closed_cnt} trades for {_active_label}.")
-                    st.rerun()
+    st.markdown("<div style='margin-top: 10px;'></div>", unsafe_allow_html=True)
+    _active_label = _sym_short.get(st.session_state.live_symbol, st.session_state.live_symbol)
 
-    with ctrl_col3:
-        st.write("") # vertical spacing align
-        panic_col, reset_col = st.columns(2)
-        with panic_col:
-            if st.button("⚡ PANIC ALL", type="secondary", help="Global emergency stop across all market pairs", use_container_width=True):
-                total_closed_count = 0
-                for sym, m_state in st.session_state.markets.items():
-                    brk = m_state["broker"]
-                    bt = m_state["bot"]
+    # --- SECTION B: 6-BUTTON UNIFIED COMMAND GRID (2 ROWS x 3 COLUMNS) ---
+    
+    # ROW 1: PRIMARY BOT STATE & GRID MAINTENANCE ACTIONS
+    cmd_r1_c1, cmd_r1_c2, cmd_r1_c3 = st.columns(3)
+    
+    with cmd_r1_c1:
+        if not st.session_state.running:
+            if st.button("▶ START BOT", type="primary", help="Start bot engine loop for active market", use_container_width=True):
+                try:
+                    st.session_state.broker.sync()
+                except Exception as sync_err:
+                    print(f"Failed to sync broker on startup: {sync_err}")
                     
-                    curr_p = m_state["price_history"][-1][1] if m_state.get("price_history") else m_state.get("last_price")
-                    if curr_p is None:
-                        curr_p = get_current_live_price(sym) or get_default_price(sym)
-                        
-                    try:
-                        closed = brk.close_all_positions(curr_p, time.time())
-                        brk.cancel_all_orders()
-                        total_closed_count += len(closed)
-                    except Exception as e:
-                        print(f"Panic close failed for {sym}: {e}")
-                        
-                    bt.deployed = False
-                    m_state["running"] = False
+                has_existing_grid = len(st.session_state.broker.open_positions) > 0 or len(st.session_state.broker.pending_orders) > 0
                 
+                if has_existing_grid:
+                    curr_price = st.session_state.price_history[-1][1] if st.session_state.price_history else st.session_state.last_price
+                    if not getattr(st.session_state.bot, "deploy_price", 0.0):
+                        buy_stops = [o.trigger_price for o in st.session_state.broker.pending_orders.values() if o.type == "BUY_STOP"]
+                        sell_stops = [o.trigger_price for o in st.session_state.broker.pending_orders.values() if o.type == "SELL_STOP"]
+                        if buy_stops and sell_stops:
+                            st.session_state.bot.deploy_price = (min(buy_stops) + max(sell_stops)) / 2.0
+                        elif st.session_state.broker.open_positions:
+                            st.session_state.bot.deploy_price = list(st.session_state.broker.open_positions.values())[0].entry_price
+                        else:
+                            st.session_state.bot.deploy_price = curr_price
+                    
+                    st.session_state.bot.deployed = True
+                    st.session_state.running = True
+                    if "markets" in st.session_state and st.session_state.live_symbol in st.session_state.markets:
+                        st.session_state.markets[st.session_state.live_symbol]["running"] = True
+                else:
+                    try:
+                        curr_price = st.session_state.price_history[-1][1] if st.session_state.price_history else st.session_state.last_price
+                        st.session_state.broker.close_all_positions(curr_price, time.time())
+                        st.session_state.broker.cancel_all_orders()
+                    except Exception as e:
+                        print(f"Startup cleanup failed: {e}")
+                    
+                    st.session_state.bot.deployed = False
+                    st.session_state.running = True
+                    if "markets" in st.session_state and st.session_state.live_symbol in st.session_state.markets:
+                        st.session_state.markets[st.session_state.live_symbol]["running"] = True
+                
+                sync_active_market_primitives()
+                save_bot_state()
+                st.rerun()
+        else:
+            if st.button("⏸ PAUSE BOT", type="secondary", help="Pause bot engine tick loop", use_container_width=True):
+                st.session_state.running = False
+                if "markets" in st.session_state and st.session_state.live_symbol in st.session_state.markets:
+                    st.session_state.markets[st.session_state.live_symbol]["running"] = False
+                sync_active_market_primitives()
+                save_bot_state()
+                st.rerun()
+
+    with cmd_r1_c2:
+        if st.button("🔧 REPAIR GRID", type="secondary", help=f"Clean duplicates & restore missing trap levels for {_active_label}", use_container_width=True):
+            curr_m = st.session_state.markets.get(st.session_state.live_symbol)
+            if curr_m:
+                bt = curr_m["bot"]
+                curr_p = (
+                    (curr_m["price_history"][-1][1] if curr_m.get("price_history") else None)
+                    or curr_m.get("last_price")
+                    or get_default_price(st.session_state.live_symbol)
+                )
+                from core.engine import BreakoutGridBot
+                if not hasattr(bt, "cleanup_grid"):
+                    bt.cleanup_grid = BreakoutGridBot.cleanup_grid.__get__(bt, BreakoutGridBot)
+                if not hasattr(bt, "repair_grid"):
+                    bt.repair_grid = BreakoutGridBot.repair_grid.__get__(bt, BreakoutGridBot)
+                cleaned_cnt = bt.cleanup_grid(curr_p)
+                added_cnt = bt.repair_grid(curr_p, time.time())
+                sync_active_market_primitives()
+                save_bot_state()
+                msg = f"🔧 {_active_label}: removed {cleaned_cnt} duplicate/orphan orders, added {added_cnt} missing levels."
+                st.toast(msg)
+                st.rerun()
+
+    with cmd_r1_c3:
+        if st.button("🧹 CLEAN UP", type="secondary", help=f"Remove duplicate & orphan pending orders for {_active_label}", use_container_width=True):
+            curr_m = st.session_state.markets.get(st.session_state.live_symbol)
+            if curr_m:
+                bt = curr_m["bot"]
+                curr_p = (
+                    (curr_m["price_history"][-1][1] if curr_m.get("price_history") else None)
+                    or curr_m.get("last_price")
+                    or get_default_price(st.session_state.live_symbol)
+                )
+                from core.engine import BreakoutGridBot
+                if not hasattr(bt, "cleanup_grid"):
+                    bt.cleanup_grid = BreakoutGridBot.cleanup_grid.__get__(bt, BreakoutGridBot)
+                cleaned_cnt = bt.cleanup_grid(curr_p)
+                sync_active_market_primitives()
+                save_bot_state()
+                st.toast(f"🧹 {_active_label}: cleaned up {cleaned_cnt} duplicate/orphan orders.")
+                st.rerun()
+
+    # ROW 2: SAFETY, EMERGENCY CLOSE & ENVIRONMENT RESET ACTIONS
+    cmd_r2_c1, cmd_r2_c2, cmd_r2_c3 = st.columns(3)
+
+    with cmd_r2_c1:
+        if st.button(f"🚨 CLOSE {_active_label}", type="secondary", help=f"Emergency close trades & traps for {_active_label} only", use_container_width=True):
+            curr_m = st.session_state.markets.get(st.session_state.live_symbol)
+            if curr_m:
+                brk = curr_m["broker"]
+                bt = curr_m["bot"]
+                curr_p = (
+                    (curr_m["price_history"][-1][1] if curr_m.get("price_history") else None)
+                    or curr_m.get("last_price")
+                    or get_default_price(st.session_state.live_symbol)
+                )
+                
+                closed_cnt = 0
+                try:
+                    closed = brk.close_all_positions(curr_p, time.time())
+                    brk.cancel_all_orders()
+                    closed_cnt = len(closed)
+                except Exception as e:
+                    print(f"Close active pair failed for {st.session_state.live_symbol}: {e}")
+                
+                bt.deployed = False
+                curr_m["running"] = False
                 st.session_state.running = False
                 sync_active_market_primitives()
                 save_bot_state()
-                st.warning(f"Global panic close executed! Closed {total_closed_count} open trades across all pairs.")
+                st.toast(f"Emergency closed {closed_cnt} trades for {_active_label}.")
                 st.rerun()
-        with reset_col:
-            if st.button("🔄 RESET", use_container_width=True):
-                reset_realtime_sandbox()
-                st.success("Environment reset complete.")
-                st.rerun()
-    st.markdown('</div>', unsafe_allow_html=True)
+
+    with cmd_r2_c2:
+        if st.button("⚡ PANIC ALL", type="secondary", help="Global emergency stop across all market pairs", use_container_width=True):
+            total_closed_count = 0
+            for sym, m_state in st.session_state.markets.items():
+                brk = m_state["broker"]
+                bt = m_state["bot"]
+                
+                curr_p = (
+                    (m_state["price_history"][-1][1] if m_state.get("price_history") else None)
+                    or m_state.get("last_price")
+                    or get_default_price(sym)
+                )
+                    
+                try:
+                    closed = brk.close_all_positions(curr_p, time.time())
+                    brk.cancel_all_orders()
+                    total_closed_count += len(closed)
+                except Exception as e:
+                    print(f"Panic close failed for {sym}: {e}")
+                    
+                bt.deployed = False
+                m_state["running"] = False
+            
+            st.session_state.running = False
+            sync_active_market_primitives()
+            save_bot_state()
+            st.warning(f"Global panic close executed! Closed {total_closed_count} open trades across all pairs.")
+            st.rerun()
+
+    with cmd_r2_c3:
+        if st.button("🔄 RESET", type="secondary", help="Reset simulated sandbox state", use_container_width=True):
+            reset_realtime_sandbox()
+            st.success("Environment reset complete.")
+            st.rerun()
 
     # Exness MT5 connection UI
     broker_type = "Simulated Sandbox" if isinstance(st.session_state.broker, SimulatedBroker) else "Exness MT5 Live"
@@ -1502,7 +1644,7 @@ with col_strategy:
     
     st_header_col1, st_header_col2 = st.columns([2, 1])
     with st_header_col1:
-        st.markdown(f'<div class="control-card"><div class="control-title">Strategy Tuning &nbsp;<span style="font-size:0.7rem;font-weight:400;opacity:0.55;border:1px solid rgba(255,255,255,0.15);border-radius:6px;padding:1px 7px;">for {_strat_sym_label}</span></div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="control-title">🎯 Strategy Tuning &nbsp;<span style="font-size:0.7rem;font-weight:400;opacity:0.55;border:1px solid rgba(255,255,255,0.15);border-radius:6px;padding:1px 7px;">for {_strat_sym_label}</span></div>', unsafe_allow_html=True)
     with st_header_col2:
         if st.button(f"🎯 DEFAULTS ({_strat_sym_label})", type="secondary", help=f"Reset strategy parameters for {_strat_sym_label} to Golden Settings defaults", use_container_width=True):
             gs = get_coin_golden_settings(st.session_state.live_symbol)
@@ -1636,8 +1778,26 @@ with col_strategy:
         )
         st.session_state.strat_sl = sl_val
 
+        smart_trailing_val = st.toggle(
+            "Enable Smart Profit Expansion (Runner Mode)",
+            value=st.session_state.get("strat_smart_trailing", True),
+            key=f"strat_smart_trailing_input_{_sym_wk}"
+        )
+        st.session_state.strat_smart_trailing = smart_trailing_val
+
+        profit_lock_val = st.slider(
+            "Runner Profit Lock %",
+            min_value=50,
+            max_value=95,
+            value=int(st.session_state.get("strat_profit_lock_pct", 0.80) * 100),
+            step=5,
+            disabled=not smart_trailing_val,
+            key=f"strat_profit_lock_pct_input_{_sym_wk}"
+        )
+        st.session_state.strat_profit_lock_pct = profit_lock_val / 100.0
+
         trailing_stop_val = st.toggle(
-            "Enable Trailing Stop",
+            "Enable Standard Trailing Stop",
             value=st.session_state.strat_trailing,
             key=f"strat_trailing_input_{_sym_wk}"
         )
@@ -1672,15 +1832,23 @@ with col_strategy:
             key=f"strat_breakeven_trigger_input_{_sym_wk}"
         )
         st.session_state.strat_breakeven_trigger = breakeven_trigger_val / 100.0
+
+        adaptive_gap_val = st.toggle(
+            "Enable Volatility-Adaptive Gap (Auto Spacing)",
+            value=st.session_state.get("strat_use_adaptive_gap", False),
+            help="Dynamically shrinks grid gap during quiet markets for faster micro-fills, and widens gap up to 2.5x during volatile breakout spikes to protect capital.",
+            key=f"strat_use_adaptive_gap_input_{_sym_wk}"
+        )
+        st.session_state.strat_use_adaptive_gap = adaptive_gap_val
         
     with strat_col3:
         order_size_val = st.number_input(
             "Base Order Size (Quantity)",
             min_value=0.00001,
             max_value=1000000.0,
-            value=st.session_state.strat_order_size,
-            step=0.0001 if st.session_state.strat_order_size < 0.1 else 0.01,
-            format="%.5f" if st.session_state.strat_order_size < 0.01 else "%.3f" if st.session_state.strat_order_size < 1.0 else "%.1f",
+            value=float(st.session_state.strat_order_size),
+            step=0.0001 if st.session_state.strat_order_size < 0.1 else (0.01 if st.session_state.strat_order_size < 10.0 else 1.0),
+            format="%.5f" if st.session_state.strat_order_size < 1.0 else ("%.2f" if st.session_state.strat_order_size < 100.0 else "%.1f"),
             key=f"strat_order_size_input_{_sym_wk}"
         )
         st.session_state.strat_order_size = order_size_val
@@ -1689,28 +1857,33 @@ with col_strategy:
             "Size Multiplier (Martingale)",
             min_value=0.5,
             max_value=5.0,
-            value=st.session_state.strat_size_multiplier,
+            value=float(st.session_state.strat_size_multiplier),
             step=0.1,
             format="%.2f" if st.session_state.strat_size_multiplier % 0.1 != 0 else "%.1f",
             key=f"strat_size_multiplier_input_{_sym_wk}"
         )
         st.session_state.strat_size_multiplier = size_mult_val
         
-        # Calculate 10-level Martingale progression directly from configured base order size, respecting broker volume limits
-        mt5_vol_min, mt5_vol_step = 0.0, 0.0
         cur_brk = st.session_state.get("broker")
-        if cur_brk and cur_brk.__class__.__name__ == "MT5Broker" and cur_brk.ensure_connected():
-            import MetaTrader5 as mt5_ref
-            ex_s = cur_brk.get_exness_symbol(st.session_state.live_symbol)
-            inf = mt5_ref.symbol_info(ex_s)
-            if inf:
-                mt5_vol_min = inf.volume_min
-                mt5_vol_step = inf.volume_step
+        _vol_cache_key = f"mt5_vol_{st.session_state.live_symbol}"
+        if _vol_cache_key not in st.session_state and cur_brk and cur_brk.__class__.__name__ == "MT5Broker":
+            try:
+                import MetaTrader5 as mt5_ref
+                ex_s = cur_brk.get_exness_symbol(st.session_state.live_symbol)
+                inf = mt5_ref.symbol_info(ex_s)
+                if inf:
+                    st.session_state[_vol_cache_key] = (inf.volume_min, inf.volume_step)
+            except Exception:
+                pass
+        mt5_vol_min, mt5_vol_step = st.session_state.get(_vol_cache_key, (0.0, 0.0))
 
         def calc_level_sz(base_s, mult_s, idx):
-            sz = round(base_s * (mult_s ** idx), 8)
+            if hasattr(st.session_state.bot, "calculate_level_size"):
+                sz = st.session_state.bot.calculate_level_size(base_s, mult_s, idx)
+            else:
+                sz = round(base_s * (mult_s ** idx), 8) if (mult_s > 1.0 and idx > 0) else round(base_s, 8)
             if mt5_vol_step > 0:
-                sz = round(round(sz / mt5_vol_step) * mt5_vol_step, 8)
+                sz = round(round((sz / mt5_vol_step) + 1e-9) * mt5_vol_step, 8)
             if mt5_vol_min > 0 and sz < mt5_vol_min:
                 sz = mt5_vol_min
             return sz
@@ -1719,8 +1892,6 @@ with col_strategy:
         st.caption(f"📐 10-Level Martingale Progression:  \nL1–L5: {' ➔ '.join(progression_10[:5])}  \nL6–L10: {' ➔ '.join(progression_10[5:])}")
         if mt5_vol_min > 0 and st.session_state.strat_order_size < mt5_vol_min:
             st.warning(f"⚠️ Note: Exness MT5 requires minimum **{fmt_size(mt5_vol_min)} lots** for {st.session_state.live_symbol}. Order sizes below this will be clamped to {fmt_size(mt5_vol_min)} by the broker.")
-        
-    st.markdown('</div>', unsafe_allow_html=True)
 
 # ── Per-market status bar ─────────────────────────────────────────────────────
 # Shows all configured markets at a glance: running state, open positions, P&L
@@ -1731,8 +1902,12 @@ for _s, _m in st.session_state.markets.items():
     _brk = _m.get("broker")
     _is_running = _m.get("running", False)
     _open_pos = len(_brk.open_positions) if _brk else 0
-    _pnl = sum(p.get_pnl(_m["price_history"][-1][1] if _m.get("price_history") else _m.get("last_price", 0))
-               for p in _brk.open_positions.values()) if _brk and _open_pos > 0 else 0.0
+    _price_for_pnl = (
+        (_m["price_history"][-1][1] if _m.get("price_history") else None)
+        or _m.get("last_price")
+        or get_default_price(_s)
+    )
+    _pnl = sum(p.get_pnl(_price_for_pnl) for p in _brk.open_positions.values()) if _brk and _open_pos > 0 else 0.0
     _realized = getattr(_brk, "realized_pnl", 0.0) if _brk else 0.0
     _is_active = (_s == st.session_state.live_symbol)
     _label = _sym_short.get(_s, _s)
@@ -1830,16 +2005,46 @@ if any_running:
                 
             # 2. Update engine
             bot = m_state["bot"]
-            cycle_hit = bot.process_tick(previous_price, latest_price, now)
+            bb_w = None
+            if getattr(bot, "use_adaptive_gap", False) and len(m_state.get("price_history", [])) >= 20:
+                rec_p = [p[1] for p in m_state["price_history"][-20:]]
+                _sma = np.mean(rec_p)
+                _std = np.std(rec_p)
+                if _sma > 0:
+                    bb_w = (4.0 * _std) / _sma
+            cycle_hit = bot.process_tick(previous_price, latest_price, now, bb_width=bb_w)
             if cycle_hit:
                 _reason = cycle_hit.get('exit_reason', 'EXIT')
-                _icon = "🎉" if _reason == "TARGET_PROFIT" else "🛑" if _reason == "STOP_LOSS" else "⏱️"
-                _label = {"TARGET_PROFIT": "Target Profit hit", "STOP_LOSS": "Stop Loss hit",
-                          "TRAILING_STOP": "Trailing Stop hit", "BREAKEVEN": "Breakeven exit",
-                          "TIMEOUT": "Cycle timeout"}.get(_reason, _reason)
+                _icon = {
+                    "TARGET_PROFIT": "🎉", "RUNNER_EXPANSION": "🚀",
+                    "STOP_LOSS": "🛑", "TRAILING_STOP": "🔔",
+                    "BREAKEVEN": "🛡️", "TIMEOUT": "⏱️"
+                }.get(_reason, "📋")
+                _label = {
+                    "TARGET_PROFIT": "Target Profit hit", "RUNNER_EXPANSION": "Runner Profit!",
+                    "STOP_LOSS": "Stop Loss hit", "TRAILING_STOP": "Trailing Stop hit",
+                    "BREAKEVEN": "Breakeven exit", "TIMEOUT": "Cycle timeout"
+                }.get(_reason, _reason)
                 st.toast(f"{_icon} {sym} Cycle {cycle_hit['cycle_id']}: {_label}! PnL: ${cycle_hit['pnl']:+.2f}")
             if sym == st.session_state.live_symbol:
                 st.session_state.error_message = None
+        except TradeDisabledError as tde:
+            # Symbol not tradeable on this MT5 account — pause it gracefully, don't crash
+            _tde_msg = (
+                f"⛔ {sym} is not available for trading on your Exness MT5 account. "
+                f"This symbol has been paused. "
+                f"Only BTC/USD, ETH/USD, and XAU/USD are typically available on Exness Standard accounts."
+            )
+            print(f"TradeDisabledError for {sym}: {tde}")
+            m_state["running"] = False
+            m_state["trade_disabled"] = True
+            if sym == st.session_state.live_symbol:
+                st.session_state.running = False
+                st.session_state.error_message = _tde_msg
+            import pathlib
+            _log_path = pathlib.Path(__file__).parent / "last_error.txt"
+            with open(_log_path, "w") as f:
+                f.write(f"TradeDisabledError for {sym}: {tde}")
         except Exception as e:
             import traceback
             err_str = f"Tick processing failed for {sym}: {e}\n{traceback.format_exc()}"
@@ -1877,7 +2082,7 @@ if not st.session_state.running:
                     st.session_state.markets[st.session_state.live_symbol]["price_history"] = st.session_state.price_history
                     st.session_state.markets[st.session_state.live_symbol]["last_price"] = latest_price
                 st.session_state.error_message = None
-                save_bot_state()
+                # Note: no save_bot_state() here — idle price refresh saves nothing meaningful
 
 
 # Get current state pointers — always use live_symbol as the authoritative source
@@ -1910,8 +2115,10 @@ _all_float_pnl = sum(
     for m in st.session_state.markets.values() if m.get("broker")
 )
 _all_cycles = sum(len(m.get("bot").cycle_history) for m in st.session_state.markets.values() if m.get("bot"))
+# Wins = TARGET_PROFIT + RUNNER_EXPANSION + TRAILING_STOP + BREAKEVEN (all profitable exits)
+_WIN_REASONS = {"TARGET_PROFIT", "RUNNER_EXPANSION", "TRAILING_STOP", "BREAKEVEN"}
 _all_wins = sum(
-    sum(1 for c in m.get("bot").cycle_history if c.get("exit_reason") == "TARGET_PROFIT")
+    sum(1 for c in m["bot"].cycle_history if c.get("exit_reason") in _WIN_REASONS)
     for m in st.session_state.markets.values() if m.get("bot")
 )
 _win_rate = (_all_wins / _all_cycles * 100) if _all_cycles > 0 else 0.0
@@ -1969,7 +2176,8 @@ with kpi3:
 with kpi4:
     float_pnl = broker_instance.get_floating_pnl(curr_price)
     pnl_type = "up" if float_pnl > 0 else ("down" if float_pnl < 0 else "warn")
-    metric_card("Floating PnL", f"${float_pnl:,.2f}", delta=f"{float_pnl:+.2f}" if float_pnl != 0 else None, delta_type=pnl_type)
+    runner_tag = " 🚀 RUNNER" if getattr(bot_instance, "in_runner_mode", False) else ""
+    metric_card(f"Floating PnL{runner_tag}", f"${float_pnl:,.2f}", delta=f"{float_pnl:+.2f}" if float_pnl != 0 else None, delta_type=pnl_type)
 with kpi5:
     real_pnl = broker_instance.realized_pnl
     pnl_type = "up" if real_pnl > 0 else ("down" if real_pnl < 0 else "warn")
@@ -1978,6 +2186,31 @@ with kpi5:
 # Alerts if any
 if st.session_state.error_message:
     st.warning(st.session_state.error_message)
+
+# Smart Runner Mode Live Status Banner
+if getattr(bot_instance, "in_runner_mode", False):
+    lock_pct = int(round(getattr(bot_instance, "profit_lock_pct", 0.80) * 100))
+    peak_pnl = getattr(bot_instance, "max_floating_pnl", float_pnl)
+    num_pos = len(broker_instance.open_positions)
+    friction_floor = max(3.00, 3.00 + (num_pos * 0.75))
+    floor_val = max(bot_instance.target_profit * 0.80, peak_pnl * (lock_pct / 100.0), friction_floor)
+    st.markdown(f"""
+    <div style="background: rgba(34, 197, 94, 0.1); border: 1px solid rgba(34, 197, 94, 0.4); border-radius: 8px; padding: 12px 18px; margin-top: 10px; margin-bottom: 15px; display: flex; justify-content: space-between; align-items: center;">
+        <div>
+            <div style="font-weight: 700; color: #22c55e; font-size: 0.95rem; display: flex; align-items: center; gap: 8px;">
+                <span>🚀 SMART PROFIT EXPANSION ACTIVE ({chart_coin_label})</span>
+                <span class="badge badge-green" style="font-size:0.7rem;">RUNNER MODE</span>
+            </div>
+            <div style="font-size: 0.78rem; color: var(--text-muted); margin-top: 3px;">
+                Target Profit (${bot_instance.target_profit:.2f}) surpassed! Peak PnL reached <strong>${peak_pnl:+,.2f}</strong>. Ratcheting {lock_pct}% floor to maximize trend upside.
+            </div>
+        </div>
+        <div style="text-align: right; background: rgba(34, 197, 94, 0.15); padding: 6px 14px; border-radius: 6px;">
+            <div style="font-size: 0.68rem; color: var(--text-muted); text-transform: uppercase; font-weight:600;">Locked Profit Floor</div>
+            <div style="font-size: 1.15rem; font-weight: 800; color: #22c55e;">+${floor_val:,.2f} USD</div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
 
 # 10. PLOTLY LIVE CHART
 # Convert ticks to candlesticks based on selected timeframe
@@ -2276,41 +2509,79 @@ with col_tables2:
             """
     st.markdown(textwrap.dedent(table_html), unsafe_allow_html=True)
 
-# 12. HISTORY LOGS TABS
-tab_cycles, tab_trades, tab_backtest = st.tabs(["🔄 Completed Cycles", "📜 Detailed Trades Log", "🧪 Backtesting"])
+# 12. HISTORY LOGS SECTIONS — Single unified section with pair filter
+st.markdown("---")
 
-with tab_cycles:
-    if bot_instance.cycle_history:
+# Pair filter: "All Pairs" or a specific coin
+_all_pair_labels = list(dict.fromkeys(["BTC/USD", "ETH/USD", "XAU/USD", "SOL/USD", "BNB/USD", "DOGE/USD"] + [_coin_label_map.get(s, s) for s in st.session_state.markets.keys()]))
+_filter_options = ["🌐 All Pairs"] + _all_pair_labels
+_hist_filter = st.selectbox(
+    "📊 Account History — Filter by Pair",
+    options=_filter_options,
+    index=0,
+    key="history_pair_filter"
+)
+
+st.markdown(f"### 🌐 Account History ({_hist_filter})")
+tab_all_cycles, tab_all_trades = st.tabs(["🔄 Completed Cycles", "📜 Detailed Trades Log"])
+
+# Determine which symbol maps to the selected filter label
+_filter_sym = None
+if _hist_filter != "🌐 All Pairs":
+    for _s, _lbl in _coin_label_map.items():
+        if _lbl == _hist_filter:
+            _filter_sym = _s
+            break
+
+
+with tab_all_cycles:
+    all_cycles = []
+    for sym, m_data in st.session_state.markets.items():
+        if _filter_sym and sym != _filter_sym:
+            continue
+        if m_data.get("bot") and m_data["bot"].cycle_history:
+            coin_lbl = _coin_label_map.get(sym, sym)
+            for c in m_data["bot"].cycle_history:
+                c_copy = dict(c)
+                c_copy["symbol_label"] = coin_lbl
+                all_cycles.append(c_copy)
+    all_cycles = sorted(all_cycles, key=lambda x: x["exit_time"], reverse=True)
+
+    if all_cycles:
         rows_html = ""
-        _c_total_pnl = 0.0
-        _c_wins = 0
-        _c_losses = 0
-        for cycle in reversed(bot_instance.cycle_history):
-            _c_total_pnl += cycle["pnl"]
+        _all_c_pnl = 0.0
+        _all_wins = 0
+        _all_losses = 0
+        for cycle in all_cycles:
+            _all_c_pnl += cycle["pnl"]
             pnl_color = "var(--green)" if cycle["pnl"] >= 0 else "var(--red)"
             dt_str = datetime.fromtimestamp(cycle["exit_time"]).strftime("%m/%d %H:%M:%S")
             dur_s = cycle["exit_time"] - cycle["start_time"]
             dur_str = f"{int(dur_s//60)}m {int(dur_s%60)}s" if dur_s >= 60 else f"{dur_s:.1f}s"
             reason = cycle.get("exit_reason", "")
-            if reason == "TARGET_PROFIT":
+            if reason == "RUNNER_EXPANSION":
+                reason_badge = '<span class="badge badge-green">🚀 RUNNER+</span>'
+                _all_wins += 1
+            elif reason == "TARGET_PROFIT":
                 reason_badge = '<span class="badge badge-green">✓ TARGET</span>'
-                _c_wins += 1
+                _all_wins += 1
             elif reason == "STOP_LOSS":
                 reason_badge = '<span class="badge badge-red">✗ STOP</span>'
-                _c_losses += 1
+                _all_losses += 1
             elif reason == "TRAILING_STOP":
                 reason_badge = '<span class="badge badge-amber">⟳ TRAIL</span>'
-                _c_wins += 1
+                _all_wins += 1
             elif reason == "BREAKEVEN":
                 reason_badge = '<span class="badge badge-blue">⊘ B/E</span>'
-                _c_wins += 1  # breakeven = capital protected
+                _all_wins += 1
             elif reason == "TIMEOUT":
                 reason_badge = '<span class="badge badge-amber">⏱ TIMEOUT</span>'
-                _c_losses += 1  # timeout = inconclusive, counts as loss
+                _all_losses += 1
             else:
                 reason_badge = f'<span class="badge badge-blue">{reason}</span>'
             rows_html += (
                 f"<tr>"
+                f"<td style='font-weight:600; color:var(--text-color);'>{cycle['symbol_label']}</td>"
                 f"<td style='color:var(--text-muted);'>#{cycle['cycle_id']}</td>"
                 f"<td>${cycle['deploy_price']:,.2f}</td>"
                 f"<td>${cycle['exit_price']:,.2f}</td>"
@@ -2321,14 +2592,14 @@ with tab_cycles:
                 f"<td style='color:var(--text-dim);'>{dt_str}</td>"
                 f"</tr>"
             )
-        _c_total = len(bot_instance.cycle_history)
-        _c_wr = _c_wins / _c_total * 100 if _c_total > 0 else 0
-        _foot_pnl_color = "var(--green)" if _c_total_pnl >= 0 else "var(--red)"
+        _all_c_total = len(all_cycles)
+        _all_c_wr = _all_wins / _all_c_total * 100 if _all_c_total > 0 else 0
+        _foot_pnl_color = "var(--green)" if _all_c_pnl >= 0 else "var(--red)"
         footer_html = (
             f"<tfoot><tr>"
-            f"<td colspan='4'>📊 {_c_total} Cycles &nbsp;·&nbsp; {_c_wins}W / {_c_losses}L &nbsp;·&nbsp; Win Rate: {_c_wr:.1f}%</td>"
+            f"<td colspan='5'>📊 {_all_c_total} All-Pairs Cycles &nbsp;·&nbsp; {_all_wins}W / {_all_losses}L &nbsp;·&nbsp; Win Rate: {_all_c_wr:.1f}%</td>"
             f"<td></td><td></td>"
-            f"<td style='color:{_foot_pnl_color};'>${_c_total_pnl:+,.2f} Total</td>"
+            f"<td style='color:{_foot_pnl_color};'>${_all_c_pnl:+,.2f} Total</td>"
             f"<td></td>"
             f"</tr></tfoot>"
         )
@@ -2337,6 +2608,7 @@ with tab_cycles:
             <table class="data-table">
                 <thead>
                     <tr>
+                        <th>Pair</th>
                         <th>Cycle</th>
                         <th>Deploy Price</th>
                         <th>Exit Price</th>
@@ -2355,27 +2627,42 @@ with tab_cycles:
     else:
         cycles_html = """
         <div class="table-wrap">
-            <div class="empty-state"><div class="empty-state-icon">🔄</div>No completed breakout cycles yet — start the bot to begin trading</div>
+            <div class="empty-state"><div class="empty-state-icon">🌐</div>No completed breakout cycles across any market yet</div>
         </div>
         """
     st.markdown(textwrap.dedent(cycles_html), unsafe_allow_html=True)
 
-with tab_trades:
-    if broker_instance.closed_trades:
+with tab_all_trades:
+    all_trades = []
+    for sym, m_data in st.session_state.markets.items():
+        if _filter_sym and sym != _filter_sym:
+            continue
+        if m_data.get("broker") and m_data["broker"].closed_trades:
+            coin_lbl = _coin_label_map.get(sym, sym)
+            for t in m_data["broker"].closed_trades:
+                t_copy = dict(t)
+                t_copy["symbol_label"] = coin_lbl
+                all_trades.append(t_copy)
+    all_trades = sorted(all_trades, key=lambda x: x["exit_time"], reverse=True)
+
+    if all_trades:
         rows_html = ""
-        for t in reversed(broker_instance.closed_trades):
+        for t in all_trades:
             pnl_style = "color: var(--green);" if t["pnl"] >= 0 else "color: var(--red);"
-            dt_entry = datetime.fromtimestamp(t["entry_time"]).strftime("%H:%M:%S")
-            dt_exit = datetime.fromtimestamp(t["exit_time"]).strftime("%H:%M:%S")
+            dt_entry = datetime.fromtimestamp(t["entry_time"]).strftime("%m/%d %H:%M:%S")
+            dt_exit = datetime.fromtimestamp(t["exit_time"]).strftime("%m/%d %H:%M:%S")
             badge_type = "green" if t["type"] == "BUY" else "red"
             badge_html = render_badge(t["type"], badge_type)
+            comm_val = t.get("commission", 0.0)
+            comm_str = f"-${abs(comm_val):,.4f}" if comm_val < 0 else f"${comm_val:,.4f}"
             
-            rows_html += f"<tr><td>{t['position_id']}</td><td>{badge_html}</td><td>${t['entry_price']:,.2f}</td><td>${t['exit_price']:,.2f}</td><td>{fmt_size(t['size'])}</td><td>${t['commission']:,.4f}</td><td style='{pnl_style} font-weight: bold;'>${t['pnl']:+,.2f}</td><td>{dt_entry}</td><td>{dt_exit}</td></tr>"
+            rows_html += f"<tr><td style='font-weight:600;'>{t['symbol_label']}</td><td>{t['position_id']}</td><td>{badge_html}</td><td>${t['entry_price']:,.2f}</td><td>${t['exit_price']:,.2f}</td><td>{fmt_size(t['size'])}</td><td>{comm_str}</td><td style='{pnl_style} font-weight: bold;'>${t['pnl']:+,.2f}</td><td>{dt_entry}</td><td>{dt_exit}</td></tr>"
         trades_html = f"""
         <div class="table-wrap">
             <table class="data-table">
                 <thead>
                     <tr>
+                        <th>Pair</th>
                         <th>Trade ID</th>
                         <th>Type</th>
                         <th>Entry Price</th>
@@ -2396,184 +2683,12 @@ with tab_trades:
     else:
         trades_html = """
         <div class="table-wrap">
-            <p style='font-size:0.8rem; color:#71717a; margin: 0;'>No detailed trades executed yet</p>
+            <p style='font-size:0.8rem; color:#71717a; margin: 0;'>No detailed trades executed across any market yet</p>
         </div>
         """
     st.markdown(textwrap.dedent(trades_html), unsafe_allow_html=True)
 
-with tab_backtest:
-    st.markdown('<div class="control-card"><div class="control-title">Historical Backtest Suite</div>', unsafe_allow_html=True)
-    
-    bt_col1, bt_col2 = st.columns([1, 1])
-    with bt_col1:
-        candles_limit = st.slider("Historical Candles Count (1-minute intervals)", min_value=100, max_value=1000, value=500, step=50)
-    with bt_col2:
-        bt_balance = st.number_input("Initial Balance ($)", min_value=100.0, max_value=1000000.0, value=10000.0, step=100.0)
-        
-    if st.button("🚀 RUN HISTORICAL BACKTEST", type="primary", use_container_width=True):
-        with st.spinner("Fetching historical data and running backtest..."):
-            symbol_to_fetch = st.session_state.live_symbol
-            df_klines = get_historical_klines(symbol_to_fetch, interval="1m", limit=candles_limit)
-            if df_klines is None or df_klines.empty:
-                st.error("Failed to fetch historical data for backtesting. Please check your network connection.")
-            else:
-                df_ticks = interpolate_ticks(df_klines)
-                
-                # Setup backtest broker & bot — use the live bot's locked values so backtest
-                # reflects exactly what the live bot is actually running (not the unlocked UI sidebar)
-                bt_broker = SimulatedBroker(symbol=symbol_to_fetch, initial_balance=bt_balance)
-                start_price = df_ticks.iloc[0]["price"]
-                
-                bt_bot = BreakoutGridBot(
-                    bt_broker,
-                    grid_levels=10,
-                    grid_gap=bot_instance.grid_gap,
-                    trap_offset=bot_instance.trap_offset,
-                    order_size=bot_instance.order_size,
-                    order_size_multiplier=bot_instance.order_size_multiplier,
-                    target_profit=bot_instance.target_profit,
-                    auto_restart=True,
-                    is_percent=bot_instance.is_percent,
-                    stop_loss=bot_instance.stop_loss,
-                    max_cycle_duration=float('inf'),
-                    cancel_opposite_on_trigger=False,
-                    use_trailing_stop=bot_instance.use_trailing_stop,
-                    trailing_stop_distance=bot_instance.trailing_stop_distance
-                )
-                
-                equity_history = []
-                price_history = []
-                timestamps = []
-                
-                bt_bot.deploy_traps(start_price, df_ticks.iloc[0]["timestamp"])
-                
-                ticks_list = list(zip(df_ticks["timestamp"], df_ticks["price"]))
-                for i in range(1, len(ticks_list)):
-                    prev_t, prev_p = ticks_list[i-1]
-                    curr_t, curr_p = ticks_list[i]
-                    
-                    bt_bot.process_tick(prev_p, curr_p, curr_t)
-                    
-                    if i % 10 == 0 or i == len(ticks_list) - 1:
-                        eq = bt_broker.get_equity(curr_p)
-                        equity_history.append(eq)
-                        price_history.append(curr_p)
-                        timestamps.append(datetime.fromtimestamp(curr_t))
-                
-                end_price = ticks_list[-1][1]
-                end_time = ticks_list[-1][0]
-                bt_broker.close_all_positions(end_price, end_time)
-                final_equity = bt_broker.balance
-                net_profit = final_equity - bt_balance
-                profit_pct = (net_profit / bt_balance) * 100.0
-                
-                st.session_state.bt_results = {
-                    "net_profit": net_profit,
-                    "profit_pct": profit_pct,
-                    "final_equity": final_equity,
-                    "start_balance": bt_balance,
-                    "completed_cycles": len(bt_bot.cycle_history),
-                    "total_trades": len(bt_broker.closed_trades),
-                    "equity_history": equity_history,
-                    "price_history": price_history,
-                    "timestamps": timestamps,
-                    "closed_trades": bt_broker.closed_trades,
-                    "cycle_history": bt_bot.cycle_history,
-                    "symbol": symbol_to_fetch
-                }
-                st.toast("🎉 Backtest completed successfully!")
-                
-    if "bt_results" in st.session_state:
-        res = st.session_state.bt_results
-        display_sym = "XAUUSD" if res["symbol"] == "PAXGUSDT" else res["symbol"]
-        
-        st.markdown("### Backtest Results Summary")
-        
-        bt_metric1, bt_metric2, bt_metric3, bt_metric4 = st.columns(4)
-        with bt_metric1:
-            pnl_type = "up" if res["net_profit"] >= 0 else "down"
-            metric_card("Total Net Profit", f"${res['net_profit']:.2f}", delta=f"{res['profit_pct']:+.2f}%", delta_type=pnl_type)
-        with bt_metric2:
-            metric_card("Final Account Equity", f"${res['final_equity']:.2f}")
-        with bt_metric3:
-            metric_card("Completed Cycles", f"{res['completed_cycles']}")
-        with bt_metric4:
-            metric_card("Total Closed Trades", f"{res['total_trades']}")
-            
-        st.markdown("#### Performance Charts")
-        chart_col1, chart_col2 = st.columns(2)
-        
-        with chart_col1:
-            fig_equity = go.Figure()
-            fig_equity.add_trace(go.Scatter(
-                x=res["timestamps"],
-                y=res["equity_history"],
-                mode="lines",
-                name="Equity ($)",
-                line=dict(color="#22c55e", width=2)
-            ))
-            fig_equity.update_layout(PLOT_LAYOUT)
-            fig_equity.update_layout(
-                yaxis=dict(title="Account Equity ($)", side="left"),
-                xaxis=dict(title="Time")
-            )
-            st.markdown('<div class="brand" style="margin-bottom: 5px;"><span class="chart-title">Account Equity Growth Curve</span></div>', unsafe_allow_html=True)
-            st.plotly_chart(fig_equity, use_container_width=True, config={"displayModeBar": False})
-            
-        with chart_col2:
-            fig_price = go.Figure()
-            fig_price.add_trace(go.Scatter(
-                x=res["timestamps"],
-                y=res["price_history"],
-                mode="lines",
-                name="Price ($)",
-                line=dict(color="#3b82f6", width=2)
-            ))
-            fig_price.update_layout(PLOT_LAYOUT)
-            fig_price.update_layout(
-                yaxis=dict(title=f"{display_sym} Price ($)", side="left"),
-                xaxis=dict(title="Time")
-            )
-            st.markdown(f'<div class="brand" style="margin-bottom: 5px;"><span class="chart-title">{display_sym} Historical Price Path</span></div>', unsafe_allow_html=True)
-            st.plotly_chart(fig_price, use_container_width=True, config={"displayModeBar": False})
-            
-        st.markdown("#### Backtest Completed Cycles")
-        if res["cycle_history"]:
-            rows_html = ""
-            for cycle in reversed(res["cycle_history"]):
-                pnl_style = "color: var(--green);" if cycle["pnl"] >= 0 else "color: var(--red);"
-                dt_str = datetime.fromtimestamp(cycle["exit_time"]).strftime("%Y-%m-%d %H:%M:%S")
-                duration = cycle["exit_time"] - cycle["start_time"]
-                
-                rows_html += f"<tr><td>Cycle #{cycle['cycle_id']}</td><td>${cycle['deploy_price']:,.2f}</td><td>${cycle['exit_price']:,.2f}</td><td>{cycle['trades_count']} trades</td><td>{duration:.1f}s</td><td style='{pnl_style} font-weight: bold;'>${cycle['pnl']:+,.2f}</td><td>{dt_str}</td></tr>"
-            cycles_html = f"""
-            <div class="table-wrap">
-                <table class="data-table">
-                    <thead>
-                        <tr>
-                            <th>Cycle ID</th>
-                            <th>Deploy Price</th>
-                            <th>Exit Price</th>
-                            <th>Execution Stats</th>
-                            <th>Duration</th>
-                            <th>Total Net PnL</th>
-                            <th>Completed At</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {rows_html}
-                    </tbody>
-                </table>
-            </div>
-            """
-        else:
-            cycles_html = """
-            <div class="table-wrap">
-                <p style='font-size:0.8rem; color:#71717a; margin: 0;'>No completed breakout cycles during the backtest period.</p>
-            </div>
-            """
-        st.markdown(textwrap.dedent(cycles_html), unsafe_allow_html=True)
-    st.markdown('</div>', unsafe_allow_html=True)
+
 
 # 13. RUNNER LOOP
 any_running = any(m.get("running", False) for m in st.session_state.markets.values())
