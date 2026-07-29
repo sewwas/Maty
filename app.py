@@ -1863,6 +1863,9 @@ with col_strategy:
             key=f"strat_size_multiplier_input_{_sym_wk}"
         )
         st.session_state.strat_size_multiplier = size_mult_val
+        if hasattr(st.session_state, "bot") and st.session_state.bot:
+            st.session_state.bot.order_size_multiplier = size_mult_val
+            st.session_state.bot.order_size = st.session_state.strat_order_size
         
         cur_brk = st.session_state.get("broker")
         _vol_cache_key = f"mt5_vol_{st.session_state.live_symbol}"
