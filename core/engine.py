@@ -1,5 +1,6 @@
 import uuid
 import time
+import datetime
 from typing import Dict, List, Optional, Any, TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -126,6 +127,11 @@ class BreakoutGridBot:
         self.prop_firm_guard_enabled: bool = False
         self.prop_firm_max_daily_drawdown_pct: float = 4.5  # 4.5% daily drawdown lock (buffer for 5.0% limit)
         self.prop_firm_target_pct: float = 8.0  # 8.0% challenge pass target lock
+
+        # Friday Weekend Market Shutdown Engine (Gold XAUUSD & Forex)
+        self.use_weekend_shutdown: bool = True  # Auto-enabled for Gold & traditional assets
+        self.weekend_shutdown_utc_hour: int = 20  # Shutdown Friday at 20:00 UTC (8 PM UTC)
+        self.weekend_shutdown_triggered: bool = False
 
         # Grid Maintenance Engine Toggles
         self.use_grid_repair: bool = True
@@ -440,6 +446,39 @@ class BreakoutGridBot:
         Evaluates profit targets, stop losses, and cycle timeouts.
         Returns a dictionary summarizing the cycle if an exit condition is met, otherwise None.
         """
+        # ── FRIDAY WEEKEND MARKET SHUTDOWN CHECK ────────────────────────────────
+        if getattr(self, "use_weekend_shutdown", True):
+            now_utc = datetime.datetime.fromtimestamp(timestamp, datetime.timezone.utc)
+            weekday = now_utc.weekday()  # 0=Mon, 4=Fri, 5=Sat, 6=Sun
+            shutdown_hour = getattr(self, "weekend_shutdown_utc_hour", 20)
+
+            # Friday evening shutdown (Friday hour >= shutdown_hour)
+            if weekday == 4 and now_utc.hour >= shutdown_hour:
+                if not getattr(self, "weekend_shutdown_triggered", False):
+                    self.weekend_shutdown_triggered = True
+                    self.deployed = False
+                    try:
+                        self.broker.cancel_all_orders()
+                        self.broker.close_all_positions(current_price, timestamp)
+                    except Exception as e:
+                        print(f"Notice: Weekend shutdown cleanup error: {e}")
+                    print(f"[WEEKEND SHUTDOWN] Friday Market Protection triggered @ {now_utc.strftime('%H:%M UTC')}. Pausing grid execution until Monday.")
+                return None
+
+            # Saturday or Sunday before 22:00 UTC -> Hold weekend pause
+            if weekday == 5 or (weekday == 6 and now_utc.hour < 22):
+                self.weekend_shutdown_triggered = True
+                self.deployed = False
+                return None
+
+            # Monday / Sunday late reopen -> Clear pause & auto-resume
+            if getattr(self, "weekend_shutdown_triggered", False):
+                self.weekend_shutdown_triggered = False
+                print(f"[WEEKEND REOPEN] Monday Market Reopen detected @ {now_utc.strftime('%Y-%m-%d %H:%M UTC')}. Auto-resuming grid execution.")
+                if self.auto_restart:
+                    self.deploy_traps(current_price, timestamp, bb_width)
+        # ─────────────────────────────────────────────────────────────────────────
+
         if not self.deployed and self.auto_restart:
             self.deploy_traps(current_price, timestamp, bb_width)
 

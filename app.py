@@ -2076,6 +2076,14 @@ with col_left:
             )
             st.session_state.bot.use_bb_filter = bb_filter_toggle
 
+            weekend_toggle = st.toggle(
+                "🗓️ Friday Weekend Protection",
+                value=getattr(st.session_state.bot, "use_weekend_shutdown", True),
+                help="Automatically liquidates pending grid traps on Friday evening before market close (Gold XAUUSD & Forex) to protect against weekend gap risk, then auto-resumes on Monday.",
+                key=f"toggle_weekend_shutdown_{_sym_wk}"
+            )
+            st.session_state.bot.use_weekend_shutdown = weekend_toggle
+
             circuit_breaker_val = st.number_input(
                 "🚨 Daily Max Loss Limit ($)",
                 min_value=0.0,
@@ -2306,6 +2314,14 @@ if getattr(broker_instance, "autotrading_disabled", False):
         "⚠️ **MT5 ALGO TRADING IS TURNED OFF IN METATRADER 5!**  \n"
         "Orders cannot be placed until you enable automated trading in MT5.  \n"
         "👉 **Action Required**: Click the green **'Algo Trading'** button at the top toolbar of your MT5 desktop application (or press **Ctrl + E**) to turn it ON."
+    )
+
+# Friday Weekend Market Shutdown Alert Banner
+if getattr(bot_instance, "weekend_shutdown_triggered", False):
+    st.warning(
+        f"🗓️ **WEEKEND MARKET PROTECTION ACTIVE ({chart_coin_label})**  \n"
+        f"Grid trap deployments and orders are safely paused over the weekend to protect against market closure gaps and spread spikes.  \n"
+        f"🌅 **Auto-Resume**: Grid execution will automatically restart on Monday when markets reopen!"
     )
 
 # 9. KPI METRIC CARDS — full-width strip + 5 per-coin cards
