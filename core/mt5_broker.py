@@ -307,6 +307,7 @@ class MT5Broker:
                             f"Please click 🧹 CLEAN UP in the dashboard or delete old pending orders in MT5."
                         )
                 if retcode == 10027 or (comment and "autotrading disabled" in str(comment).lower()):
+                    self.autotrading_disabled = True
                     raise RuntimeError(
                         f"AutoTrading is turned OFF in your MT5 Terminal. "
                         f"Please click the green 'Algo Trading' button at the top of your MT5 desktop application (or press Ctrl + E) to turn it ON."

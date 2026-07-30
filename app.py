@@ -1,9 +1,12 @@
+import warnings
+warnings.filterwarnings("ignore", category=UserWarning)
 from typing import Optional
 import streamlit as st
 # Trigger hot reload 2
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 import time
 from datetime import datetime
 import textwrap
@@ -20,7 +23,9 @@ if "GLOBAL_RUNNERS" not in globals():
 # Import core bot logic
 from core.mt5_broker import MT5Broker, SimulatedBroker, MT5_AVAILABLE, get_symbol_magic_number, TradeDisabledError
 from core.engine import BreakoutGridBot
-from core.data import get_live_price, get_historical_klines, interpolate_ticks
+from core.license import LicenseManager, LicenseTier
+from core.signals import send_telegram_alert, dispatch_trade_exit_signal
+from core.data import get_live_price, get_historical_klines, interpolate_ticks, get_fear_and_greed_index, get_24h_market_stats, get_crypto_news, calculate_technical_indicators, get_order_book_depth, get_economic_calendar
 
 # 1. PAGE CONFIGURATION
 st.set_page_config(
@@ -576,6 +581,27 @@ PLOT_LAYOUT = dict(
         font=dict(size=10)
     )
 )
+
+# --- MARKET INTELLIGENCE CACHED FETCHERS ---
+@st.cache_data(ttl=60)
+def fetch_cached_fg_index():
+    return get_fear_and_greed_index()
+
+@st.cache_data(ttl=30)
+def fetch_cached_24h_stats(symbol: str):
+    return get_24h_market_stats(symbol)
+
+@st.cache_data(ttl=120)
+def fetch_cached_news(symbol: str):
+    return get_crypto_news(symbol)
+
+@st.cache_data(ttl=15)
+def fetch_cached_order_book(symbol: str):
+    return get_order_book_depth(symbol)
+
+@st.cache_data(ttl=300)
+def fetch_cached_calendar():
+    return get_economic_calendar()
 
 # --- STATE PERSISTENCE HELPERS ---
 STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bot_state.pkl")
@@ -1294,11 +1320,52 @@ st.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 
-# 7. EXECUTION CONTROLS & STRATEGY TUNING
-col_controls, col_strategy = st.columns([5, 7])
+# 7. MAIN 2-COLUMN WORKSTATION LAYOUT
+col_left, col_right = st.columns([1.0, 1.35], gap="large")
 
-with col_controls:
+with col_left:
+    _sym_wk = st.session_state.get("live_symbol", "BTCUSDT")
     st.markdown('<div class="control-title">🎮 Execution & Market Controls</div>', unsafe_allow_html=True)
+    
+    # 🔑 COMMERCIAL LICENSE & SAAS SUBSCRIPTION PORTAL
+    with st.expander("🔑 COMMERCIAL LICENSE & SAAS PORTAL", expanded=False):
+        curr_key = st.session_state.get("saas_license_key", "")
+        lic_mgr = LicenseManager(curr_key, getattr(st.session_state.get("broker"), "login", ""))
+        lic_info = lic_mgr.validate()
+        
+        l_tier = lic_info["tier"]
+        tier_badge = "🏆 PROP FIRM EDITION" if l_tier == LicenseTier.PROP_FIRM else ("🚀 PRO TRADER" if l_tier == LicenseTier.PRO else "🆓 FREE DEMO SANDBOX")
+        tier_color = "#f59e0b" if l_tier == LicenseTier.PROP_FIRM else ("#22c55e" if l_tier == LicenseTier.PRO else "#a1a1aa")
+        
+        st.markdown(f"""
+        <div style="background: rgba(255,255,255,0.03); border: 1px solid var(--border); border-radius: 8px; padding: 10px 14px; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center;">
+            <div>
+                <div style="font-size: 0.72rem; color: var(--text-muted); font-weight: 600; text-transform: uppercase;">Active Subscription Tier</div>
+                <div style="font-size: 1.05rem; font-weight: 800; color: {tier_color};">{tier_badge}</div>
+            </div>
+            <div style="text-align: right;">
+                <div style="font-size: 0.72rem; color: var(--text-muted);">Status</div>
+                <div style="font-size: 0.85rem; font-weight: 700; color: {'#22c55e' if lic_info['valid'] else '#ef4444'};">{lic_info['message']}</div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        input_key = st.text_input("Enter SaaS License Key", value=curr_key, type="password", key=f"saas_key_input_{_sym_wk}")
+        if input_key != curr_key:
+            st.session_state.saas_license_key = input_key
+            st.toast("Updated license key!")
+            st.rerun()
+            
+        with st.expander("🛠️ Key Generator (SaaS Admin Only)", expanded=False):
+            gen_col1, gen_col2 = st.columns(2)
+            with gen_col1:
+                gen_tier = st.selectbox("Tier", ["PROP", "PRO", "FREE"], key=f"gen_tier_{_sym_wk}")
+            with gen_col2:
+                gen_days = st.number_input("Validity (Days)", min_value=1, max_value=365, value=30, key=f"gen_days_{_sym_wk}")
+            if st.button("🔑 GENERATE KEY", use_container_width=True, key=f"gen_key_btn_{_sym_wk}"):
+                new_k = lic_mgr.generate_key(gen_tier, str(getattr(st.session_state.get("broker"), "login", "")), int(gen_days))
+                st.code(new_k, language="text")
+                st.toast("Generated new license key!")
     
     # --- SECTION A: MARKET SELECTORS (3 COLUMNS) ---
     sel_col1, sel_col2, sel_col3 = st.columns([4, 4, 4])
@@ -1402,16 +1469,18 @@ with col_controls:
             st.session_state.markets[st.session_state.live_symbol]["price_source"] = price_source
 
     st.markdown("<div style='margin-top: 10px;'></div>", unsafe_allow_html=True)
+    _sym_wk = st.session_state.live_symbol
     _active_label = _sym_short.get(st.session_state.live_symbol, st.session_state.live_symbol)
 
-    # --- SECTION B: 6-BUTTON UNIFIED COMMAND GRID (2 ROWS x 3 COLUMNS) ---
+    # --- SECTION B: CONSOLIDATED MASTER CONTROL DESK (3 ROWS x 3 COLUMNS) ---
+    st.markdown('<div class="control-title" style="margin-top: 10px;">🎛️ MASTER CONTROL DESK</div>', unsafe_allow_html=True)
     
-    # ROW 1: PRIMARY BOT STATE & GRID MAINTENANCE ACTIONS
+    # ROW 1: PRIMARY EXECUTION & TRAP DEPLOYMENT
     cmd_r1_c1, cmd_r1_c2, cmd_r1_c3 = st.columns(3)
     
     with cmd_r1_c1:
         if not st.session_state.running:
-            if st.button("▶ START BOT", type="primary", help="Start bot engine loop for active market", use_container_width=True):
+            if st.button("▶ START BOT", type="primary", help="Start bot engine loop for active market", use_container_width=True, key=f"mcd_start_bot_{_sym_wk}"):
                 try:
                     st.session_state.broker.sync()
                 except Exception as sync_err:
@@ -1452,7 +1521,7 @@ with col_controls:
                 save_bot_state()
                 st.rerun()
         else:
-            if st.button("⏸ PAUSE BOT", type="secondary", help="Pause bot engine tick loop", use_container_width=True):
+            if st.button("⏸ PAUSE BOT", type="secondary", help="Pause bot engine tick loop", use_container_width=True, key=f"mcd_pause_bot_{_sym_wk}"):
                 st.session_state.running = False
                 if "markets" in st.session_state and st.session_state.live_symbol in st.session_state.markets:
                     st.session_state.markets[st.session_state.live_symbol]["running"] = False
@@ -1461,7 +1530,42 @@ with col_controls:
                 st.rerun()
 
     with cmd_r1_c2:
-        if st.button("🔧 REPAIR GRID", type="secondary", help=f"Clean duplicates & restore missing trap levels for {_active_label}", use_container_width=True):
+        if st.button("🎯 DEPLOY TRAPS", type="secondary", help=f"Deploy grid traps at current price for {_active_label}", use_container_width=True, key=f"mcd_deploy_traps_{_sym_wk}"):
+            curr_m = st.session_state.markets.get(st.session_state.live_symbol)
+            if curr_m:
+                bt = curr_m["bot"]
+                curr_p = (
+                    (curr_m["price_history"][-1][1] if curr_m.get("price_history") else None)
+                    or curr_m.get("last_price")
+                    or get_default_price(st.session_state.live_symbol)
+                )
+                bt.deploy_traps(curr_p, time.time())
+                sync_active_market_primitives()
+                save_bot_state()
+                st.toast(f"🎯 Deployed grid traps for {_active_label} at ${curr_p:,.2f}")
+                st.rerun()
+
+    with cmd_r1_c3:
+        if st.button("🔄 RECENTER TRAPS", type="secondary", help=f"Recenter grid traps around live price for {_active_label}", use_container_width=True, key=f"mcd_recenter_traps_{_sym_wk}"):
+            curr_m = st.session_state.markets.get(st.session_state.live_symbol)
+            if curr_m:
+                bt = curr_m["bot"]
+                curr_p = (
+                    (curr_m["price_history"][-1][1] if curr_m.get("price_history") else None)
+                    or curr_m.get("last_price")
+                    or get_default_price(st.session_state.live_symbol)
+                )
+                bt.deploy_traps(curr_p, time.time())
+                sync_active_market_primitives()
+                save_bot_state()
+                st.toast(f"🔄 Recentered grid traps around ${curr_p:,.2f}")
+                st.rerun()
+
+    # ROW 2: GRID MAINTENANCE & PRESETS
+    cmd_r2_c1, cmd_r2_c2, cmd_r2_c3 = st.columns(3)
+
+    with cmd_r2_c1:
+        if st.button("🔧 REPAIR GRID", type="secondary", help=f"Clean duplicates & restore missing trap levels for {_active_label}", use_container_width=True, key=f"mcd_repair_grid_{_sym_wk}"):
             curr_m = st.session_state.markets.get(st.session_state.live_symbol)
             if curr_m:
                 bt = curr_m["bot"]
@@ -1483,8 +1587,8 @@ with col_controls:
                 st.toast(msg)
                 st.rerun()
 
-    with cmd_r1_c3:
-        if st.button("🧹 CLEAN UP", type="secondary", help=f"Remove duplicate & orphan pending orders for {_active_label}", use_container_width=True):
+    with cmd_r2_c2:
+        if st.button("🧹 CLEAN UP", type="secondary", help=f"Remove duplicate & orphan pending orders for {_active_label}", use_container_width=True, key=f"mcd_cleanup_grid_{_sym_wk}"):
             curr_m = st.session_state.markets.get(st.session_state.live_symbol)
             if curr_m:
                 bt = curr_m["bot"]
@@ -1502,11 +1606,25 @@ with col_controls:
                 st.toast(f"🧹 {_active_label}: cleaned up {cleaned_cnt} duplicate/orphan orders.")
                 st.rerun()
 
-    # ROW 2: SAFETY, EMERGENCY CLOSE & ENVIRONMENT RESET ACTIONS
-    cmd_r2_c1, cmd_r2_c2, cmd_r2_c3 = st.columns(3)
+    with cmd_r2_c3:
+        if st.button(f"🎯 DEFAULTS ({_active_label})", type="secondary", help=f"Reset strategy parameters for {_active_label} to Golden Settings defaults", use_container_width=True, key=f"mcd_defaults_{_sym_wk}"):
+            gs = get_coin_golden_settings(st.session_state.live_symbol)
+            st.session_state.strat_offset = gs["offset"]
+            st.session_state.strat_gap = gs["gap"]
+            st.session_state.strat_is_percent = True
+            st.session_state.strat_order_size = gs["order_size"]
+            st.session_state.strat_size_multiplier = gs["multiplier"]
+            st.session_state.strat_target_profit = gs["target_profit"]
+            sync_active_market_primitives()
+            save_bot_state()
+            st.toast(f"Reset parameters for {_active_label} to Golden Defaults!")
+            st.rerun()
 
-    with cmd_r2_c1:
-        if st.button(f"🚨 CLOSE {_active_label}", type="secondary", help=f"Emergency close trades & traps for {_active_label} only", use_container_width=True):
+    # ROW 3: SAFETY, EMERGENCY CLOSE & ENVIRONMENT RESET ACTIONS
+    cmd_r3_c1, cmd_r3_c2, cmd_r3_c3 = st.columns(3)
+
+    with cmd_r3_c1:
+        if st.button(f"🚨 CLOSE {_active_label}", type="secondary", help=f"Emergency close trades & traps for {_active_label} only", use_container_width=True, key=f"mcd_close_pair_{_sym_wk}"):
             curr_m = st.session_state.markets.get(st.session_state.live_symbol)
             if curr_m:
                 brk = curr_m["broker"]
@@ -1533,8 +1651,8 @@ with col_controls:
                 st.toast(f"Emergency closed {closed_cnt} trades for {_active_label}.")
                 st.rerun()
 
-    with cmd_r2_c2:
-        if st.button("⚡ PANIC ALL", type="secondary", help="Global emergency stop across all market pairs", use_container_width=True):
+    with cmd_r3_c2:
+        if st.button("⚡ PANIC ALL", type="secondary", help="Global emergency stop across all market pairs", use_container_width=True, key=f"mcd_panic_all_{_sym_wk}"):
             total_closed_count = 0
             for sym, m_state in st.session_state.markets.items():
                 brk = m_state["broker"]
@@ -1562,8 +1680,8 @@ with col_controls:
             st.warning(f"Global panic close executed! Closed {total_closed_count} open trades across all pairs.")
             st.rerun()
 
-    with cmd_r2_c3:
-        if st.button("🔄 RESET", type="secondary", help="Reset simulated sandbox state", use_container_width=True):
+    with cmd_r3_c3:
+        if st.button("🔄 RESET", type="secondary", help="Reset simulated sandbox state", use_container_width=True, key=f"mcd_reset_sandbox_{_sym_wk}"):
             reset_realtime_sandbox()
             st.success("Environment reset complete.")
             st.rerun()
@@ -1641,14 +1759,13 @@ with col_controls:
                         st.success("Disconnected from MT5. Switched back to Simulated Sandbox.")
                         st.rerun()
 
-with col_strategy:
     _strat_sym_label = {"BTCUSDT":"BTC","ETHUSDT":"ETH","SOLUSDT":"SOL","BNBUSDT":"BNB","DOGEUSDT":"DOGE","PAXGUSDT":"XAU"}.get(st.session_state.live_symbol, st.session_state.live_symbol)
     
     st_header_col1, st_header_col2 = st.columns([2, 1])
     with st_header_col1:
         st.markdown(f'<div class="control-title">🎯 Strategy Tuning &nbsp;<span style="font-size:0.7rem;font-weight:400;opacity:0.55;border:1px solid rgba(255,255,255,0.15);border-radius:6px;padding:1px 7px;">for {_strat_sym_label}</span></div>', unsafe_allow_html=True)
     with st_header_col2:
-        if st.button(f"🎯 DEFAULTS ({_strat_sym_label})", type="secondary", help=f"Reset strategy parameters for {_strat_sym_label} to Golden Settings defaults", use_container_width=True):
+        if st.button(f"🎯 DEFAULTS ({_strat_sym_label})", type="secondary", help=f"Reset strategy parameters for {_strat_sym_label} to Golden Settings defaults", use_container_width=True, key=f"strat_defaults_btn_{_sym_wk}"):
             gs = get_coin_golden_settings(st.session_state.live_symbol)
             st.session_state.strat_offset = gs["offset"]
             st.session_state.strat_gap = gs["gap"]
@@ -1911,6 +2028,67 @@ with col_strategy:
         if mt5_vol_min > 0 and st.session_state.strat_order_size < mt5_vol_min:
             st.warning(f"⚠️ Note: Exness MT5 requires minimum **{fmt_size(mt5_vol_min)} lots** for {st.session_state.live_symbol}. Order sizes below this will be clamped to {fmt_size(mt5_vol_min)} by the broker.")
 
+    # 🎛️ MASTER CONTROL & MANUAL OVERRIDE HUB
+    with st.expander("🎛️ MASTER CONTROL & SYSTEM MODULE SWITCHES (ON / OFF)", expanded=True):
+        st.markdown(
+            f'<div style="font-size:0.78rem; color:var(--text-muted); margin-bottom:10px;">'
+            f'100% full manual toggle access over every individual system module for <strong>{_strat_sym_label}</strong>.'
+            f'</div>',
+            unsafe_allow_html=True
+        )
+        ctrl_col1, ctrl_col2 = st.columns(2)
+        
+        with ctrl_col1:
+            auto_restart_toggle = st.toggle(
+                "🤖 Auto-Restart Strategy",
+                value=getattr(st.session_state.bot, "auto_restart", True),
+                key=f"toggle_auto_restart_{_sym_wk}"
+            )
+            st.session_state.bot.auto_restart = auto_restart_toggle
+            
+            grid_repair_toggle = st.toggle(
+                "🧹 Dynamic Grid Repair Engine",
+                value=getattr(st.session_state.bot, "use_grid_repair", True),
+                key=f"toggle_grid_repair_{_sym_wk}"
+            )
+            st.session_state.bot.use_grid_repair = grid_repair_toggle
+
+            oco_toggle = st.toggle(
+                "⚖️ OCO Opposite Cancel Mode",
+                value=getattr(st.session_state.bot, "cancel_opposite_on_trigger", True),
+                key=f"toggle_oco_{_sym_wk}"
+            )
+            st.session_state.bot.cancel_opposite_on_trigger = oco_toggle
+
+        with ctrl_col2:
+            news_shield_toggle = st.toggle(
+                "📰 High-Impact News Shield",
+                value=getattr(st.session_state.bot, "use_news_shield", False),
+                help="Automatically pauses grid deployments when high-impact macro news is released.",
+                key=f"toggle_news_shield_{_sym_wk}"
+            )
+            st.session_state.bot.use_news_shield = news_shield_toggle
+
+            bb_filter_toggle = st.toggle(
+                "⚡ Bollinger Squeeze Filter",
+                value=getattr(st.session_state.bot, "use_bb_filter", False),
+                key=f"toggle_bb_filter_{_sym_wk}"
+            )
+            st.session_state.bot.use_bb_filter = bb_filter_toggle
+
+            circuit_breaker_val = st.number_input(
+                "🚨 Daily Max Loss Limit ($)",
+                min_value=0.0,
+                max_value=10000.0,
+                value=float(getattr(st.session_state.bot, "max_daily_drawdown", 0.0)),
+                step=10.0,
+                help="0.0 disabled. Sets daily drawdown limit; if loss breaches this limit, trap deployment pauses.",
+                key=f"input_daily_dd_{_sym_wk}"
+            )
+            st.session_state.bot.max_daily_drawdown = circuit_breaker_val
+
+
+
 # ── Per-market status bar ─────────────────────────────────────────────────────
 # Shows all configured markets at a glance: running state, open positions, P&L
 _sym_short = {"BTCUSDT":"BTC","ETHUSDT":"ETH","SOLUSDT":"SOL",
@@ -2122,6 +2300,14 @@ _coin_label_map = {
 }
 chart_coin_label = _coin_label_map.get(_active_sym, display_symbol)
 
+# MT5 Algo Trading Status Alert Banner
+if getattr(broker_instance, "autotrading_disabled", False):
+    st.error(
+        "⚠️ **MT5 ALGO TRADING IS TURNED OFF IN METATRADER 5!**  \n"
+        "Orders cannot be placed until you enable automated trading in MT5.  \n"
+        "👉 **Action Required**: Click the green **'Algo Trading'** button at the top toolbar of your MT5 desktop application (or press **Ctrl + E**) to turn it ON."
+    )
+
 # 9. KPI METRIC CARDS — full-width strip + 5 per-coin cards
 # All-markets combined totals for the KPI strip
 _all_real_pnl = sum(m.get("broker").realized_pnl for m in st.session_state.markets.values() if m.get("broker"))
@@ -2230,302 +2416,598 @@ if getattr(bot_instance, "in_runner_mode", False):
     </div>
     """, unsafe_allow_html=True)
 
-# 10. PLOTLY LIVE CHART
-# Convert ticks to candlesticks based on selected timeframe
-timeframe_choice = st.session_state.get("timeframe_select", "5 Seconds")
-if timeframe_choice == "1 Minute":
-    interval_seconds = 60.0
-else:
-    interval_seconds = 5.0
-ticks = st.session_state.price_history
-ohlc_df = pd.DataFrame()
-
-if len(ticks) >= 1:
-    df_ticks = pd.DataFrame(ticks, columns=["time", "price"])
-    df_ticks["interval_id"] = (df_ticks["time"] // interval_seconds) * interval_seconds
-    ohlc = df_ticks.groupby("interval_id")["price"].agg(
-        open="first",
-        high="max",
-        low="min",
-        close="last"
-    ).reset_index()
-    ohlc["datetime"] = pd.to_datetime(ohlc["interval_id"], unit="s")
-    ohlc_df = ohlc
-
-fig = go.Figure()
-
-if not ohlc_df.empty:
-    fig.add_trace(go.Candlestick(
-        x=ohlc_df["datetime"],
-        open=ohlc_df["open"],
-        high=ohlc_df["high"],
-        low=ohlc_df["low"],
-        close=ohlc_df["close"],
-        name=f"{display_symbol} Price",
-        increasing_line_color="#22c55e",
-        decreasing_line_color="#ef4444",
-        increasing_fillcolor="rgba(34, 197, 94, 0.2)",
-        decreasing_fillcolor="rgba(239, 68, 68, 0.2)"
-    ))
-
-# Current price indicator line
-fig.add_hline(
-    y=curr_price,
-    line_dash="dot",
-    line_color="#a1a1aa",
-    annotation_text=f"Current: ${curr_price:.2f}",
-    annotation_position="bottom right"
-)
-
-# Trap levels lines
-if broker_instance.pending_orders:
-    # Place buy/sell stops in chart
-    for o in list(broker_instance.pending_orders.values()):
-        if o.type == "BUY_STOP":
-            line_color = "rgba(34, 197, 94, 0.35)" if IS_DARK else "rgba(22, 163, 74, 0.4)"
-            fig.add_hline(
-                y=o.trigger_price,
-                line_dash="dash",
-                line_color=line_color,
-                annotation_text=f"BUY STOP: ${o.trigger_price:.2f}",
-                annotation_position="top left",
-                annotation_font=dict(size=8, color=line_color)
-            )
-        elif o.type == "SELL_STOP":
-            line_color = "rgba(239, 68, 68, 0.35)" if IS_DARK else "rgba(220, 38, 38, 0.4)"
-            fig.add_hline(
-                y=o.trigger_price,
-                line_dash="dash",
-                line_color=line_color,
-                annotation_text=f"SELL STOP: ${o.trigger_price:.2f}",
-                annotation_position="bottom left",
-                annotation_font=dict(size=8, color=line_color)
-            )
-else:
-    # Render proposed preview traps on chart before deployment to MT5
-    if st.session_state.strat_is_percent:
-        offset_val = curr_price * (st.session_state.strat_offset / 100.0)
-        gap_val = curr_price * (st.session_state.strat_gap / 100.0)
+# RIGHT COLUMN: LIVE CHARTING, DATA TABLES & MARKET INTELLIGENCE DESK
+with col_right:
+        # 10. PLOTLY LIVE CHART
+        # Convert ticks to candlesticks based on selected timeframe
+    timeframe_choice = st.session_state.get("timeframe_select", "5 Seconds")
+    if timeframe_choice == "1 Minute":
+        interval_seconds = 60.0
     else:
-        offset_val = st.session_state.strat_offset
-        gap_val = st.session_state.strat_gap
+        interval_seconds = 5.0
+    ticks = st.session_state.price_history
+    ohlc_df = pd.DataFrame()
 
-    # Proposed BUY STOP levels
-    for i in range(10):
-        trigger_price = curr_price + offset_val + (i * gap_val)
-        if broker_type == "Exness MT5 Live" and broker_instance.ensure_connected():
-            import MetaTrader5 as mt5_ref
-            exness_symbol = broker_instance.get_exness_symbol(broker_instance.symbol)
-            tick = mt5_ref.symbol_info_tick(exness_symbol)
-            info = mt5_ref.symbol_info(exness_symbol)
-            if tick and info:
-                spread_pts = (tick.ask - tick.bid) / info.point if info.point > 0 else 0
-                stop_level_pts = int(max(info.trade_stops_level, spread_pts * 2.5)) + 2
-                min_allowed = tick.ask + stop_level_pts * info.point
-                if trigger_price < min_allowed:
-                    trigger_price = min_allowed
-        
-        line_color = "rgba(59, 130, 246, 0.15)" if IS_DARK else "rgba(37, 99, 235, 0.15)"
-        fig.add_hline(
-            y=trigger_price,
-            line_dash="dot",
-            line_color=line_color,
-            annotation_text=f"Proposed BUY STOP #{i+1}: ${trigger_price:.2f}",
-            annotation_position="top left",
-            annotation_font=dict(size=7, color=line_color)
-        )
+    if len(ticks) >= 1:
+        df_ticks = pd.DataFrame(ticks, columns=["time", "price"])
+        df_ticks["interval_id"] = (df_ticks["time"] // interval_seconds) * interval_seconds
+        ohlc = df_ticks.groupby("interval_id")["price"].agg(
+            open="first",
+            high="max",
+            low="min",
+            close="last",
+            count="count"
+        ).reset_index()
+        ohlc["datetime"] = pd.to_datetime(ohlc["interval_id"], unit="s")
+        ohlc_df = ohlc
 
-    # Proposed SELL STOP levels
-    for i in range(10):
-        trigger_price = curr_price - offset_val - (i * gap_val)
-        if broker_type == "Exness MT5 Live" and broker_instance.ensure_connected():
-            import MetaTrader5 as mt5_ref
-            exness_symbol = broker_instance.get_exness_symbol(broker_instance.symbol)
-            tick = mt5_ref.symbol_info_tick(exness_symbol)
-            info = mt5_ref.symbol_info(exness_symbol)
-            if tick and info:
-                spread_pts = (tick.ask - tick.bid) / info.point if info.point > 0 else 0
-                stop_level_pts = int(max(info.trade_stops_level, spread_pts * 2.5)) + 2
-                max_allowed = tick.bid - stop_level_pts * info.point
-                if trigger_price > max_allowed:
-                    trigger_price = max_allowed
-        
-        line_color = "rgba(245, 158, 11, 0.15)" if IS_DARK else "rgba(217, 119, 6, 0.15)"
-        fig.add_hline(
-            y=trigger_price,
-            line_dash="dot",
-            line_color=line_color,
-            annotation_text=f"Proposed SELL STOP #{i+1}: ${trigger_price:.2f}",
-            annotation_position="bottom left",
-            annotation_font=dict(size=7, color=line_color)
-        )
+    # Create 2-row subplot (Row 1: Price & Traps, Row 2: Volume Histogram)
+    fig = make_subplots(
+        rows=2, cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.03,
+        row_heights=[0.78, 0.22]
+    )
 
-# Plot open positions
-for pos_id, pos in list(broker_instance.open_positions.items()):
-    pos_color = "#22c55e" if pos.type == "BUY" else "#ef4444"
+    if not ohlc_df.empty:
+        # 1. Bollinger Bands Volatility Cloud Calculation
+        closes = ohlc_df["close"].values
+        if len(closes) >= 5:
+            period = min(20, len(closes))
+            sma = ohlc_df["close"].rolling(window=period, min_periods=1).mean()
+            std = ohlc_df["close"].rolling(window=period, min_periods=1).std().fillna(0.0)
+            upper_b = sma + (2.0 * std)
+            lower_b = sma - (2.0 * std)
+
+            # Lower Band Line
+            fig.add_trace(go.Scatter(
+                x=ohlc_df["datetime"], y=lower_b,
+                mode="lines",
+                line=dict(color="rgba(59, 130, 246, 0.25)", width=1),
+                name="BB Lower",
+                showlegend=False
+            ), row=1, col=1)
+
+            # Upper Band Line with Shaded Volatility Cloud
+            fig.add_trace(go.Scatter(
+                x=ohlc_df["datetime"], y=upper_b,
+                mode="lines",
+                line=dict(color="rgba(59, 130, 246, 0.25)", width=1),
+                fill="tonexty",
+                fillcolor="rgba(59, 130, 246, 0.06)",
+                name="BB Upper (Squeeze Cloud)",
+                showlegend=False
+            ), row=1, col=1)
+
+            # SMA 20 Midline
+            fig.add_trace(go.Scatter(
+                x=ohlc_df["datetime"], y=sma,
+                mode="lines",
+                line=dict(color="rgba(59, 130, 246, 0.4)", width=1, dash="dot"),
+                name="SMA 20",
+                showlegend=False
+            ), row=1, col=1)
+
+        # 2. Main Price Candlesticks
+        fig.add_trace(go.Candlestick(
+            x=ohlc_df["datetime"],
+            open=ohlc_df["open"],
+            high=ohlc_df["high"],
+            low=ohlc_df["low"],
+            close=ohlc_df["close"],
+            name=f"{display_symbol} Price",
+            increasing_line_color="#22c55e",
+            decreasing_line_color="#ef4444",
+            increasing_fillcolor="rgba(34, 197, 94, 0.25)",
+            decreasing_fillcolor="rgba(239, 68, 68, 0.25)"
+        ), row=1, col=1)
+
+        # 3. Volume Subplot Histogram
+        vol_colors = ["rgba(34, 197, 94, 0.6)" if c >= o else "rgba(239, 68, 68, 0.6)" for c, o in zip(ohlc_df["close"], ohlc_df["open"])]
+        fig.add_trace(go.Bar(
+            x=ohlc_df["datetime"],
+            y=ohlc_df["count"],
+            marker_color=vol_colors,
+            name="Volume (Ticks)",
+            showlegend=False
+        ), row=2, col=1)
+
+    # Current price indicator line
     fig.add_hline(
-        y=pos.entry_price,
-        line_color=pos_color,
+        y=curr_price,
+        line_dash="dot",
+        line_color="#f59e0b",
         line_width=1.5,
-        annotation_text=f"Open {pos.type} {pos.size}: ${pos.entry_price:.2f}",
-        annotation_position="top right",
-        annotation_font=dict(size=9, color=pos_color)
+        annotation_text=f"Live Spot: ${curr_price:.2f}",
+        annotation_position="bottom right",
+        annotation_font=dict(size=9, color="#f59e0b", weight="bold"),
+        row=1, col=1
     )
 
-fig.update_layout(PLOT_LAYOUT)
-fig.update_layout(
-    xaxis_rangeslider_visible=False,
-    # Reset Y-axis autorange on every render so it scales correctly to the active coin's price
-    yaxis=dict(autorange=True, fixedrange=False),
-    title=None,  # Title rendered via markdown below
-)
-fig.update_xaxes(showgrid=True, gridcolor="rgba(255,255,255,0.05)" if IS_DARK else "rgba(0,0,0,0.05)")
-fig.update_yaxes(showgrid=True, gridcolor="rgba(255,255,255,0.05)" if IS_DARK else "rgba(0,0,0,0.05)")
-
-with st.container(border=True):
-    st.markdown(
-        f'<div class="brand" style="margin-bottom: 5px;">'
-        f'<span class="chart-title">'
-        f'{chart_coin_label} &nbsp;·&nbsp; Real-Time Traps &amp; Execution Chart'
-        f'<span style="font-size:0.7rem; font-weight:400; opacity:0.6; margin-left:8px;">({timeframe_choice})</span>'
-        f'</span></div>'
-        f'<div class="chart-subtitle">Live price, grid trap levels and executed orders for <strong>{chart_coin_label}</strong> — 10 stops above &amp; 10 below</div>',
-        unsafe_allow_html=True
-    )
-    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
-
-# 11. TABLES
-col_tables1, col_tables2 = st.columns(2)
-
-with col_tables1:
-    if broker_instance.open_positions:
-        rows_html = ""
-        for pos in list(broker_instance.open_positions.values()):
-            pnl = pos.get_pnl(curr_price)
-            pnl_style = "color: var(--green);" if pnl >= 0 else "color: var(--red);"
-            badge_type = "green" if pos.type == "BUY" else "red"
-            badge_html = render_badge(pos.type, badge_type)
-            rows_html += f"<tr><td>{pos.position_id}</td><td>{badge_html}</td><td>${pos.entry_price:,.2f}</td><td>{fmt_size(pos.size)}</td><td style='{pnl_style} font-weight: bold;'>${pnl:+,.2f}</td></tr>"
-        table_html = f"""
-        <div class="table-wrap">
-            <h4>Active Positions</h4>
-            <table class="data-table">
-                <thead>
-                    <tr>
-                        <th>Position ID</th>
-                        <th>Type</th>
-                        <th>Entry Price</th>
-                        <th>Size</th>
-                        <th>Floating PnL</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {rows_html}
-                </tbody>
-            </table>
-        </div>
-        """
-    else:
-        table_html = """
-        <div class="table-wrap">
-            <h4>Active Positions</h4>
-            <div class="empty-state">
-                <div class="empty-state-icon">⧇</div>
-                No active positions in the current cycle
-            </div>
-        </div>
-        """
-    st.markdown(textwrap.dedent(table_html), unsafe_allow_html=True)
-
-    # Render other manual/external positions on the account
-    other_pos = getattr(broker_instance, "get_all_account_positions", lambda: [])()
-    if other_pos:
-        rows_other_html = ""
-        for p in other_pos:
-            badge_type = "green" if p["type"] == "BUY" else "red"
-            badge_html = render_badge(p["type"], badge_type)
-            rows_other_html += f"<tr><td>{p['ticket']}</td><td>{p['symbol']}</td><td>{badge_html}</td><td>${p['price']:,.2f}</td><td>{fmt_size(p['volume'])}</td><td style='font-weight: bold; color: {'var(--green)' if p['profit'] >= 0 else 'var(--red)'};'>${p['profit']:+,.2f}</td><td>Magic: {p['magic']}</td></tr>"
-        
-        other_table_html = f"""
-        <div class="table-wrap" style="margin-top: 15px; border-color: rgba(245, 158, 11, 0.25);">
-            <h4 style="color: #f59e0b; display: flex; align-items: center; gap: 6px; margin: 0;">
-                <span>🔌 Other Account Positions (Manual / External)</span>
-            </h4>
-            <div style="font-size: 0.72rem; color: var(--text-muted); margin-bottom: 8px;">
-                These trades belong to other bots or manual orders and are ignored by this bot's profit targets.
-            </div>
-            <table class="data-table">
-                <thead>
-                    <tr>
-                        <th>Ticket ID</th>
-                        <th>Symbol</th>
-                        <th>Type</th>
-                        <th>Entry Price</th>
-                        <th>Size</th>
-                        <th>Profit</th>
-                        <th>Identifier</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {rows_other_html}
-                </tbody>
-            </table>
-        </div>
-        """
-        st.markdown(textwrap.dedent(other_table_html), unsafe_allow_html=True)
-
-with col_tables2:
+    # Target Profit & Stop Loss Floor Lines
+    if hasattr(bot_instance, "target_profit") and bot_instance.deploy_price > 0:
+        tp_val = bot_instance.target_profit
+        sl_val = getattr(bot_instance, "stop_loss", 0.0)
+    
+    # Trap levels lines
     if broker_instance.pending_orders:
-        rows_html = ""
-        sorted_orders = sorted(list(broker_instance.pending_orders.values()), key=lambda x: x.trigger_price, reverse=True)
-        for o in sorted_orders:
-            badge_type = "green" if "BUY" in o.type else "red"
-            badge_html = render_badge(o.type, badge_type)
-            rows_html += f"<tr><td>{o.order_id}</td><td>{badge_html}</td><td>${o.trigger_price:,.2f}</td><td>{fmt_size(o.size)}</td></tr>"
-        table_html = f"""
-        <div class="table-wrap">
-            <h4>Active Grid Traps (Pending Orders)</h4>
-            <table class="data-table">
-                <thead>
-                    <tr>
-                        <th>Order ID</th>
-                        <th>Type</th>
-                        <th>Trigger Price</th>
-                        <th>Size</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {rows_html}
-                </tbody>
-            </table>
-        </div>
-        """
+        # Place buy/sell stops in chart
+        for o in list(broker_instance.pending_orders.values()):
+            if o.type == "BUY_STOP":
+                line_color = "rgba(34, 197, 94, 0.55)" if IS_DARK else "rgba(22, 163, 74, 0.6)"
+                fig.add_hline(
+                    y=o.trigger_price,
+                    line_dash="dash",
+                    line_color=line_color,
+                    annotation_text=f"BUY STOP ({fmt_size(o.size)}): ${o.trigger_price:.2f}",
+                    annotation_position="top left",
+                    annotation_font=dict(size=8, color=line_color),
+                    row=1, col=1
+                )
+            elif o.type == "SELL_STOP":
+                line_color = "rgba(239, 68, 68, 0.55)" if IS_DARK else "rgba(220, 38, 38, 0.6)"
+                fig.add_hline(
+                    y=o.trigger_price,
+                    line_dash="dash",
+                    line_color=line_color,
+                    annotation_text=f"SELL STOP ({fmt_size(o.size)}): ${o.trigger_price:.2f}",
+                    annotation_position="bottom left",
+                    annotation_font=dict(size=8, color=line_color),
+                    row=1, col=1
+                )
     else:
-        is_mt5 = (broker_instance.__class__.__name__ == "MT5Broker")
-        if is_mt5 and not st.session_state.running:
-            table_html = """
-            <div class="table-wrap" style="border-color: rgba(245, 158, 11, 0.25);">
-                <h4>Active Grid Traps (Pending Orders)</h4>
-                <div class="empty-state">
-                    <div class="empty-state-icon" style="color: #f59e0b; text-shadow: 0 0 10px rgba(245, 158, 11, 0.2);">🔌</div>
-                    <div style="font-weight: 600; color: #f59e0b; margin-bottom: 4px;">Exness Account Linked</div>
-                    <div style="font-size: 0.72rem; max-width: 260px; margin: 0 auto; color: var(--text-muted);">
-                        Click <strong style="color: var(--text-color);">▶ START BOT</strong> to deploy the breakout grid traps on your Exness MT5 terminal!
-                    </div>
-                </div>
+        # Render proposed preview traps on chart before deployment to MT5
+        if st.session_state.strat_is_percent:
+            offset_val = curr_price * (st.session_state.strat_offset / 100.0)
+            gap_val = curr_price * (st.session_state.strat_gap / 100.0)
+        else:
+            offset_val = st.session_state.strat_offset
+            gap_val = st.session_state.strat_gap
+
+        # Proposed BUY STOP levels
+        for i in range(10):
+            trigger_price = curr_price + offset_val + (i * gap_val)
+            if broker_type == "Exness MT5 Live" and broker_instance.ensure_connected():
+                import MetaTrader5 as mt5_ref
+                exness_symbol = broker_instance.get_exness_symbol(broker_instance.symbol)
+                tick = mt5_ref.symbol_info_tick(exness_symbol)
+                info = mt5_ref.symbol_info(exness_symbol)
+                if tick and info:
+                    spread_pts = (tick.ask - tick.bid) / info.point if info.point > 0 else 0
+                    stop_level_pts = int(max(info.trade_stops_level, spread_pts * 2.5)) + 2
+                    min_allowed = tick.ask + stop_level_pts * info.point
+                    if trigger_price < min_allowed:
+                        trigger_price = min_allowed
+        
+            line_color = "rgba(59, 130, 246, 0.2)" if IS_DARK else "rgba(37, 99, 235, 0.2)"
+            fig.add_hline(
+                y=trigger_price,
+                line_dash="dot",
+                line_color=line_color,
+                annotation_text=f"Proposed BUY STOP #{i+1}: ${trigger_price:.2f}",
+                annotation_position="top left",
+                annotation_font=dict(size=7, color=line_color),
+                row=1, col=1
+            )
+
+        # Proposed SELL STOP levels
+        for i in range(10):
+            trigger_price = curr_price - offset_val - (i * gap_val)
+            if broker_type == "Exness MT5 Live" and broker_instance.ensure_connected():
+                import MetaTrader5 as mt5_ref
+                exness_symbol = broker_instance.get_exness_symbol(broker_instance.symbol)
+                tick = mt5_ref.symbol_info_tick(exness_symbol)
+                info = mt5_ref.symbol_info(exness_symbol)
+                if tick and info:
+                    spread_pts = (tick.ask - tick.bid) / info.point if info.point > 0 else 0
+                    stop_level_pts = int(max(info.trade_stops_level, spread_pts * 2.5)) + 2
+                    max_allowed = tick.bid - stop_level_pts * info.point
+                    if trigger_price > max_allowed:
+                        trigger_price = max_allowed
+        
+            line_color = "rgba(245, 158, 11, 0.2)" if IS_DARK else "rgba(217, 119, 6, 0.2)"
+            fig.add_hline(
+                y=trigger_price,
+                line_dash="dot",
+                line_color=line_color,
+                annotation_text=f"Proposed SELL STOP #{i+1}: ${trigger_price:.2f}",
+                annotation_position="bottom left",
+                annotation_font=dict(size=7, color=line_color),
+                row=1, col=1
+            )
+
+    # Plot open positions
+    for pos_id, pos in list(broker_instance.open_positions.items()):
+        pos_color = "#22c55e" if pos.type == "BUY" else "#ef4444"
+        fig.add_hline(
+            y=pos.entry_price,
+            line_color=pos_color,
+            line_width=1.8,
+            annotation_text=f"Open {pos.type} {fmt_size(pos.size)}: ${pos.entry_price:.2f}",
+            annotation_position="top right",
+            annotation_font=dict(size=9, color=pos_color, weight="bold"),
+            row=1, col=1
+        )
+
+    fig.update_layout(PLOT_LAYOUT)
+    fig.update_layout(
+        xaxis_rangeslider_visible=False,
+        height=520,
+        title=None,
+    )
+    fig.update_xaxes(showgrid=True, gridcolor="rgba(255,255,255,0.05)" if IS_DARK else "rgba(0,0,0,0.05)")
+    fig.update_yaxes(showgrid=True, gridcolor="rgba(255,255,255,0.05)" if IS_DARK else "rgba(0,0,0,0.05)", row=1, col=1)
+    fig.update_yaxes(showgrid=False, row=2, col=1)
+
+    with st.container(border=True):
+        st.markdown(
+            f'<div class="brand" style="margin-bottom: 5px;">'
+            f'<span class="chart-title">'
+            f'{chart_coin_label} &nbsp;·&nbsp; Real-Time Traps &amp; Execution Chart'
+            f'<span style="font-size:0.7rem; font-weight:400; opacity:0.6; margin-left:8px;">({timeframe_choice})</span>'
+            f'</span></div>'
+            f'<div class="chart-subtitle">Live price, Bollinger Bands volatility cloud, volume histogram, grid trap levels and executed orders for <strong>{chart_coin_label}</strong> — 10 stops above &amp; 10 below</div>',
+            unsafe_allow_html=True
+        )
+        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
+    # 11. TABLES
+    col_tables1, col_tables2 = st.columns(2)
+
+    with col_tables1:
+        if broker_instance.open_positions:
+            rows_html = ""
+            for pos in list(broker_instance.open_positions.values()):
+                pnl = pos.get_pnl(curr_price)
+                pnl_style = "color: var(--green);" if pnl >= 0 else "color: var(--red);"
+                badge_type = "green" if pos.type == "BUY" else "red"
+                badge_html = render_badge(pos.type, badge_type)
+                rows_html += f"<tr><td>{pos.position_id}</td><td>{badge_html}</td><td>${pos.entry_price:,.2f}</td><td>{fmt_size(pos.size)}</td><td style='{pnl_style} font-weight: bold;'>${pnl:+,.2f}</td></tr>"
+            table_html = f"""
+            <div class="table-wrap">
+                <h4>Active Positions</h4>
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>Position ID</th>
+                            <th>Type</th>
+                            <th>Entry Price</th>
+                            <th>Size</th>
+                            <th>Floating PnL</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {rows_html}
+                    </tbody>
+                </table>
             </div>
             """
         else:
             table_html = """
             <div class="table-wrap">
-                <h4>Active Grid Traps (Pending Orders)</h4>
+                <h4>Active Positions</h4>
                 <div class="empty-state">
-                    <div class="empty-state-icon">◇</div>
-                    No pending traps deployed in the market
+                    <div class="empty-state-icon">⧇</div>
+                    No active positions in the current cycle
                 </div>
             </div>
             """
-    st.markdown(textwrap.dedent(table_html), unsafe_allow_html=True)
+        st.markdown(textwrap.dedent(table_html), unsafe_allow_html=True)
+
+        # Render other manual/external positions on the account
+        other_pos = getattr(broker_instance, "get_all_account_positions", lambda: [])()
+        if other_pos:
+            rows_other_html = ""
+            for p in other_pos:
+                badge_type = "green" if p["type"] == "BUY" else "red"
+                badge_html = render_badge(p["type"], badge_type)
+                rows_other_html += f"<tr><td>{p['ticket']}</td><td>{p['symbol']}</td><td>{badge_html}</td><td>${p['price']:,.2f}</td><td>{fmt_size(p['volume'])}</td><td style='font-weight: bold; color: {'var(--green)' if p['profit'] >= 0 else 'var(--red)'};'>${p['profit']:+,.2f}</td><td>Magic: {p['magic']}</td></tr>"
+        
+            other_table_html = f"""
+            <div class="table-wrap" style="margin-top: 15px; border-color: rgba(245, 158, 11, 0.25);">
+                <h4 style="color: #f59e0b; display: flex; align-items: center; gap: 6px; margin: 0;">
+                    <span>🔌 Other Account Positions (Manual / External)</span>
+                </h4>
+                <div style="font-size: 0.72rem; color: var(--text-muted); margin-bottom: 8px;">
+                    These trades belong to other bots or manual orders and are ignored by this bot's profit targets.
+                </div>
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>Ticket ID</th>
+                            <th>Symbol</th>
+                            <th>Type</th>
+                            <th>Entry Price</th>
+                            <th>Size</th>
+                            <th>Profit</th>
+                            <th>Identifier</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {rows_other_html}
+                    </tbody>
+                </table>
+            </div>
+            """
+            st.markdown(textwrap.dedent(other_table_html), unsafe_allow_html=True)
+
+    with col_tables2:
+        if broker_instance.pending_orders:
+            rows_html = ""
+            sorted_orders = sorted(list(broker_instance.pending_orders.values()), key=lambda x: x.trigger_price, reverse=True)
+            for o in sorted_orders:
+                badge_type = "green" if "BUY" in o.type else "red"
+                badge_html = render_badge(o.type, badge_type)
+                rows_html += f"<tr><td>{o.order_id}</td><td>{badge_html}</td><td>${o.trigger_price:,.2f}</td><td>{fmt_size(o.size)}</td></tr>"
+            table_html = f"""
+            <div class="table-wrap">
+                <h4>Active Grid Traps (Pending Orders)</h4>
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>Order ID</th>
+                            <th>Type</th>
+                            <th>Trigger Price</th>
+                            <th>Size</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {rows_html}
+                    </tbody>
+                </table>
+            </div>
+            """
+        else:
+            is_mt5 = (broker_instance.__class__.__name__ == "MT5Broker")
+            if is_mt5 and not st.session_state.running:
+                table_html = """
+                <div class="table-wrap" style="border-color: rgba(245, 158, 11, 0.25);">
+                    <h4>Active Grid Traps (Pending Orders)</h4>
+                    <div class="empty-state">
+                        <div class="empty-state-icon" style="color: #f59e0b; text-shadow: 0 0 10px rgba(245, 158, 11, 0.2);">🔌</div>
+                        <div style="font-weight: 600; color: #f59e0b; margin-bottom: 4px;">Exness Account Linked</div>
+                        <div style="font-size: 0.72rem; max-width: 260px; margin: 0 auto; color: var(--text-muted);">
+                            Click <strong style="color: var(--text-color);">▶ START BOT</strong> to deploy the breakout grid traps on your Exness MT5 terminal!
+                        </div>
+                    </div>
+                </div>
+                """
+            else:
+                table_html = """
+                <div class="table-wrap">
+                    <h4>Active Grid Traps (Pending Orders)</h4>
+                    <div class="empty-state">
+                        <div class="empty-state-icon">◇</div>
+                        No pending traps deployed in the market
+                    </div>
+                </div>
+                """
+        st.markdown(textwrap.dedent(table_html), unsafe_allow_html=True)
+
+    # 11.5 MARKET INTELLIGENCE & MANUAL DECISION CENTER
+    st.markdown("---")
+    _fg_data = fetch_cached_fg_index()
+    _mkt_stats = fetch_cached_24h_stats(_active_sym)
+    _news_list = fetch_cached_news(_active_sym)
+
+    _df_hist_tech = pd.DataFrame(st.session_state.price_history, columns=["timestamp", "price"]) if st.session_state.price_history else None
+    if _df_hist_tech is not None and not _df_hist_tech.empty:
+        _df_hist_tech["open"] = _df_hist_tech["price"]
+        _df_hist_tech["high"] = _df_hist_tech["price"]
+        _df_hist_tech["low"] = _df_hist_tech["price"]
+        _df_hist_tech["close"] = _df_hist_tech["price"]
+        _df_hist_tech["volume"] = 1.0
+    _tech_ind = calculate_technical_indicators(_df_hist_tech)
+
+    with st.expander("🧠 MARKET INTELLIGENCE & MANUAL DECISION CENTER", expanded=True):
+        st.markdown(
+            f'<div style="font-size:0.8rem; color:var(--text-muted); margin-bottom:12px;">'
+            f'Real-time market sentiment, 24h volume analytics, technical indicator matrix, breaking news feed, and dynamic grid spacing suggestions for manual trading decisions.'
+            f'</div>',
+            unsafe_allow_html=True
+        )
+    
+        # ROW 1: 4 Intelligence Cards
+        ic1, ic2, ic3, ic4 = st.columns(4)
+    
+        with ic1:
+            _fg_val = _fg_data.get("value", 50)
+            _fg_cls = _fg_data.get("classification", "Neutral")
+            _fg_color = "#22c55e" if _fg_val >= 60 else ("#ef4444" if _fg_val <= 40 else "#f59e0b")
+            st.markdown(f"""
+            <div class="metric-card" style="border-left: 3px solid {_fg_color};">
+                <div class="metric-label">😱 Fear &amp; Greed Index</div>
+                <div class="metric-value" style="color: {_fg_color};">{_fg_val} <span style="font-size:0.85rem; font-weight:600;">/ 100</span></div>
+                <div class="metric-delta delta-warn" style="background:{_fg_color}22; color:{_fg_color}; font-weight:700;">{_fg_cls.upper()}</div>
+            </div>
+            """, unsafe_allow_html=True)
+        
+        with ic2:
+            _vol_usd = _mkt_stats.get("volume_usd", 0.0)
+            _vol_str = f"${_vol_usd / 1e9:.2f}B" if _vol_usd >= 1e9 else (f"${_vol_usd / 1e6:.1f}M" if _vol_usd >= 1e6 else f"${_vol_usd:,.0f}")
+            _chg_24 = _mkt_stats.get("price_change_pct", 0.0)
+            _chg_color = "var(--green)" if _chg_24 >= 0 else "var(--red)"
+            st.markdown(f"""
+            <div class="metric-card">
+                <div class="metric-label">📊 24h Trading Volume ({chart_coin_label})</div>
+                <div class="metric-value">{_vol_str}</div>
+                <div class="metric-delta" style="color:{_chg_color};">24h Change: {_chg_24:+.2f}%</div>
+            </div>
+            """, unsafe_allow_html=True)
+        
+        with ic3:
+            _score = _tech_ind.get("breakout_score", 50)
+            _score_color = "#22c55e" if _score >= 70 else ("#3b82f6" if _score >= 45 else "#f59e0b")
+            _squeeze_tag = "⚡ HIGH SQUEEZE" if _tech_ind.get("is_bb_squeeze") else "EXPANDING"
+            st.markdown(f"""
+            <div class="metric-card" style="border-left: 3px solid {_score_color};">
+                <div class="metric-label">🎯 Breakout Potential Score</div>
+                <div class="metric-value" style="color:{_score_color};">{_score}%</div>
+                <div class="metric-delta" style="background:{_score_color}22; color:{_score_color}; font-weight:700;">{_squeeze_tag}</div>
+            </div>
+            """, unsafe_allow_html=True)
+        
+        with ic4:
+            _rec_gap = _tech_ind.get("recommended_gap_pct", 0.22)
+            _rec_off = _tech_ind.get("recommended_offset_pct", 0.33)
+            st.markdown(f"""
+            <div class="metric-card" style="border-left: 3px solid var(--accent);">
+                <div class="metric-label">📐 Volatility-Optimal Spacing</div>
+                <div class="metric-value" style="font-size:1.2rem;">Gap: {_rec_gap:.2f}% | Off: {_rec_off:.2f}%</div>
+                <div class="metric-delta delta-up">Derived from live ATR ({_tech_ind.get('atr_pct', 0.0):.2f}%)</div>
+            </div>
+            """, unsafe_allow_html=True)
+
+        _order_book = fetch_cached_order_book(_active_sym)
+        _econ_cal = fetch_cached_calendar()
+
+        # Interactive Sub-Tabs inside Intelligence Center
+        intel_tab1, intel_tab2, intel_tab3, intel_tab4, intel_tab5 = st.tabs([
+            "📰 Breaking News & Macro Events",
+            "📐 Technical Matrix & Spacing Calculator",
+            "📊 24h Price Range & Volume Metrics",
+            "🧱 Order Book Microstructure Depth",
+            "📅 Economic Calendar Shield"
+        ])
+    
+        with intel_tab1:
+            st.markdown(f"#### 📰 Market Headlines for {chart_coin_label}")
+            if _news_list:
+                for item in _news_list:
+                    sent = item.get("sentiment", "NEUTRAL")
+                    badge_style = {
+                        "BULLISH": "badge-green",
+                        "BEARISH": "badge-red",
+                        "VOLATILITY_ALERT": "badge-amber",
+                        "NEUTRAL": "badge-blue"
+                    }.get(sent, "badge-blue")
+                
+                    sent_icon = {
+                        "BULLISH": "🚀 BULLISH",
+                        "BEARISH": "📉 BEARISH",
+                        "VOLATILITY_ALERT": "⚠️ VOLATILITY ALERT",
+                        "NEUTRAL": "📰 NEUTRAL"
+                    }.get(sent, sent)
+                
+                    pub_time = datetime.fromtimestamp(item.get("published_at", time.time())).strftime("%H:%M:%S")
+                
+                    st.markdown(f"""
+                    <div style="background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 10px 14px; margin-bottom: 8px;">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+                            <span class="badge {badge_style}" style="font-size:0.68rem;">{sent_icon}</span>
+                            <span style="font-size: 0.7rem; color: var(--text-muted);">{item.get('source')} &bull; {pub_time}</span>
+                        </div>
+                        <div style="font-weight: 700; font-size: 0.85rem; color: var(--text); margin-bottom: 4px;">
+                            <a href="{item.get('url')}" target="_blank" style="color: var(--text); text-decoration: none;">{item.get('title')}</a>
+                        </div>
+                        <div style="font-size: 0.76rem; color: var(--text-muted);">{item.get('summary')}</div>
+                    </div>
+                    """, unsafe_allow_html=True)
+            else:
+                st.info("No breaking news headlines loaded at this moment.")
+            
+        with intel_tab2:
+            col_t1, col_t2 = st.columns(2)
+            with col_t1:
+                st.markdown("##### 🔬 Live Technical Indicators")
+                _rsi_val = _tech_ind.get("rsi", 50.0)
+                _rsi_state = "Overbought 🔴" if _rsi_val > 70 else ("Oversold 🟢" if _rsi_val < 30 else "Neutral 🟡")
+                st.markdown(f"""
+                <div class="table-wrap">
+                    <table class="data-table">
+                        <tr><td><strong>RSI (14-Period)</strong></td><td>{_rsi_val}</td><td>{_rsi_state}</td></tr>
+                        <tr><td><strong>ATR (14-Period)</strong></td><td>${_tech_ind.get('atr', 0.0):,.2f}</td><td>{_tech_ind.get('atr_pct', 0.0):.2f}% of price</td></tr>
+                        <tr><td><strong>Bollinger Band Width</strong></td><td>{_tech_ind.get('bb_width_pct', 0.0):.2f}%</td><td>{'Squeeze (<1.5%) ⚡' if _tech_ind.get('is_bb_squeeze') else 'Normal Bandwidth'}</td></tr>
+                        <tr><td><strong>Volume Spike Multiplier</strong></td><td>{_tech_ind.get('volume_spike_mult', 1.0):.2f}x</td><td>vs 20-period volume SMA</td></tr>
+                    </table>
+                </div>
+                """, unsafe_allow_html=True)
+            
+            with col_t2:
+                st.markdown("##### ⚡ Auto-Apply Volatility Spacing")
+                st.markdown(
+                    f"Based on current market ATR (**{_tech_ind.get('atr_pct', 0.0):.2f}%**), "
+                    f"the recommended grid configuration for **{chart_coin_label}** is:"
+                )
+                st.markdown(f"- **Grid Gap**: `{_rec_gap:.2f}%`")
+                st.markdown(f"- **Trap Offset**: `{_rec_off:.2f}%`")
+            
+                if st.button(f"🎯 APPLY RECOMMENDED SPACING TO {chart_coin_label}", type="primary", use_container_width=True):
+                    st.session_state.strat_gap = _rec_gap
+                    st.session_state.strat_offset = _rec_off
+                    st.session_state.strat_is_percent = True
+                
+                    # Clear namespaced widget keys so selectboxes update
+                    _sym_reset = st.session_state.live_symbol
+                    st.session_state.pop(f"strat_gap_input_pct_{_sym_reset}", None)
+                    st.session_state.pop(f"strat_offset_input_pct_{_sym_reset}", None)
+                    st.session_state.pop(f"strat_is_percent_select_{_sym_reset}", None)
+                
+                    sync_active_market_primitives()
+                    save_bot_state()
+                    st.toast(f"Updated spacing for {chart_coin_label}: Gap={_rec_gap:.2f}%, Offset={_rec_off:.2f}%")
+                    st.rerun()
+
+        with intel_tab3:
+            st.markdown(f"##### 📊 24-Hour Range & Exchange Volume Metrics for {chart_coin_label}")
+            m_col1, m_col2, m_col3, m_col4 = st.columns(4)
+            with m_col1:
+                st.metric("24h High", f"${_mkt_stats.get('high_24h', 0.0):,.2f}")
+            with m_col2:
+                st.metric("24h Low", f"${_mkt_stats.get('low_24h', 0.0):,.2f}")
+            with m_col3:
+                st.metric("24h Volume (Coin)", f"{_mkt_stats.get('volume_coin', 0.0):,.2f}")
+            with m_col4:
+                st.metric("Data Source API", _mkt_stats.get("source", "Exchange API"))
+
+        with intel_tab4:
+            st.markdown(f"##### 🧱 Order Book Microstructure Depth & Pressure Wall ({chart_coin_label})")
+            ob_col1, ob_col2 = st.columns(2)
+            with ob_col1:
+                buy_p = _order_book.get("buy_pressure_pct", 50.0)
+                sell_p = _order_book.get("sell_pressure_pct", 50.0)
+                st.markdown(f"""
+                <div style="background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 14px;">
+                    <div style="font-weight: 700; font-size: 0.85rem; margin-bottom: 8px;">Order Wall Pressure Ratio</div>
+                    <div style="display: flex; height: 18px; border-radius: 6px; overflow: hidden; margin-bottom: 8px;">
+                        <div style="width: {buy_p}%; background: var(--green); text-align: center; color: white; font-size: 0.68rem; font-weight: bold; line-height: 18px;">{buy_p:.1f}% BUY</div>
+                        <div style="width: {sell_p}%; background: var(--red); text-align: center; color: white; font-size: 0.68rem; font-weight: bold; line-height: 18px;">{sell_p:.1f}% SELL</div>
+                    </div>
+                    <div style="font-size: 0.72rem; color: var(--text-muted);">
+                        Institutional order book volume: <strong>{_order_book.get('bids_volume', 0.0):,.2f} Bids</strong> vs <strong>{_order_book.get('asks_volume', 0.0):,.2f} Asks</strong>
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+            with ob_col2:
+                st.markdown(f"""
+                <div style="background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 14px;">
+                    <div style="font-weight: 700; font-size: 0.85rem; margin-bottom: 8px;">Key Order Book Wall Prices</div>
+                    <div style="font-size: 0.78rem; display: flex; flex-direction: column; gap: 6px;">
+                        <div>🛡️ <strong>Support Wall:</strong> ${_order_book.get('support_wall', 0.0):,.2f}</div>
+                        <div>🛑 <strong>Resistance Wall:</strong> ${_order_book.get('resistance_wall', 0.0):,.2f}</div>
+                        <div style="color: var(--text-dim); font-size: 0.7rem;">Source: {_order_book.get('source', 'Exchange Depth')}</div>
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+
+        with intel_tab5:
+            st.markdown("##### 📅 Upcoming High-Impact Macro Economic Releases")
+            for ev in _econ_cal:
+                impact_badge = "badge-red" if ev["impact"] == "HIGH" else "badge-amber"
+                t_diff = (ev["timestamp"] - time.time()) / 60.0
+                time_txt = f"In {int(t_diff)} mins" if t_diff > 0 else "Released recently"
+                st.markdown(f"""
+                <div style="background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 10px 14px; margin-bottom: 6px; display: flex; justify-content: space-between; align-items: center;">
+                    <div>
+                        <span class="badge {impact_badge}" style="margin-right: 6px;">{ev['impact']} IMPACT</span>
+                        <strong style="font-size: 0.82rem;">{ev['title']}</strong>
+                        <span style="font-size: 0.72rem; color: var(--text-muted); margin-left: 8px;">({ev['country']})</span>
+                    </div>
+                    <div style="font-size: 0.76rem; font-weight: 700; color: var(--accent);">
+                        ⏳ {time_txt} &bull; Forecast: {ev['forecast']}
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
 
 # 12. HISTORY LOGS SECTIONS — Single unified section with pair filter
 st.markdown("---")

@@ -117,6 +117,20 @@ class BreakoutGridBot:
         self.adaptive_gap_min_mult = adaptive_gap_min_mult
         self.adaptive_gap_max_mult = adaptive_gap_max_mult
 
+        # Risk Control Circuit Breaker & Macro News Shield
+        self.max_daily_drawdown: float = 0.0  # 0.0 disabled; e.g. 250.0 = max -$250 loss cap
+        self.daily_circuit_breaker_tripped: bool = False
+        self.use_news_shield: bool = False
+
+        # Prop Firm Challenge Compliance Engine (FTMO / FundedNext / Funding Pips)
+        self.prop_firm_guard_enabled: bool = False
+        self.prop_firm_max_daily_drawdown_pct: float = 4.5  # 4.5% daily drawdown lock (buffer for 5.0% limit)
+        self.prop_firm_target_pct: float = 8.0  # 8.0% challenge pass target lock
+
+        # Grid Maintenance Engine Toggles
+        self.use_grid_repair: bool = True
+        self.use_auto_cleanup: bool = True
+
         self.deployed = False
         self.deploy_price = 0.0
         self.current_cycle_id = 1
@@ -194,6 +208,14 @@ class BreakoutGridBot:
             if bb_width is None or bb_width > self.bb_squeeze_threshold:
                 return
 
+        # Check Daily Loss Circuit Breaker
+        if getattr(self, "max_daily_drawdown", 0.0) > 0:
+            realized = getattr(self.broker, "realized_pnl", 0.0)
+            if realized <= -self.max_daily_drawdown:
+                self.daily_circuit_breaker_tripped = True
+                print(f"[{getattr(self.broker, 'symbol', 'BOT')}] Daily Drawdown Circuit Breaker TRIPPED (-${abs(realized):.2f} <= -${self.max_daily_drawdown:.2f}). Deployment halted.")
+                return
+
         effective_gap = self.get_effective_gap(current_price, bb_width)
 
         self.broker.cancel_all_orders()
@@ -252,7 +274,15 @@ class BreakoutGridBot:
             # Runner Mode intentionally operates with wiped opposite traps to protect profits
             return 0
 
-        center_price = self.deploy_price if self.deploy_price > 0 else current_price
+        # If no positions and no pending orders exist, run a fresh deploy_traps call
+        if len(self.broker.pending_orders) == 0 and len(self.broker.open_positions) == 0:
+            self.deploy_traps(current_price, timestamp)
+            return self.grid_levels * 2
+
+        center_price = self.deploy_price if getattr(self, "deploy_price", 0.0) > 0 else current_price
+        if not getattr(self, "deploy_price", 0.0) or self.deploy_price == 0.0:
+            self.deploy_price = center_price
+
         base_size = getattr(self, "deploy_order_size", self.order_size)
         mult = getattr(self, "deploy_order_size_multiplier", self.order_size_multiplier)
         gap_config = getattr(self, "deploy_grid_gap", self.grid_gap)
@@ -284,11 +314,16 @@ class BreakoutGridBot:
                     if len(buy_pending) + len(buy_open) + buy_placed >= self.grid_levels:
                         break
                     target_price = center_price + offset_val + (i * gap_val)
-                    # Only place if target price is above current_price and level doesn't exist in pending OR open positions
-                    if target_price > current_price and not any(abs(target_price - ex) < (gap_val * 0.4) for ex in existing_buy_levels):
+                    if target_price <= current_price:
+                        # If center-based target_price has been passed by market movement, place above current_price
+                        target_price = current_price + (gap_val * 0.5) + (i * gap_val)
+                    
+                    # Only place if level doesn't exist near existing BUY levels
+                    if target_price > current_price and not any(abs(target_price - ex) < (gap_val * 0.35) for ex in existing_buy_levels):
                         level_size = self.calculate_level_size(base_size, mult, i)
                         self.broker.place_order("BUY_STOP", target_price, level_size, timestamp)
                         buy_placed += 1
+                        existing_buy_levels.append(target_price)
 
             # Check and place missing SELL_STOP levels ONLY if total SELL levels < self.grid_levels
             if len(sell_pending) + len(sell_open) < self.grid_levels:
@@ -296,16 +331,26 @@ class BreakoutGridBot:
                     if len(sell_pending) + len(sell_open) + sell_placed >= self.grid_levels:
                         break
                     target_price = center_price - offset_val - (i * gap_val)
-                    # Only place if target price is below current_price and level doesn't exist in pending OR open positions
-                    if target_price < current_price and not any(abs(target_price - ex) < (gap_val * 0.4) for ex in existing_sell_levels):
+                    if target_price >= current_price:
+                        # If center-based target_price has been passed by market movement, place below current_price
+                        target_price = current_price - (gap_val * 0.5) - (i * gap_val)
+
+                    # Only place if level doesn't exist near existing SELL levels
+                    if target_price < current_price and not any(abs(target_price - ex) < (gap_val * 0.35) for ex in existing_sell_levels):
                         level_size = self.calculate_level_size(base_size, mult, i)
                         self.broker.place_order("SELL_STOP", target_price, level_size, timestamp)
                         sell_placed += 1
+                        existing_sell_levels.append(target_price)
 
             placed_count = buy_placed + sell_placed
-            self.deployed = True
         except Exception as e:
-            print(f"Notice: Grid repair encountered non-critical order placement error: {e}")
+            err_msg = str(e)
+            last_err = getattr(self, "_last_repair_error", None)
+            last_err_time = getattr(self, "_last_repair_error_time", 0.0)
+            if err_msg != last_err or (timestamp - last_err_time) >= 60.0:
+                print(f"Notice: Grid repair encountered order placement notice: {err_msg}")
+                self._last_repair_error = err_msg
+                self._last_repair_error_time = timestamp
 
         return placed_count
 
@@ -428,7 +473,7 @@ class BreakoutGridBot:
         float_pnl = self.broker.get_floating_pnl(current_price)
 
         # Automatic Grid Repair check: if positions are open and not in Runner Mode, maintain grid trap density
-        if len(self.broker.open_positions) > 0 and not getattr(self, "in_runner_mode", False):
+        if len(self.broker.open_positions) > 0 and not getattr(self, "in_runner_mode", False) and getattr(self, "use_grid_repair", True):
             if len(self.broker.pending_orders) < (self.grid_levels * 2):
                 try:
                     self.repair_grid(current_price, timestamp)
@@ -471,6 +516,8 @@ class BreakoutGridBot:
         trailing_stop_hit = False
         stop_loss_hit = False
         breakeven_hit = False
+        early_range_hit = False
+        prop_guard_hit = False
 
         # SMART TIMEOUT: Only exits if PnL is at or above breakeven (friction_floor).
         # If the cycle is in the red when time expires, do NOT force-exit — let Stop Loss
@@ -480,6 +527,16 @@ class BreakoutGridBot:
         timeout_hit = _timed_out and (float_pnl >= friction_floor)
 
         if len(self.broker.open_positions) > 0:
+            # 0. PROP FIRM COMPLIANCE GUARD CHECK
+            if getattr(self, "prop_firm_guard_enabled", False):
+                daily_limit = 10000.0 * (getattr(self, "prop_firm_max_daily_drawdown_pct", 4.5) / 100.0)
+                if float_pnl <= -daily_limit:
+                    prop_guard_hit = True
+
+            # 0. STOP LOSS CHECK
+            if self.stop_loss > 0 and float_pnl <= -self.stop_loss:
+                stop_loss_hit = True
+
             # Update max PnL
             if float_pnl > getattr(self, 'max_floating_pnl', -float("inf")):
                 self.max_floating_pnl = float_pnl
@@ -547,9 +604,10 @@ class BreakoutGridBot:
                 if float_pnl >= target_floor:
                     early_range_hit = True
 
-        if target_hit or runner_hit or trailing_stop_hit or stop_loss_hit or timeout_hit or breakeven_hit or early_range_hit:
+        if target_hit or runner_hit or trailing_stop_hit or stop_loss_hit or timeout_hit or breakeven_hit or early_range_hit or prop_guard_hit:
             if runner_hit:          reason = "RUNNER_EXPANSION"
             elif target_hit:        reason = "TARGET_PROFIT"
+            elif prop_guard_hit:    reason = "PROP_FIRM_GUARD"
             elif early_range_hit:   reason = "EARLY_RANGE_EXIT"
             elif trailing_stop_hit: reason = "TRAILING_STOP"
             elif breakeven_hit:     reason = "BREAKEVEN"
@@ -590,6 +648,17 @@ class BreakoutGridBot:
                 "exit_reason": reason
             }
             self.cycle_history.append(cycle_summary)
+
+            # Dispatch Telegram Signal Alert if configured
+            tg_token = getattr(self, "telegram_bot_token", None)
+            tg_chat = getattr(self, "telegram_chat_id", None)
+            if tg_token and tg_chat:
+                try:
+                    from core.signals import dispatch_trade_exit_signal
+                    symbol_name = getattr(self.broker, "symbol", "ACTIVE PAIR")
+                    dispatch_trade_exit_signal(tg_token, tg_chat, symbol_name, cycle_summary)
+                except Exception as tg_err:
+                    print(f"Notice: Telegram alert dispatch error: {tg_err}")
 
             self.current_cycle_id += 1
 
