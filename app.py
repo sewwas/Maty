@@ -1641,7 +1641,7 @@ with col_left:
                 st.rerun()
 
     with cmd_r2_c3:
-        if st.button(f"🎯 DEFAULTS ({_active_label})", type="secondary", help=f"Reset strategy parameters for {_active_label} to Golden Settings defaults", use_container_width=True, key=f"mcd_defaults_{_sym_wk}"):
+        if st.button(f"⭐ GOLDEN PRESET", type="secondary", help=f"Apply Golden Settings preset for {_active_label}", use_container_width=True, key=f"mcd_defaults_{_sym_wk}"):
             gs = get_coin_golden_settings(st.session_state.live_symbol)
             st.session_state.strat_offset = gs["offset"]
             st.session_state.strat_gap = gs["gap"]
@@ -1799,7 +1799,7 @@ with col_left:
     with st_header_col1:
         st.markdown(f'<div class="control-title">🎯 Strategy Tuning &nbsp;<span style="font-size:0.7rem;font-weight:400;opacity:0.55;border:1px solid rgba(255,255,255,0.15);border-radius:6px;padding:1px 7px;">for {_strat_sym_label}</span></div>', unsafe_allow_html=True)
     with st_header_col2:
-        if st.button(f"🎯 DEFAULTS ({_strat_sym_label})", type="secondary", help=f"Reset strategy parameters for {_strat_sym_label} to Golden Settings defaults", use_container_width=True, key=f"strat_defaults_btn_{_sym_wk}"):
+        if st.button(f"🔄 RESET TO GOLDEN", type="secondary", help=f"Reset strategy parameters for {_strat_sym_label} to Golden Settings defaults", use_container_width=True, key=f"strat_defaults_btn_{_sym_wk}"):
             gs = get_coin_golden_settings(st.session_state.live_symbol)
             st.session_state.strat_offset = gs["offset"]
             st.session_state.strat_gap = gs["gap"]
