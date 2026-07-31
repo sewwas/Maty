@@ -605,6 +605,10 @@ def fetch_cached_order_book(symbol: str):
 def fetch_cached_calendar():
     return get_economic_calendar()
 
+@st.cache_data(ttl=15)
+def fetch_cached_klines(symbol: str):
+    return get_historical_klines(symbol, interval="1m", limit=100)
+
 # --- STATE PERSISTENCE HELPERS ---
 STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bot_state.pkl")
 os.makedirs(os.path.dirname(STATE_FILE), exist_ok=True)
@@ -2849,14 +2853,8 @@ with col_right:
     _mkt_stats = fetch_cached_24h_stats(_active_sym)
     _news_list = fetch_cached_news(_active_sym)
 
-    _df_hist_tech = pd.DataFrame(st.session_state.price_history, columns=["timestamp", "price"]) if st.session_state.price_history else None
-    if _df_hist_tech is not None and not _df_hist_tech.empty:
-        _df_hist_tech["open"] = _df_hist_tech["price"]
-        _df_hist_tech["high"] = _df_hist_tech["price"]
-        _df_hist_tech["low"] = _df_hist_tech["price"]
-        _df_hist_tech["close"] = _df_hist_tech["price"]
-        _df_hist_tech["volume"] = 1.0
-    _tech_ind = calculate_technical_indicators(_df_hist_tech)
+    _df_klines_live = fetch_cached_klines(_active_sym)
+    _tech_ind = calculate_technical_indicators(_df_klines_live)
 
     with st.expander("🧠 MARKET INTELLIGENCE & MANUAL DECISION CENTER", expanded=True):
         st.markdown(
