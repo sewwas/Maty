@@ -38,7 +38,30 @@ class TradeDisabledError(RuntimeError):
 def get_symbol_magic_number(symbol: str) -> int:
     if not symbol:
         return 998877
-    return SYMBOL_MAGIC_NUMBERS.get(symbol.upper(), 998870 + (abs(hash(symbol)) % 1000))
+    sym_upper = symbol.upper()
+    if sym_upper in SYMBOL_MAGIC_NUMBERS:
+        return SYMBOL_MAGIC_NUMBERS[sym_upper]
+
+    # Normalize Exness / Broker suffixes: m, c, _i, .a, USDT, USD
+    clean_sym = sym_upper
+    for suff in ["USDT", "USD", "_I", ".A"]:
+        clean_sym = clean_sym.replace(suff, "")
+    if len(clean_sym) > 3 and (clean_sym.endswith("M") or clean_sym.endswith("C")):
+        clean_sym = clean_sym[:-1]
+
+    if clean_sym in ("PAXG", "XAU", "GOLD"):
+        return 998876
+
+    for k, v in SYMBOL_MAGIC_NUMBERS.items():
+        k_clean = k
+        for suff in ["USDT", "USD", "_I", ".A"]:
+            k_clean = k_clean.replace(suff, "")
+        if k_clean and k_clean == clean_sym:
+            return v
+
+    # Deterministic calculation so magic number NEVER changes across Python restarts
+    char_code_sum = sum(ord(c) * (i + 1) for i, c in enumerate(sym_upper))
+    return 998870 + (char_code_sum % 1000)
 
 
 class MT5Broker:

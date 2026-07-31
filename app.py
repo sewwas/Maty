@@ -22,7 +22,7 @@ if "GLOBAL_RUNNERS" not in globals():
 
 # Import core bot logic
 from core.mt5_broker import MT5Broker, SimulatedBroker, MT5_AVAILABLE, get_symbol_magic_number, TradeDisabledError
-from core.engine import BreakoutGridBot
+from core.engine import BreakoutGridBot, get_pip_size
 from core.license import LicenseManager, LicenseTier
 from core.signals import send_telegram_alert, dispatch_trade_exit_signal
 from core.data import get_live_price, get_historical_klines, interpolate_ticks, get_fear_and_greed_index, get_24h_market_stats, get_crypto_news, calculate_technical_indicators, get_order_book_depth, get_economic_calendar
@@ -690,7 +690,8 @@ def sync_active_market_primitives():
         active["price_history"] = st.session_state.price_history
         active["strat_offset"] = st.session_state.strat_offset
         active["strat_gap"] = st.session_state.strat_gap
-        active["strat_is_percent"] = st.session_state.strat_is_percent
+        active["strat_spacing_mode"] = st.session_state.get("strat_spacing_mode", "Percentage (%)")
+        active["strat_is_percent"] = (active["strat_spacing_mode"] == "Percentage (%)")
         active["strat_order_size"] = st.session_state.strat_order_size
         active["strat_size_multiplier"] = st.session_state.strat_size_multiplier
         active["strat_target_profit"] = st.session_state.strat_target_profit
@@ -738,7 +739,8 @@ def serialize_market_state(m_state):
         "price_source": m_state.get("price_source", "Live Market API"),
         "strat_offset": m_state.get("strat_offset"),
         "strat_gap": m_state.get("strat_gap"),
-        "strat_is_percent": m_state.get("strat_is_percent"),
+        "strat_spacing_mode": m_state.get("strat_spacing_mode", "Percentage (%)"),
+        "strat_is_percent": m_state.get("strat_is_percent", True),
         "strat_order_size": m_state.get("strat_order_size"),
         "strat_size_multiplier": m_state.get("strat_size_multiplier"),
         "strat_target_profit": m_state.get("strat_target_profit"),
@@ -775,7 +777,7 @@ def serialize_market_state(m_state):
 
 def deserialize_market_state(ser, symbol):
     from core.mt5_broker import MT5Broker, SimulatedBroker, MT5_AVAILABLE
-    from core.engine import BreakoutGridBot, Position, Order
+    from core.engine import BreakoutGridBot, Position, Order, get_pip_size
     
     # Recreate Broker based on the saved broker class
     broker_class = ser.get("broker_class", "SimulatedBroker")
@@ -837,6 +839,10 @@ def deserialize_market_state(ser, symbol):
                 
     # Recreate Bot using safe fallbacks
     gs = get_coin_golden_settings(symbol)
+    saved_spacing_mode = ser.get("strat_spacing_mode")
+    if not saved_spacing_mode:
+        saved_spacing_mode = "Percentage (%)" if ser.get("strat_is_percent", True) else "USD Points ($)"
+
     bot = BreakoutGridBot(
         broker,
         grid_levels=10,
@@ -846,7 +852,8 @@ def deserialize_market_state(ser, symbol):
         order_size_multiplier=ser.get("strat_size_multiplier", gs["multiplier"]),
         target_profit=ser.get("strat_target_profit", gs["target_profit"]),
         auto_restart=True,
-        is_percent=ser.get("strat_is_percent", True),
+        is_percent=(saved_spacing_mode == "Percentage (%)"),
+        spacing_mode=saved_spacing_mode,
         stop_loss=ser.get("strat_sl", gs["stop_loss"]),
         max_cycle_duration=float('inf'),
         cancel_opposite_on_trigger=False,
@@ -876,7 +883,8 @@ def deserialize_market_state(ser, symbol):
         "price_source": ser.get("price_source", "Live Market API"),
         "strat_offset": ser.get("strat_offset", gs["offset"]),
         "strat_gap": ser.get("strat_gap", gs["gap"]),
-        "strat_is_percent": ser.get("strat_is_percent", True),
+        "strat_spacing_mode": saved_spacing_mode,
+        "strat_is_percent": (saved_spacing_mode == "Percentage (%)"),
         "strat_order_size": ser.get("strat_order_size", gs["order_size"]),
         "strat_size_multiplier": ser.get("strat_size_multiplier", gs["multiplier"]),
         "strat_target_profit": ser.get("strat_target_profit", gs["target_profit"]),
@@ -1099,7 +1107,11 @@ if "current_symbol" not in st.session_state or st.session_state.current_symbol !
     st.session_state.strat_grid_levels = active_market.get("strat_grid_levels", gs.get("grid_levels", 10))
     st.session_state.strat_offset = active_market.get("strat_offset", gs["offset"])
     st.session_state.strat_gap = active_market.get("strat_gap", gs["gap"])
-    st.session_state.strat_is_percent = active_market.get("strat_is_percent", True)
+    _mode_def = active_market.get("strat_spacing_mode")
+    if not _mode_def:
+        _mode_def = "Percentage (%)" if active_market.get("strat_is_percent", True) else "USD Points ($)"
+    st.session_state.strat_spacing_mode = _mode_def
+    st.session_state.strat_is_percent = (_mode_def == "Percentage (%)")
     st.session_state.strat_order_size = active_market.get("strat_order_size", gs["order_size"])
     st.session_state.strat_size_multiplier = active_market.get("strat_size_multiplier", gs["multiplier"])
     st.session_state.strat_target_profit = active_market.get("strat_target_profit", gs["target_profit"])
@@ -1116,9 +1128,10 @@ if "current_symbol" not in st.session_state or st.session_state.current_symbol !
 # Widget keys are namespaced per-symbol so each coin has fully independent Streamlit state.
 _sym_key = st.session_state.live_symbol
 
-_is_pct_key = f"strat_is_percent_select_{_sym_key}"
-if _is_pct_key in st.session_state:
-    st.session_state.strat_is_percent = (st.session_state[_is_pct_key] == "Percentage (%)")
+_spacing_mode_key = f"strat_spacing_mode_select_{_sym_key}"
+if _spacing_mode_key in st.session_state:
+    st.session_state.strat_spacing_mode = st.session_state[_spacing_mode_key]
+    st.session_state.strat_is_percent = (st.session_state.strat_spacing_mode == "Percentage (%)")
 
 if f"strat_size_multiplier_input_{_sym_key}" in st.session_state:
     st.session_state.strat_size_multiplier = st.session_state[f"strat_size_multiplier_input_{_sym_key}"]
@@ -1143,12 +1156,18 @@ if f"strat_profit_lock_pct_input_{_sym_key}" in st.session_state:
 if f"strat_use_adaptive_gap_input_{_sym_key}" in st.session_state:
     st.session_state.strat_use_adaptive_gap = st.session_state[f"strat_use_adaptive_gap_input_{_sym_key}"]
 
-if st.session_state.get("strat_is_percent", True):
+curr_sp_mode = st.session_state.get("strat_spacing_mode", "Percentage (%)")
+if curr_sp_mode == "Percentage (%)":
     if f"strat_gap_input_pct_{_sym_key}" in st.session_state:
         st.session_state.strat_gap = st.session_state[f"strat_gap_input_pct_{_sym_key}"]
     if f"strat_offset_input_pct_{_sym_key}" in st.session_state:
         st.session_state.strat_offset = st.session_state[f"strat_offset_input_pct_{_sym_key}"]
-else:
+elif curr_sp_mode == "Pips":
+    if f"strat_gap_input_pip_{_sym_key}" in st.session_state:
+        st.session_state.strat_gap = st.session_state[f"strat_gap_input_pip_{_sym_key}"]
+    if f"strat_offset_input_pip_{_sym_key}" in st.session_state:
+        st.session_state.strat_offset = st.session_state[f"strat_offset_input_pip_{_sym_key}"]
+else:  # USD Points ($)
     if f"strat_gap_input_usd_{_sym_key}" in st.session_state:
         st.session_state.strat_gap = st.session_state[f"strat_gap_input_usd_{_sym_key}"]
     if f"strat_offset_input_usd_{_sym_key}" in st.session_state:
@@ -1163,7 +1182,7 @@ broker = st.session_state.broker
 settings_changed = (
     bot.grid_gap != st.session_state.strat_gap or
     bot.trap_offset != st.session_state.strat_offset or
-    bot.is_percent != st.session_state.strat_is_percent or
+    getattr(bot, "spacing_mode", "Percentage (%)") != st.session_state.strat_spacing_mode or
     bot.order_size != st.session_state.strat_order_size or
     bot.order_size_multiplier != st.session_state.strat_size_multiplier
 )
@@ -1173,7 +1192,7 @@ bot.grid_levels = 10
 bot.grid_gap = st.session_state.strat_gap
 bot.trap_offset = st.session_state.strat_offset
 bot.auto_restart = True
-bot.is_percent = st.session_state.strat_is_percent
+bot.spacing_mode = st.session_state.strat_spacing_mode
 bot.max_cycle_duration = float('inf')
 bot.cancel_opposite_on_trigger = True
 # Target Profit, Stop Loss, Trailing Stop, and Breakeven exit levels update dynamically even during active cycles
@@ -1505,14 +1524,23 @@ with col_left:
                     if "markets" in st.session_state and st.session_state.live_symbol in st.session_state.markets:
                         st.session_state.markets[st.session_state.live_symbol]["running"] = True
                 else:
+                    curr_price = st.session_state.price_history[-1][1] if st.session_state.price_history else st.session_state.last_price
+                    if not curr_price or curr_price == 0:
+                        curr_price = get_default_price(st.session_state.live_symbol)
+
                     try:
-                        curr_price = st.session_state.price_history[-1][1] if st.session_state.price_history else st.session_state.last_price
                         st.session_state.broker.close_all_positions(curr_price, time.time())
                         st.session_state.broker.cancel_all_orders()
                     except Exception as e:
-                        print(f"Startup cleanup failed: {e}")
-                    
-                    st.session_state.bot.deployed = False
+                        print(f"Startup cleanup notice: {e}")
+
+                    try:
+                        st.session_state.bot.deploy_traps(curr_price, time.time())
+                        st.toast(f"🚀 Started {_active_label} & deployed grid traps at ${curr_price:,.2f}")
+                    except Exception as dep_err:
+                        print(f"Startup deploy_traps error: {dep_err}")
+                        st.toast(f"⚠️ Bot started for {_active_label}, deploying grid on first tick...")
+
                     st.session_state.running = True
                     if "markets" in st.session_state and st.session_state.live_symbol in st.session_state.markets:
                         st.session_state.markets[st.session_state.live_symbol]["running"] = True
@@ -1825,24 +1853,43 @@ with col_left:
     _sym_wk = st.session_state.live_symbol  # widget key namespace for this coin
     strat_col1, strat_col2, strat_col3 = st.columns(3)
     with strat_col1:
-        # Spacing Mode selectbox
+        # Spacing Mode selectbox with 3 distinct modes: Percentage (%), USD Points ($), and Pips
+        sp_options = ["Percentage (%)", "USD Points ($)", "Pips"]
+        curr_sp_mode = st.session_state.get("strat_spacing_mode", "Percentage (%)")
+        sp_idx = sp_options.index(curr_sp_mode) if curr_sp_mode in sp_options else 0
+
         spacing_mode = st.selectbox(
             "Spacing Mode",
-            ["Percentage (%)", "USD Points / Pips"],
-            index=0 if st.session_state.get("strat_is_percent", True) else 1,
-            key=f"strat_is_percent_select_{_sym_wk}"
+            sp_options,
+            index=sp_idx,
+            key=f"strat_spacing_mode_select_{_sym_wk}"
         )
+        st.session_state.strat_spacing_mode = spacing_mode
         st.session_state.strat_is_percent = (spacing_mode == "Percentage (%)")
         
         # Determine labels, bounds, and step sizes based on spacing mode
-        if st.session_state.strat_is_percent:
+        if spacing_mode == "Percentage (%)":
             offset_label = "Trap Offset (%)"
             offset_min, offset_max, offset_step = 0.01, 5.0, 0.01
             gap_label = "Grid Gap (%)"
             gap_min, gap_max, gap_step = 0.01, 5.0, 0.01
-            default_offset = 0.15 if st.session_state.strat_offset > 5.0 else st.session_state.strat_offset
-            default_gap = 0.10 if st.session_state.strat_gap > 5.0 else st.session_state.strat_gap
-        else:
+            default_offset = st.session_state.strat_offset if st.session_state.strat_offset <= 5.0 else 0.15
+            default_gap = st.session_state.strat_gap if st.session_state.strat_gap <= 5.0 else 0.10
+            key_suffix = "pct"
+        elif spacing_mode == "Pips":
+            offset_label = "Trap Offset (Pips)"
+            offset_min, offset_max, offset_step = 0.5, 50000.0, 1.0
+            gap_label = "Grid Gap (Pips)"
+            gap_min, gap_max, gap_step = 0.5, 50000.0, 1.0
+            pip_sz = get_pip_size(_sym_wk, float(st.session_state.last_price))
+            if st.session_state.strat_offset < 1.0 and pip_sz > 0:
+                default_offset = max(1.0, round((st.session_state.last_price * (st.session_state.strat_offset / 100.0)) / pip_sz, 1))
+                default_gap = max(1.0, round((st.session_state.last_price * (st.session_state.strat_gap / 100.0)) / pip_sz, 1))
+            else:
+                default_offset = st.session_state.strat_offset
+                default_gap = st.session_state.strat_gap
+            key_suffix = "pip"
+        else:  # USD Points ($)
             offset_label = "Trap Offset (USD)"
             offset_min, offset_max, offset_step = 0.1, max(100000.0, float(st.session_state.last_price) * 2.0), 1.0
             gap_label = "Grid Gap (USD)"
@@ -1853,6 +1900,7 @@ with col_left:
             else:
                 default_offset = st.session_state.strat_offset
                 default_gap = st.session_state.strat_gap
+            key_suffix = "usd"
 
         trap_offset_val = st.number_input(
             offset_label,
@@ -1860,8 +1908,8 @@ with col_left:
             max_value=offset_max,
             value=default_offset,
             step=offset_step,
-            format="%.2f" if st.session_state.strat_is_percent or default_offset % 1 != 0 else "%.1f",
-            key=f"strat_offset_input_{'pct' if st.session_state.strat_is_percent else 'usd'}_{_sym_wk}"
+            format="%.2f" if key_suffix == "pct" or default_offset % 1 != 0 else "%.1f",
+            key=f"strat_offset_input_{key_suffix}_{_sym_wk}"
         )
         st.session_state.strat_offset = trap_offset_val
         
@@ -1871,8 +1919,8 @@ with col_left:
             max_value=gap_max,
             value=default_gap,
             step=gap_step,
-            format="%.2f" if st.session_state.strat_is_percent or default_gap % 1 != 0 else "%.1f",
-            key=f"strat_gap_input_{'pct' if st.session_state.strat_is_percent else 'usd'}_{_sym_wk}"
+            format="%.2f" if key_suffix == "pct" or default_gap % 1 != 0 else "%.1f",
+            key=f"strat_gap_input_{key_suffix}_{_sym_wk}"
         )
         st.session_state.strat_gap = grid_gap_val
 
@@ -2239,7 +2287,7 @@ if any_running:
                 st.session_state.error_message = _tde_msg
             import pathlib
             _log_path = pathlib.Path(__file__).parent / "last_error.txt"
-            with open(_log_path, "w") as f:
+            with open(_log_path, "w", encoding="utf-8", errors="replace") as f:
                 f.write(f"TradeDisabledError for {sym}: {tde}")
         except Exception as e:
             import traceback
@@ -2252,7 +2300,7 @@ if any_running:
             
             import pathlib
             _log_path = pathlib.Path(__file__).parent / "last_error.txt"
-            with open(_log_path, "w") as f:
+            with open(_log_path, "w", encoding="utf-8", errors="replace") as f:
                 f.write(err_str)
                 
     save_bot_state()
@@ -2557,10 +2605,15 @@ with col_right:
                 )
     else:
         # Render proposed preview traps on chart before deployment to MT5
-        if st.session_state.strat_is_percent:
+        preview_mode = st.session_state.get("strat_spacing_mode", "Percentage (%)")
+        if preview_mode == "Pips":
+            pip_sz = get_pip_size(st.session_state.live_symbol, curr_price)
+            offset_val = st.session_state.strat_offset * pip_sz
+            gap_val = st.session_state.strat_gap * pip_sz
+        elif preview_mode == "Percentage (%)":
             offset_val = curr_price * (st.session_state.strat_offset / 100.0)
             gap_val = curr_price * (st.session_state.strat_gap / 100.0)
-        else:
+        else:  # USD Points ($)
             offset_val = st.session_state.strat_offset
             gap_val = st.session_state.strat_gap
 

@@ -1,6 +1,6 @@
 import uuid
 import time
-from typing import Dict, List, Optional, Any, TYPE_CHECKING
+from typing import Dict, List, Optional, Any, Tuple, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from core.mt5_broker import MT5Broker
@@ -64,6 +64,49 @@ class Position:
         }
 
 
+def get_pip_size(symbol: str, current_price: float = 0.0) -> float:
+    """
+    Returns the price distance corresponding to 1 Pip for a symbol.
+    """
+    sym = (symbol or "").upper()
+    try:
+        import MetaTrader5 as mt5_ref
+        info = mt5_ref.symbol_info(sym)
+        if info is not None and info.point > 0:
+            if info.digits in (3, 5):
+                return info.point * 10.0
+            elif info.digits in (2, 4):
+                return info.point
+            else:
+                return info.point * 10.0 if info.point < 0.1 else info.point
+    except Exception:
+        pass
+
+    if "PAXG" in sym or "XAU" in sym or "GOLD" in sym:
+        return 0.10      # 1 Pip = $0.10 in Gold / PAXG
+    elif "BTC" in sym:
+        return 1.0       # 1 Pip = $1.00 in BTC
+    elif "ETH" in sym:
+        return 0.10      # 1 Pip = $0.10 in ETH
+    elif "BNB" in sym:
+        return 0.10      # 1 Pip = $0.10 in BNB
+    elif "SOL" in sym:
+        return 0.01      # 1 Pip = $0.01 in SOL
+    elif "DOGE" in sym:
+        return 0.0001    # 1 Pip = 0.0001 in DOGE
+    elif "JPY" in sym:
+        return 0.01      # 1 Pip = 0.01 in JPY pairs
+    else:
+        if current_price > 5000:
+            return 1.0
+        elif current_price > 50:
+            return 0.10
+        elif current_price > 1.0:
+            return 0.01
+        else:
+            return 0.0001
+
+
 class BreakoutGridBot:
     def __init__(
         self,
@@ -76,6 +119,7 @@ class BreakoutGridBot:
         target_profit: float = 10.0,
         auto_restart: bool = True,
         is_percent: bool = False,
+        spacing_mode: Optional[str] = None,
         stop_loss: float = 20.0,
         max_cycle_duration: float = 3600.0,
         cancel_opposite_on_trigger: bool = False,
@@ -100,7 +144,12 @@ class BreakoutGridBot:
         self.order_size_multiplier = order_size_multiplier
         self.target_profit = target_profit
         self.auto_restart = auto_restart
-        self.is_percent = is_percent
+        if spacing_mode:
+            self._spacing_mode = spacing_mode
+        elif is_percent:
+            self._spacing_mode = "Percentage (%)"
+        else:
+            self._spacing_mode = "USD Points ($)"
         self.stop_loss = stop_loss
         self.max_cycle_duration = max_cycle_duration
         self.cancel_opposite_on_trigger = cancel_opposite_on_trigger
@@ -108,6 +157,7 @@ class BreakoutGridBot:
         self.trailing_stop_distance = trailing_stop_distance
         self.use_bb_filter = use_bb_filter
         self.bb_squeeze_threshold = bb_squeeze_threshold
+
         self.use_breakeven = use_breakeven
         self.breakeven_trigger = breakeven_trigger  # fraction of target_profit that activates breakeven (0.5 = 50%)
         self.use_smart_trailing = use_smart_trailing
@@ -145,6 +195,56 @@ class BreakoutGridBot:
         self._last_trigger_time: float = 0.0
         # Cooldown after Runner Mode exits to prevent instant trap fills on trending price
         self._runner_exit_cooldown_until: float = 0.0
+
+    @property
+    def spacing_mode(self) -> str:
+        return getattr(self, "_spacing_mode", "Percentage (%)")
+
+    @spacing_mode.setter
+    def spacing_mode(self, val: str):
+        self._spacing_mode = val
+
+    @property
+    def is_percent(self) -> bool:
+        mode = str(self.spacing_mode).lower()
+        return "pct" in mode or "percent" in mode
+
+    @is_percent.setter
+    def is_percent(self, val: bool):
+        if val:
+            self._spacing_mode = "Percentage (%)"
+        elif self.spacing_mode == "Percentage (%)":
+            self._spacing_mode = "USD Points ($)"
+
+    def calculate_offset_and_gap(
+        self,
+        center_price: float,
+        gap_config: Optional[float] = None,
+        offset_config: Optional[float] = None
+    ) -> Tuple[float, float]:
+        """
+        Calculates absolute offset and gap values based on active spacing_mode:
+        - "Percentage (%)": % of center_price
+        - "Pips": pips * pip_size
+        - "USD Points ($)": direct USD / price distance
+        """
+        gap_to_use = gap_config if gap_config is not None else self.grid_gap
+        offset_to_use = offset_config if offset_config is not None else self.trap_offset
+
+        mode_lower = str(self.spacing_mode).lower()
+        if "pip" in mode_lower:
+            symbol_str = getattr(self.broker, "symbol", getattr(self, "symbol", ""))
+            pip_sz = get_pip_size(symbol_str, center_price)
+            offset_val = offset_to_use * pip_sz
+            gap_val = gap_to_use * pip_sz
+        elif "pct" in mode_lower or "percent" in mode_lower:
+            offset_val = center_price * (offset_to_use / 100.0)
+            gap_val = center_price * (gap_to_use / 100.0)
+        else:
+            offset_val = offset_to_use
+            gap_val = gap_to_use
+
+        return offset_val, gap_val
 
     def get_effective_gap(self, current_price: float, bb_width: Optional[float] = None) -> float:
         """
@@ -199,13 +299,77 @@ class BreakoutGridBot:
 
         return round(size, 8)
 
+    def ensure_attributes_initialized(self):
+        """
+        Guarantees all instance attributes exist even for legacy unpickled instances.
+        """
+        if not hasattr(self, "_spacing_mode"):
+            self._spacing_mode = "Percentage (%)"
+        if not hasattr(self, "price_history_ticks") or self.price_history_ticks is None:
+            self.price_history_ticks = []
+        if not hasattr(self, "_last_trigger_time"):
+            self._last_trigger_time = 0.0
+        if not hasattr(self, "_runner_exit_cooldown_until"):
+            self._runner_exit_cooldown_until = 0.0
+        if not hasattr(self, "daily_circuit_breaker_tripped"):
+            self.daily_circuit_breaker_tripped = False
+        if not hasattr(self, "use_news_shield"):
+            self.use_news_shield = False
+        if not hasattr(self, "prop_firm_guard_enabled"):
+            self.prop_firm_guard_enabled = False
+        if not hasattr(self, "use_grid_repair"):
+            self.use_grid_repair = True
+        if not hasattr(self, "use_auto_cleanup"):
+            self.use_auto_cleanup = True
+        if not hasattr(self, "cycle_history"):
+            self.cycle_history = []
+        if not hasattr(self, "breakeven_activated"):
+            self.breakeven_activated = False
+        if not hasattr(self, "in_runner_mode"):
+            self.in_runner_mode = False
+        if not hasattr(self, "cancel_opposite_on_trigger"):
+            self.cancel_opposite_on_trigger = True
+        if not hasattr(self, "use_trailing_stop"):
+            self.use_trailing_stop = False
+        if not hasattr(self, "trailing_stop_distance"):
+            self.trailing_stop_distance = 15.0
+        if not hasattr(self, "use_breakeven"):
+            self.use_breakeven = False
+        if not hasattr(self, "breakeven_trigger"):
+            self.breakeven_trigger = 0.5
+        if not hasattr(self, "use_smart_trailing"):
+            self.use_smart_trailing = True
+        if not hasattr(self, "profit_lock_pct"):
+            self.profit_lock_pct = 0.80
+        if not hasattr(self, "use_adaptive_gap"):
+            self.use_adaptive_gap = False
+        if not hasattr(self, "grid_levels"):
+            self.grid_levels = 10
+        if not hasattr(self, "grid_gap"):
+            self.grid_gap = 10.0
+        if not hasattr(self, "trap_offset"):
+            self.trap_offset = 15.0
+        if not hasattr(self, "order_size"):
+            self.order_size = 0.01
+        if not hasattr(self, "order_size_multiplier"):
+            self.order_size_multiplier = 1.5
+        if not hasattr(self, "target_profit"):
+            self.target_profit = 10.0
+        if not hasattr(self, "stop_loss"):
+            self.stop_loss = 250.0
+        if not hasattr(self, "max_cycle_duration"):
+            self.max_cycle_duration = float("inf")
+        if not hasattr(self, "auto_restart"):
+            self.auto_restart = True
+
     def deploy_traps(self, current_price: float, timestamp: float, bb_width: Optional[float] = None):
         """
         Cancel existing traps and place a new grid of traps centered around current_price.
         If use_bb_filter is True, deployment will be skipped if bb_width is missing or > threshold.
         """
-        if self.use_bb_filter:
-            if bb_width is None or bb_width > self.bb_squeeze_threshold:
+        self.ensure_attributes_initialized()
+        if getattr(self, "use_bb_filter", False):
+            if bb_width is None or bb_width > getattr(self, "bb_squeeze_threshold", 0.02):
                 return
 
         # Check Daily Loss Circuit Breaker
@@ -225,18 +389,14 @@ class BreakoutGridBot:
         self.deploy_grid_gap = effective_gap
         self.deploy_trap_offset = self.trap_offset
         self.cycle_start_time = timestamp
-        self.max_floating_pnl = -float("inf")
-        self.in_runner_mode = False
-        self.price_history_ticks.clear()
+        if not hasattr(self, "price_history_ticks") or self.price_history_ticks is None:
+            self.price_history_ticks = []
+        else:
+            self.price_history_ticks.clear()
         self._last_trigger_time = timestamp
 
         # Calculate absolute gap and offset
-        if self.is_percent:
-            offset_val = current_price * (self.trap_offset / 100.0)
-            gap_val = current_price * (effective_gap / 100.0)
-        else:
-            offset_val = self.trap_offset
-            gap_val = effective_gap
+        offset_val, gap_val = self.calculate_offset_and_gap(current_price, effective_gap, self.trap_offset)
 
         try:
             # Place Buy Stop orders above the current price with strict Martingale scaling
@@ -288,12 +448,7 @@ class BreakoutGridBot:
         gap_config = getattr(self, "deploy_grid_gap", self.grid_gap)
         offset_config = getattr(self, "deploy_trap_offset", self.trap_offset)
 
-        if self.is_percent:
-            offset_val = center_price * (offset_config / 100.0)
-            gap_val = center_price * (gap_config / 100.0)
-        else:
-            offset_val = offset_config
-            gap_val = gap_config
+        offset_val, gap_val = self.calculate_offset_and_gap(center_price, gap_config, offset_config)
 
         # Collect existing pending trigger prices AND open position entry prices to prevent duplication
         buy_pending = [o for o in self.broker.pending_orders.values() if o.type == "BUY_STOP"]
@@ -366,12 +521,7 @@ class BreakoutGridBot:
 
         center_price = self.deploy_price if self.deploy_price > 0 else current_price
 
-        if self.is_percent:
-            offset_val = center_price * (self.trap_offset / 100.0)
-            gap_val = center_price * (self.grid_gap / 100.0)
-        else:
-            offset_val = self.trap_offset
-            gap_val = self.grid_gap
+        offset_val, gap_val = self.calculate_offset_and_gap(center_price, self.grid_gap, self.trap_offset)
 
         tolerance = gap_val * 0.5
 
@@ -440,6 +590,7 @@ class BreakoutGridBot:
         Evaluates profit targets, stop losses, and cycle timeouts.
         Returns a dictionary summarizing the cycle if an exit condition is met, otherwise None.
         """
+        self.ensure_attributes_initialized()
         if not self.deployed and self.auto_restart:
             self.deploy_traps(current_price, timestamp, bb_width)
 
@@ -481,6 +632,8 @@ class BreakoutGridBot:
                     print(f"Auto-repair notice: {repair_err}")
 
         # Track tick price history and velocity (Delta P / Delta t)
+        if not hasattr(self, "price_history_ticks") or self.price_history_ticks is None:
+            self.price_history_ticks = []
         self.price_history_ticks.append(current_price)
         if len(self.price_history_ticks) > 10:
             self.price_history_ticks.pop(0)
