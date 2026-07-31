@@ -128,7 +128,7 @@ class BreakoutGridBot:
         trailing_stop_distance: float = 15.0,
         use_bb_filter: bool = False,
         bb_squeeze_threshold: float = 0.02,
-        use_breakeven: bool = False,
+        use_breakeven: bool = True,
         breakeven_trigger: float = 0.5,
         use_smart_trailing: bool = True,
         profit_lock_pct: float = 0.80,
@@ -340,7 +340,7 @@ class BreakoutGridBot:
         if not hasattr(self, "trailing_stop_distance"):
             self.trailing_stop_distance = 15.0
         if not hasattr(self, "use_breakeven"):
-            self.use_breakeven = False
+            self.use_breakeven = True
         if not hasattr(self, "breakeven_trigger"):
             self.breakeven_trigger = 0.5
         if not hasattr(self, "use_smart_trailing"):
