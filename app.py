@@ -2143,30 +2143,14 @@ st.markdown(
 any_running = any(m.get("running", False) for m in st.session_state.markets.values())
 
 if any_running:
-    # Multi-tab concurrency safety lock to prevent duplicate orders from multiple browser windows
+    # Multi-tab concurrency safety: seamless session takeover on browser refresh
     from streamlit.runtime.scriptrunner import get_script_run_ctx
     ctx = get_script_run_ctx()
     session_id = ctx.session_id if ctx else "default"
     
-    # Prune inactive sessions (no heartbeat for more than 3.0 seconds)
     now_t = time.time()
-    dead_sessions = [sid for sid, t in list(GLOBAL_RUNNERS.items()) if now_t - t > 3.0]
-    for sid in dead_sessions:
-        GLOBAL_RUNNERS.pop(sid, None)
-        
-    # Check if another session is already active
-    other_active = [sid for sid in GLOBAL_RUNNERS.keys() if sid != session_id]
-    if other_active:
-        # Pause all sessions/markets to protect the account
-        for sym, m_state in st.session_state.markets.items():
-            m_state["running"] = False
-        st.session_state.running = False
-        st.session_state.error_message = "⚠️ Bot execution paused in this tab because another browser window is already running the bot loop."
-        save_bot_state()
-        st.rerun()
-        
-    # Register this session's heartbeat
-    GLOBAL_RUNNERS[session_id] = now_t
+    GLOBAL_RUNNERS["primary_session"] = session_id
+    GLOBAL_RUNNERS["last_heartbeat"] = now_t
 
     # Process ticks for all running markets
     for sym, m_state in list(st.session_state.markets.items()):
@@ -2234,6 +2218,7 @@ if any_running:
                 st.toast(f"{_icon} {sym} Cycle {cycle_hit['cycle_id']}: {_label}! PnL: ${cycle_hit['pnl']:+.2f}")
             if sym == st.session_state.live_symbol:
                 st.session_state.error_message = None
+            m_state["consecutive_errors"] = 0
         except TradeDisabledError as tde:
             # Symbol not tradeable on this MT5 account — pause it gracefully, don't crash
             _tde_msg = (
@@ -2253,17 +2238,20 @@ if any_running:
                 f.write(f"TradeDisabledError for {sym}: {tde}")
         except Exception as e:
             import traceback
-            err_str = f"Tick processing failed for {sym}: {e}\n{traceback.format_exc()}"
+            err_cnt = m_state.get("consecutive_errors", 0) + 1
+            m_state["consecutive_errors"] = err_cnt
+            err_str = f"Tick processing notice ({err_cnt}/10) for {sym}: {e}"
             print(err_str)
-            m_state["running"] = False
-            if sym == st.session_state.live_symbol:
-                st.session_state.running = False
-                st.session_state.error_message = f"Tick processing failed for {sym}: {e}"
-            
-            import pathlib
-            _log_path = pathlib.Path(__file__).parent / "last_error.txt"
-            with open(_log_path, "w") as f:
-                f.write(err_str)
+            # Only pause after 10 consecutive ticks fail fatally to protect against transient network glitches
+            if err_cnt >= 10:
+                m_state["running"] = False
+                if sym == st.session_state.live_symbol:
+                    st.session_state.running = False
+                    st.session_state.error_message = f"Tick processing paused for {sym} after 10 failures: {e}"
+                import pathlib
+                _log_path = pathlib.Path(__file__).parent / "last_error.txt"
+                with open(_log_path, "w") as f:
+                    f.write(f"{err_str}\n{traceback.format_exc()}")
                 
     save_bot_state()
 
