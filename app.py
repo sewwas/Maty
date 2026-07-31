@@ -1,5 +1,7 @@
+import logging
 import warnings
-warnings.filterwarnings("ignore", category=UserWarning)
+warnings.filterwarnings("ignore")
+logging.getLogger("streamlit").setLevel(logging.ERROR)
 from typing import Optional
 import streamlit as st
 # Trigger hot reload 2
