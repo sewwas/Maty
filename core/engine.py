@@ -684,9 +684,10 @@ class BreakoutGridBot:
             avg_delta = sum(recent_deltas) / len(recent_deltas)
             is_reversing = (recent_deltas[-1] < 0 and recent_deltas[-2] < 0)
 
-        # Dynamic friction floor based on open position count to cover spread & fees
+        # Dynamic friction floor based on open position count to cover spread, commission & swap fees
         num_pos = len(self.broker.open_positions)
-        friction_floor = max(3.00, 3.00 + (num_pos * 0.75))
+        # Gold/Forex spread + Exness commission requires ~$1.50 per open position + $3.00 base friction
+        friction_floor = max(4.00, 4.00 + (num_pos * 1.50))
 
         # ── STAGNANT GRID AUTO-REDEPLOY ─────────────────────────────────────────
         # If the grid has had zero fills for a long time AND no positions are open,
@@ -758,20 +759,20 @@ class BreakoutGridBot:
 
             # 2. MULTI-STAGE RATCHETED BREAKEVEN PROTECTION
             if self.use_breakeven:
-                # Stage 1: 50% Target Profit hit -> Lock floor below current PnL (capped by friction_floor)
+                # Stage 1: 50% Target Profit hit -> Lock floor at friction_floor to guarantee net positive profit after fees
                 if float_pnl >= self.target_profit * getattr(self, "breakeven_trigger", 0.5):
                     self.breakeven_activated = True
-                    stage1_target = min(float_pnl - 1.00, friction_floor)
-                    self.ratchet_floor = max(getattr(self, "ratchet_floor", 0.0), max(1.00, stage1_target))
+                    stage1_target = max(friction_floor, min(float_pnl - 1.00, self.target_profit * 0.40))
+                    self.ratchet_floor = max(getattr(self, "ratchet_floor", 0.0), stage1_target)
                 
-                # Stage 2: 75% Target Profit hit -> Ratchet floor up to 50% TP (never exceeding float_pnl - 1.00)
+                # Stage 2: 75% Target Profit hit -> Ratchet floor up to 50% TP
                 if float_pnl >= self.target_profit * 0.75:
-                    stage2_target = min(float_pnl - 1.00, max(friction_floor + 2.00, self.target_profit * 0.50))
+                    stage2_target = max(friction_floor + 2.00, min(float_pnl - 1.00, self.target_profit * 0.55))
                     self.ratchet_floor = max(getattr(self, "ratchet_floor", 0.0), stage2_target)
 
-                # Stage 3: 90% Target Profit hit -> Ratchet floor up to 70% TP (never exceeding float_pnl - 1.00)
+                # Stage 3: 90% Target Profit hit -> Ratchet floor up to 75% TP
                 if float_pnl >= self.target_profit * 0.90:
-                    stage3_target = min(float_pnl - 1.00, max(friction_floor + 4.00, self.target_profit * 0.70))
+                    stage3_target = max(friction_floor + 4.00, min(float_pnl - 1.00, self.target_profit * 0.75))
                     self.ratchet_floor = max(getattr(self, "ratchet_floor", 0.0), stage3_target)
 
             if self.use_breakeven and self.breakeven_activated and not self.in_runner_mode:
