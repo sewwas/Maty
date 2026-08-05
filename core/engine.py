@@ -1277,12 +1277,17 @@ class BreakoutGridBot:
             if float_pnl > getattr(self, 'max_floating_pnl', -float("inf")):
                 self.max_floating_pnl = float_pnl
 
-            # 1. SMART PROFIT EXPANSION (DYNAMIC HIGH-VELOCITY & TARGET RUNNER MODE)
+            # 1. SMART PROFIT EXPANSION & DYNAMIC VOLUME-SCALED TARGET PROFIT
             num_fills = len(self.broker.open_positions)
+            total_basket_lots = sum(p.size for p in self.broker.open_positions.values())
+            base_size = max(0.0001, getattr(self, "order_size", 0.01))
+            volume_scale_mult = max(1.0, total_basket_lots / base_size)
+            effective_target_profit = max(self.target_profit * volume_scale_mult, friction_floor + 1.00)
+
             is_multi_fill_profit = (num_fills >= 2 and float_pnl >= friction_floor + 2.00)
             is_high_velocity_spike = (abs(avg_delta_pct) >= 0.15 and float_pnl >= friction_floor + 1.00)
             
-            if self.use_smart_trailing and (float_pnl >= max(self.target_profit, friction_floor + 1.00) or is_multi_fill_profit or is_high_velocity_spike):
+            if self.use_smart_trailing and (float_pnl >= effective_target_profit or is_multi_fill_profit or is_high_velocity_spike):
                 if not self.in_runner_mode:
                     self.in_runner_mode = True
                     # Immediately cancel all pending traps to prevent opposite triggers during pullback!
@@ -1294,14 +1299,14 @@ class BreakoutGridBot:
             if self.in_runner_mode:
                 lock_pct = 0.90 if is_reversing else getattr(self, 'profit_lock_pct', 0.80)
                 # Unbreakable net-positive floor: strictly >= friction_floor + $1.00 to guarantee ZERO loss
-                unbreakable_net_floor = max(friction_floor + 1.00, self.target_profit)
+                unbreakable_net_floor = max(friction_floor + 1.00, effective_target_profit * 0.50)
                 trailing_peak_floor = self.max_floating_pnl * lock_pct
                 runner_floor = max(unbreakable_net_floor, trailing_peak_floor)
                 if float_pnl <= runner_floor:
                     runner_hit = True
             else:
-                # Standard Target Profit (strictly net positive cash profit after spread & commission)
-                if float_pnl >= max(self.target_profit, friction_floor + 1.00):
+                # Dynamic Volume-Scaled Target Profit (strictly net positive cash profit after spread & commission)
+                if float_pnl >= effective_target_profit:
                     target_hit = True
 
             # 2. MULTI-STAGE RATCHETED BREAKEVEN PROTECTION
