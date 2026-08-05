@@ -305,14 +305,14 @@ class AutoReadingEngine:
             lot_multiplier = 1.20
             max_levels = 3
             base_target_profit = 2.00
-            stop_loss = 50.0
+            stop_loss = max(50.0, account_equity * (getattr(self, "stop_loss_pct", 10.0) / 100.0))
         elif account_equity < 2500.0:
             capital_tier = "$1,000 Golden"
             base_size = default_sizes.get(sym_u, 0.01)
             lot_multiplier = 1.30   # Conservative 1.30x for fast recovery & low drawdown
             max_levels = 5
             base_target_profit = 4.50   # Quick Scalp Target Profit for fast exits
-            stop_loss = 150.0
+            stop_loss = max(50.0, account_equity * (getattr(self, "stop_loss_pct", 10.0) / 100.0))
         else:
             capital_tier = "$10,000 Pro"
             scale = min(10.0, max(2.5, account_equity / 1000.0))
@@ -320,7 +320,7 @@ class AutoReadingEngine:
             lot_multiplier = 1.25
             max_levels = 8
             base_target_profit = 25.0
-            stop_loss = 150.0 * (scale * 0.5)
+            stop_loss = max(50.0, account_equity * (getattr(self, "stop_loss_pct", 10.0) / 100.0))
 
         # ---- 8b. SYMBOL VOLATILITY LEVEL CAP ----
         # Ensures high-volatility symbols (Gold/BTC) do NOT get more levels
