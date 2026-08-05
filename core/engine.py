@@ -141,15 +141,15 @@ class AutoReadingEngine:
         """Returns (gap_mult, size_mult, session_name) based on UTC hour."""
         utc_hour = time.gmtime().tm_hour
         if 23 <= utc_hour or utc_hour < 8:
-            return 0.75, 0.80, "ASIAN"       # Low liquidity: tighter grid
+            return 1.30, 0.80, "ASIAN"       # Session-Aware: wider gap (1.30x) absorbs low-liquidity range drift
         elif 8 <= utc_hour < 12:
-            return 1.30, 1.10, "LONDON"      # High volatility: wider grid
+            return 1.00, 1.10, "LONDON"      # Balanced volatility
         elif 12 <= utc_hour < 17:
-            return 1.50, 1.20, "NY_OVERLAP"  # Max volatility: widest grid
+            return 0.85, 1.20, "NY_OVERLAP"  # High velocity: tighter gap (0.85x) captures fast breakout profits
         elif 17 <= utc_hour < 20:
-            return 1.10, 1.0, "NY"
+            return 0.95, 1.0, "NY"
         else:
-            return 0.90, 0.90, "EVENING"
+            return 1.10, 0.90, "EVENING"
 
     # ------------------------------------------------------------------ #
     #  REGIME DETECTION                                                   #
@@ -849,6 +849,13 @@ class BreakoutGridBot:
             if getattr(self, "use_auto_reading", True) and hasattr(self, "last_auto_eval"):
                 unidirectional_mode = self.last_auto_eval.get("unidirectional_mode", "DUAL")
 
+            # Orderbook Pressure Imbalance Filter: Pause trap deployment into heavy institutional sell/buy walls
+            ob_ratio = self.last_auto_eval.get("ob_ratio", 1.0) if hasattr(self, "last_auto_eval") and self.last_auto_eval else 1.0
+            if ob_ratio > 3.0:     # Heavy Ask/Sell Pressure (>75% Asks) -> Suppress BUY_STOP traps into sell wall
+                unidirectional_mode = "SELL_ONLY" if unidirectional_mode == "DUAL" else unidirectional_mode
+            elif ob_ratio < 0.33:  # Heavy Bid/Buy Pressure (>75% Bids) -> Suppress SELL_STOP traps into buy wall
+                unidirectional_mode = "BUY_ONLY" if unidirectional_mode == "DUAL" else unidirectional_mode
+
             # Place Buy Stop orders above current_price (suppressed if SELL_ONLY)
             if unidirectional_mode != "SELL_ONLY":
                 for i in range(self.grid_levels):
@@ -1404,6 +1411,26 @@ class BreakoutGridBot:
             if buy_positions and sell_positions:
                 if float_pnl >= volume_friction_target:
                     hedge_lock_hit = True
+
+            # 5b. DYNAMIC COUNTER-HEDGE REVERSAL LOCK (Converts single-side trend drawdown into market-neutral dual basket)
+            # If a single-side basket enters floating drawdown >= 35% of effective_stop_loss during a strong move,
+            # automatically deploy a counter-hedge order to lock floating drawdown and allow market-neutral recovery!
+            if len(self.broker.open_positions) >= 2 and not hedge_lock_hit:
+                buy_pos_count = len(buy_positions)
+                sell_pos_count = len(sell_positions)
+                
+                # Single-side basket experiencing trend drawdown
+                if (buy_pos_count > 0 and sell_pos_count == 0) or (sell_pos_count > 0 and buy_pos_count == 0):
+                    hedge_threshold = effective_stop_loss * 0.35
+                    if float_pnl <= -hedge_threshold and len(self.broker.pending_orders) < 2:
+                        hedge_side = "SELL_STOP" if buy_pos_count > 0 else "BUY_STOP"
+                        hedge_dist_pct = getattr(self, "trap_offset", 0.07) * 0.50
+                        hedge_px = round(current_price * (1.0 - hedge_dist_pct / 100.0) if hedge_side == "SELL_STOP" else current_price * (1.0 + hedge_dist_pct / 100.0), 2)
+                        hedge_size = max(0.01, round(total_basket_lots * 0.75, 4))
+                        try:
+                            self.broker.place_order(hedge_side, hedge_px, hedge_size, timestamp)
+                        except Exception:
+                            pass
 
             # 6. MICRO-VELOCITY MOMENTUM SCALP EXIT (True Trend Reversal Guard)
             momentum_scalp_hit = False
