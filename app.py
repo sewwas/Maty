@@ -711,16 +711,16 @@ _coin_label_map = {
 }
 
 GOLDEN_SETTINGS = {
-    "BTCUSDT": {"gap": 0.22, "offset": 0.33, "multiplier": 1.5, "order_size": 0.01, "target_profit": 10.0, "stop_loss": 250.0},
-    "ETHUSDT": {"gap": 0.22, "offset": 0.33, "multiplier": 1.5, "order_size": 0.10, "target_profit": 10.0, "stop_loss": 250.0},
-    "SOLUSDT": {"gap": 0.08, "offset": 0.12, "multiplier": 1.5, "order_size": 1.50, "target_profit": 10.0, "stop_loss": 150.0},
-    "BNBUSDT": {"gap": 0.12, "offset": 0.18, "multiplier": 1.5, "order_size": 0.08, "target_profit": 10.0, "stop_loss": 150.0},
-    "DOGEUSDT": {"gap": 0.08, "offset": 0.12, "multiplier": 1.5, "order_size": 1500.0, "target_profit": 10.0, "stop_loss": 150.0},
-    "PAXGUSDT": {"gap": 0.10, "offset": 0.15, "multiplier": 1.5, "order_size": 0.01, "target_profit": 10.0, "stop_loss": 250.0},
+    "BTCUSDT": {"gap": 0.22, "offset": 0.33, "multiplier": 1.25, "order_size": 0.01, "target_profit": 10.0, "stop_loss": 0.0},
+    "ETHUSDT": {"gap": 0.22, "offset": 0.33, "multiplier": 1.25, "order_size": 0.10, "target_profit": 10.0, "stop_loss": 0.0},
+    "SOLUSDT": {"gap": 0.08, "offset": 0.12, "multiplier": 1.25, "order_size": 1.50, "target_profit": 10.0, "stop_loss": 0.0},
+    "BNBUSDT": {"gap": 0.12, "offset": 0.18, "multiplier": 1.25, "order_size": 0.08, "target_profit": 10.0, "stop_loss": 0.0},
+    "DOGEUSDT": {"gap": 0.08, "offset": 0.12, "multiplier": 1.25, "order_size": 1500.0, "target_profit": 10.0, "stop_loss": 0.0},
+    "PAXGUSDT": {"gap": 0.10, "offset": 0.15, "multiplier": 1.25, "order_size": 0.01, "target_profit": 10.0, "stop_loss": 0.0},
 }
 
 def get_coin_golden_settings(symbol: str) -> dict:
-    return GOLDEN_SETTINGS.get(symbol.upper(), {"gap": 0.22, "offset": 0.33, "multiplier": 1.5, "order_size": 0.01, "target_profit": 10.0, "stop_loss": 250.0})
+    return GOLDEN_SETTINGS.get(symbol.upper(), {"gap": 0.22, "offset": 0.33, "multiplier": 1.25, "order_size": 0.01, "target_profit": 10.0, "stop_loss": 0.0})
 
 def get_default_order_size(symbol: str) -> float:
     return get_coin_golden_settings(symbol)["order_size"]

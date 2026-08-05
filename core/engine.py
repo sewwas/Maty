@@ -664,8 +664,8 @@ class BreakoutGridBot:
             if size <= prev_size:
                 size = prev_size + 0.01
 
-            # Clamp to safe max order size cap if set (default 50.0 lots)
-            max_cap = getattr(self, "max_order_size", 50.0)
+            # Clamp to safe max order size cap if set (default 1.0 lots)
+            max_cap = getattr(self, "max_order_size", 1.0)
             if max_cap > 0 and size > max_cap:
                 size = max_cap
         else:
@@ -728,7 +728,7 @@ class BreakoutGridBot:
         if not hasattr(self, "order_size"):
             self.order_size = 0.01
         if not hasattr(self, "order_size_multiplier"):
-            self.order_size_multiplier = 1.5
+            self.order_size_multiplier = 1.25
         if not hasattr(self, "target_profit"):
             self.target_profit = 10.0
         if not hasattr(self, "stop_loss"):
