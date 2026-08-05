@@ -288,10 +288,17 @@ class AutoReadingEngine:
 
         # ---- 8. ACCOUNT CAPITAL SCALING ----
         sym_u = (symbol or "").upper()
+        # Clean symbol to handle broker suffixes (e.g. XAUUSDm, XAUUSD.a, GOLD)
+        clean_sym = sym_u
+        for s_token in ["BTCUSDT", "BTCUSD", "ETHUSDT", "ETHUSD", "PAXGUSDT", "XAUUSD", "GOLD", "SOLUSDT", "SOLUSD", "BNBUSDT", "BNBUSD", "DOGEUSDT", "DOGEUSD", "XRPUSDT", "XRPUSD"]:
+            if s_token in sym_u:
+                clean_sym = s_token
+                break
+
         default_sizes = {
             "BTCUSDT": 0.001, "BTCUSD": 0.001,
             "ETHUSDT": 0.10,  "ETHUSD": 0.10,
-            "PAXGUSDT": 0.01, "XAUUSD": 0.01,
+            "PAXGUSDT": 0.01, "XAUUSD": 0.01, "GOLD": 0.01,
             "SOLUSDT": 1.0,   "SOLUSD": 1.0,
             "BNBUSDT": 0.10,  "BNBUSD": 0.10,
             "DOGEUSDT": 1000.0,"DOGEUSD": 1000.0,
@@ -302,15 +309,18 @@ class AutoReadingEngine:
         # This ensures ETH and Gold on the same $1,000 account BOTH get the same tier level.
         if account_equity < 250.0:
             capital_tier = "$100 Micro"
-            base_size = default_sizes.get(sym_u, 0.001) * 0.5
+            base_size = default_sizes.get(clean_sym, 0.001) * 0.5
             lot_multiplier = 1.20
             max_levels = 3
             base_target_profit = 2.00
             stop_loss = max(50.0, account_equity * (getattr(self, "stop_loss_pct", 10.0) / 100.0))
         elif account_equity < 2500.0:
             capital_tier = "$1,000 Golden"
-            base_size = default_sizes.get(sym_u, 0.01)
-            lot_multiplier = 1.30   # Conservative 1.30x for fast recovery & low drawdown
+            base_size = default_sizes.get(clean_sym, 0.01)
+            # Gold strict lot lock: Base size MUST be 0.01 lots on $1,000 account
+            if any(x in clean_sym for x in ["XAU", "GOLD", "PAXG"]):
+                base_size = 0.01
+            lot_multiplier = 1.25   # Conservative 1.25x for fast recovery & low drawdown
             max_levels = 5
             base_target_profit = 4.50   # Quick Scalp Target Profit for fast exits
             stop_loss = max(50.0, account_equity * (getattr(self, "stop_loss_pct", 10.0) / 100.0))
