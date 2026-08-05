@@ -326,7 +326,7 @@ class AutoReadingEngine:
             stop_loss = max(50.0, account_equity * (getattr(self, "stop_loss_pct", 10.0) / 100.0))
         else:
             capital_tier = "$10,000 Pro"
-            scale = min(10.0, max(2.5, account_equity / 5000.0))
+            scale = min(10.0, max(2.5, account_equity / 1000.0))
             base_size = default_sizes.get(clean_sym, 0.01) * scale
             lot_multiplier = 1.25
             max_levels = 8
