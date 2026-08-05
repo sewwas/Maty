@@ -780,6 +780,10 @@ class BreakoutGridBot:
         self.broker.cancel_all_orders()
         self.deploy_price = current_price
         self.cycle_start_time = timestamp
+        self.in_runner_mode = False
+        self.breakeven_activated = False
+        self.ratchet_floor = 0.0
+        self.max_floating_pnl = -float("inf")
         if not hasattr(self, "price_history_ticks") or self.price_history_ticks is None:
             self.price_history_ticks = []
         else:
@@ -1256,7 +1260,7 @@ class BreakoutGridBot:
         # ── STAGNANT GRID AUTO-REDEPLOY ─────────────────────────────────────────
         # If the grid has had zero fills for a long time AND no positions are open,
         # the market has moved far from the deploy price. Snap the grid to current price.
-        _stagnant_redeploy_interval = self.max_cycle_duration * 0.5  # Half of max duration
+        _stagnant_redeploy_interval = 3600.0 if (self.max_cycle_duration > 86400.0 or self.max_cycle_duration <= 0) else (self.max_cycle_duration * 0.5)
         _no_positions = len(self.broker.open_positions) == 0
         _last_trig = getattr(self, '_last_trigger_time', self.cycle_start_time)
         _stagnant = (timestamp - _last_trig) >= _stagnant_redeploy_interval
