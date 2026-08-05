@@ -1398,13 +1398,14 @@ class BreakoutGridBot:
             single_fill_scalp_hit = False
             if len(self.broker.open_positions) == 1 and not self.in_runner_mode:
                 open_pos = list(self.broker.open_positions.values())[0]
+                entry_px = getattr(open_pos, 'open_price', getattr(open_pos, 'price', getattr(open_pos, 'entry_price', current_price)))
                 if open_pos.type == "BUY":
-                    move_pct = (current_price - open_pos.entry_price) / open_pos.entry_price * 100.0
+                    move_pct = (current_price - entry_px) / entry_px * 100.0
                 else:
-                    move_pct = (open_pos.entry_price - current_price) / open_pos.entry_price * 100.0
+                    move_pct = (entry_px - current_price) / entry_px * 100.0
                 
                 target_move_threshold = max(0.08, getattr(self, "trap_offset", 0.08) * 0.90)
-                if move_pct >= target_move_threshold and float_pnl > 0.05 and not is_positive_trend:
+                if move_pct >= target_move_threshold and float_pnl >= friction_floor + 0.50 and not is_positive_trend:
                     single_fill_scalp_hit = True
 
         if target_hit or runner_hit or trailing_stop_hit or stop_loss_hit or timeout_hit or breakeven_hit or early_range_hit or prop_guard_hit or hedge_lock_hit or velocity_shield_hit or momentum_scalp_hit or wvap_exit_hit or single_fill_scalp_hit:
