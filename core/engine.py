@@ -1285,9 +1285,9 @@ class BreakoutGridBot:
             effective_target_profit = max(self.target_profit * volume_scale_mult, friction_floor + 1.00)
 
             is_multi_fill_profit = (num_fills >= 2 and float_pnl >= friction_floor + 2.00)
-            is_high_velocity_spike = (abs(avg_delta_pct) >= 0.15 and float_pnl >= friction_floor + 1.00)
+            is_positive_trend = (avg_delta > 0 and float_pnl >= friction_floor + 0.50)
             
-            if self.use_smart_trailing and (float_pnl >= effective_target_profit or is_multi_fill_profit or is_high_velocity_spike):
+            if self.use_smart_trailing and (float_pnl >= effective_target_profit or is_multi_fill_profit or is_positive_trend):
                 if not self.in_runner_mode:
                     self.in_runner_mode = True
                     # Immediately cancel all pending traps to prevent opposite triggers during pullback!
