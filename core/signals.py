@@ -10,7 +10,7 @@ def send_telegram_alert(bot_token: str, chat_id: str, title: str, message: str) 
     if not bot_token or not chat_id:
         return False
 
-    formatted_text = f"🤖 <b>MATY GRID BOT ALERT</b>\n\n📌 <b>{title}</b>\n{message}"
+    formatted_text = f"🤖 <b>PROFITY AI ALERT</b>\n\n📌 <b>{title}</b>\n{message}"
     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
     payload = {
         "chat_id": chat_id,

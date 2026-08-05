@@ -221,28 +221,42 @@ class MT5Broker:
             if tick is not None:
                 bid = tick.bid
                 ask = tick.ask
-                point = info.point
-                # Minimum allowed distance in price points (trade_stops_level)
-                # Exness uses dynamic stop levels that are often reported as 0, so we enforce
-                # a minimum distance of at least 2.5 times the current spread in points, plus 2 points margin.
+                point = info.point if info.point > 0 else 0.00001
+                digits = getattr(info, 'digits', 2)
+                
+                # Spread-based floor (2.5x spread) + broker's declared stops level
                 spread_pts = (ask - bid) / point if point > 0 else 0
-                stop_level_pts = int(max(info.trade_stops_level, spread_pts * 2.5)) + 2
-                stop_level_dist = stop_level_pts * point
+                broker_stop_pts = max(info.trade_stops_level, int(spread_pts * 2.5))
+                
+                # Symbol-specific ABSOLUTE minimum distances (in price, not points)
+                # Required for Exness which reports trade_stops_level=0 but rejects orders
+                # placed too close. Empirically measured per instrument:
+                sym_upper = exness_symbol.upper()
+                if any(x in sym_upper for x in ["XAU", "GOLD", "PAXG"]):
+                    abs_min_dist = max(0.30, point * 30)  # Gold: min 30 pts / $0.30
+                elif any(x in sym_upper for x in ["BTC"]):
+                    abs_min_dist = max(10.0, point * 30)  # BTC: min $10
+                elif any(x in sym_upper for x in ["ETH"]):
+                    abs_min_dist = max(0.50, point * 30)  # ETH: min $0.50
+                else:
+                    abs_min_dist = max(point * 20, spread_pts * 2.5 * point)  # Generic: 20 pts
+                
+                # Take whichever is larger: broker declared or our absolute min
+                stop_level_dist = max(abs_min_dist, broker_stop_pts * point)
                 
                 if type == "BUY_STOP":
                     min_allowed_price = ask + stop_level_dist
                     if trigger_price < min_allowed_price:
                         trigger_price = min_allowed_price
-                        print(f"Adjusted BUY_STOP trigger price to {trigger_price} to satisfy dynamic Stop Level ({stop_level_pts} pts).")
                 elif type == "SELL_STOP":
                     max_allowed_price = bid - stop_level_dist
                     if trigger_price > max_allowed_price:
                         trigger_price = max_allowed_price
-                        print(f"Adjusted SELL_STOP trigger price to {trigger_price} to satisfy dynamic Stop Level ({stop_level_pts} pts).")
 
             # 1. Round price to nearest tick size and exact symbol digits precision
             tick_size = info.trade_tick_size
             digits = getattr(info, 'digits', 2)
+
             if tick_size > 0:
                 price_steps = round(trigger_price / tick_size)
                 trigger_price = round(price_steps * tick_size, digits)
@@ -999,14 +1013,16 @@ class SimulatedBroker:
         If so, convert the order into an open position.
         """
         triggered_positions: List[Position] = []
+        p_min = min(previous_price, current_price)
+        p_max = max(previous_price, current_price)
         for order_id, order in list(self.pending_orders.items()):
             triggered = False
             if order.type == "BUY_STOP":
-                # BUY_STOP triggers when price rises through the trigger level
-                triggered = previous_price < order.trigger_price <= current_price
+                # BUY_STOP triggers when price rises through or crosses the trigger level
+                triggered = (current_price >= previous_price and p_min <= order.trigger_price <= p_max) or (current_price >= order.trigger_price > previous_price)
             elif order.type == "SELL_STOP":
-                # SELL_STOP triggers when price falls through the trigger level
-                triggered = previous_price > order.trigger_price >= current_price
+                # SELL_STOP triggers when price falls through or crosses the trigger level
+                triggered = (current_price <= previous_price and p_min <= order.trigger_price <= p_max) or (current_price <= order.trigger_price < previous_price)
 
             if triggered:
                 del self.pending_orders[order_id]

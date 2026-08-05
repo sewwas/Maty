@@ -4,7 +4,7 @@ warnings.filterwarnings("ignore")
 logging.getLogger("streamlit").setLevel(logging.ERROR)
 from typing import Optional
 import streamlit as st
-# Trigger hot reload 2
+# Trigger hot reload 3 - Safe session state initializations applied
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
@@ -22,16 +22,22 @@ if "GLOBAL_RUNNERS" not in globals():
     global GLOBAL_RUNNERS
     GLOBAL_RUNNERS: dict = {}
 
-# Import core bot logic
+# Import core bot logic with module auto-reload support for Streamlit
+import importlib
+import core.data
+import core.engine
+importlib.reload(core.data)
+importlib.reload(core.engine)
+
 from core.mt5_broker import MT5Broker, SimulatedBroker, MT5_AVAILABLE, get_symbol_magic_number, TradeDisabledError
-from core.engine import BreakoutGridBot, get_pip_size
+from core.engine import BreakoutGridBot, get_pip_size, AutoReadingEngine
 from core.license import LicenseManager, LicenseTier
 from core.signals import send_telegram_alert, dispatch_trade_exit_signal
 from core.data import get_live_price, get_historical_klines, interpolate_ticks, get_fear_and_greed_index, get_24h_market_stats, get_crypto_news, calculate_technical_indicators, get_order_book_depth, get_economic_calendar
 
 # 1. PAGE CONFIGURATION
 st.set_page_config(
-    page_title="Maty ◆ Breakout Grid Bot",
+    page_title="Profity AI",
     page_icon="◆",
     layout="wide",
     initial_sidebar_state="collapsed",
@@ -99,7 +105,7 @@ else:
 
 st.markdown(f"""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&family=DM+Sans:ital,wght@0,400;0,500;0,600;0,700;1,400&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
 {vars_css}
 
 /* Hide default streamlit headers/footers */
@@ -113,12 +119,12 @@ div[data-testid="stSidebarCollapsedControl"] {{
 html, body, [data-testid="stAppViewContainer"], [data-testid="stApp"], .main, .block-container, section[data-testid="stMain"] {{
     background-color: var(--bg) !important;
     color: var(--text) !important;
-    font-family: 'DM Sans', -apple-system, sans-serif !important;
+    font-family: 'Outfit', 'DM Sans', -apple-system, sans-serif !important;
 }}
 
 .block-container {{
     padding: 1.5rem 2rem 2rem !important;
-    max-width: 1400px !important;
+    max-width: 1440px !important;
 }}
 
 /* Grid layout gap */
@@ -126,32 +132,36 @@ html, body, [data-testid="stAppViewContainer"], [data-testid="stApp"], .main, .b
     gap: 1.25rem !important;
 }}
 
-/* Cards styling */
+/* Glassmorphic Metric Cards styling */
 .metric-card {{
     background: var(--card);
+    background-image: radial-gradient(at 100% 0%, rgba(59, 130, 246, 0.05) 0px, transparent 50%);
     border: 1px solid var(--border);
     border-radius: var(--radius);
-    padding: 1.1rem 1.25rem;
+    padding: 1.15rem 1.3rem;
     box-shadow: var(--shadow);
     display: flex;
     flex-direction: column;
     justify-content: space-between;
-    min-height: 90px;
-    transition: border-color 0.2s ease, box-shadow 0.2s ease;
+    min-height: 94px;
+    backdrop-filter: blur(12px);
+    transition: transform 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
 }}
 .metric-card:hover {{
-    border-color: rgba(59,130,246,0.35);
-    box-shadow: 0 4px 20px rgba(59,130,246,0.08);
+    transform: translateY(-2px);
+    border-color: rgba(59,130,246,0.45);
+    box-shadow: 0 8px 30px rgba(59,130,246,0.12);
 }}
 .metric-label {{
     font-size: 0.76rem;
     color: var(--text-muted);
-    font-weight: 500;
+    font-weight: 600;
     text-transform: uppercase;
-    letter-spacing: 0.03em;
+    letter-spacing: 0.05em;
+    font-family: 'Outfit', sans-serif;
 }}
 .metric-value {{
-    font-size: 1.6rem;
+    font-size: 1.65rem;
     font-weight: 700;
     color: var(--text);
     letter-spacing: -0.02em;
@@ -160,32 +170,33 @@ html, body, [data-testid="stAppViewContainer"], [data-testid="stApp"], .main, .b
 }}
 .metric-delta {{
     font-size: 0.72rem;
-    font-weight: 500;
+    font-weight: 600;
     margin-top: 0.35rem;
-    padding: 2px 7px;
-    border-radius: 5px;
+    padding: 2px 8px;
+    border-radius: 6px;
     display: inline-flex;
     align-items: center;
-    gap: 3px;
+    gap: 4px;
     width: fit-content;
 }}
-.delta-up {{ color: var(--green); background: var(--green-muted); }}
-.delta-down {{ color: var(--red); background: var(--red-muted); }}
-.delta-warn {{ color: var(--amber); background: var(--amber-muted); }}
+.delta-up {{ color: #22c55e; background: rgba(34, 197, 94, 0.14); border: 1px solid rgba(34, 197, 94, 0.25); }}
+.delta-down {{ color: #ef4444; background: rgba(239, 68, 68, 0.14); border: 1px solid rgba(239, 68, 68, 0.25); }}
+.delta-warn {{ color: #f59e0b; background: rgba(245, 158, 11, 0.14); border: 1px solid rgba(245, 158, 11, 0.25); }}
 
 /* Chart Card Wrap */
 .chart-wrap {{
     background: var(--card);
     border: 1px solid var(--border);
     border-radius: var(--radius);
-    padding: 1.2rem;
+    padding: 1.25rem;
     box-shadow: var(--shadow);
     margin-bottom: 1rem;
 }}
 .chart-title {{
-    font-size: 0.88rem;
-    font-weight: 600;
+    font-size: 0.92rem;
+    font-weight: 700;
     color: var(--text);
+    font-family: 'Outfit', sans-serif;
 }}
 .chart-subtitle {{
     font-size: 0.74rem;
@@ -197,28 +208,55 @@ html, body, [data-testid="stAppViewContainer"], [data-testid="stApp"], .main, .b
 .control-card {{
     background: var(--card);
     border: 1px solid var(--border);
-    border-top: 2px solid var(--accent);
+    border-top: 3px solid var(--accent);
     border-radius: var(--radius);
-    padding: 1.2rem;
+    padding: 1.25rem;
     box-shadow: var(--shadow);
     margin-bottom: 1rem;
-    transition: box-shadow 0.2s ease;
+    transition: box-shadow 0.2s ease, border-color 0.2s ease;
 }}
 .control-card:hover {{
-    box-shadow: 0 4px 24px rgba(59,130,246,0.07);
+    box-shadow: 0 6px 30px rgba(59,130,246,0.1);
 }}
 .control-title {{
-    font-size: 0.85rem;
-    font-weight: 700;
+    font-size: 0.88rem;
+    font-weight: 800;
     color: var(--text);
     margin-bottom: 1rem;
     padding-bottom: 0.5rem;
     border-bottom: 1px solid var(--border-subtle);
     text-transform: uppercase;
-    letter-spacing: 0.07em;
+    letter-spacing: 0.06em;
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: 8px;
+    font-family: 'Outfit', sans-serif;
+}}
+
+/* Button Enhancements */
+div.stButton > button {{
+    font-family: 'Outfit', sans-serif !important;
+    font-weight: 700 !important;
+    letter-spacing: 0.03em !important;
+    border-radius: 8px !important;
+    transition: all 0.2s ease !important;
+}}
+div.stButton > button[kind="primary"] {{
+    background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%) !important;
+    box-shadow: 0 4px 14px rgba(37, 99, 235, 0.35) !important;
+    border: none !important;
+}}
+div.stButton > button[kind="primary"]:hover {{
+    transform: translateY(-1px) !important;
+    box-shadow: 0 6px 20px rgba(37, 99, 235, 0.5) !important;
+}}
+div.stButton > button[kind="secondary"] {{
+    border: 1px solid var(--border) !important;
+    background: var(--card) !important;
+}}
+div.stButton > button[kind="secondary"]:hover {{
+    border-color: var(--accent) !important;
+    color: var(--accent) !important;
 }}
 
 /* Data Table custom design */
@@ -239,16 +277,17 @@ html, body, [data-testid="stAppViewContainer"], [data-testid="stApp"], .main, .b
 }}
 .data-table th {{
     text-align: left;
-    padding: 0.6rem 0.8rem;
+    padding: 0.65rem 0.85rem;
     color: var(--text-muted);
-    font-weight: 600;
-    font-size: 0.7rem;
+    font-weight: 700;
+    font-size: 0.72rem;
     text-transform: uppercase;
     letter-spacing: 0.05em;
     border-bottom: 1px solid var(--border);
+    font-family: 'Outfit', sans-serif;
 }}
 .data-table td {{
-    padding: 0.6rem 0.8rem;
+    padding: 0.65rem 0.85rem;
     color: var(--text);
     border-bottom: 1px solid var(--border-subtle);
     font-family: 'JetBrains Mono', monospace;
@@ -257,30 +296,22 @@ html, body, [data-testid="stAppViewContainer"], [data-testid="stApp"], .main, .b
     border-bottom: none;
 }}
 .data-table tbody tr:hover td {{
-    background: rgba(59,130,246,0.03);
-}}
-.data-table tfoot td {{
-    border-top: 2px solid var(--border);
-    border-bottom: none !important;
-    font-weight: 700;
-    background: var(--bg-subtle);
-    color: var(--text-muted);
-    font-family: 'DM Sans', sans-serif;
-    font-size: 0.74rem;
+    background: rgba(59,130,246,0.05);
 }}
 
 /* Badge styles */
 .badge {{
     display: inline-block;
-    padding: 2px 8px;
-    border-radius: 5px;
+    padding: 3px 9px;
+    border-radius: 6px;
     font-size: 0.7rem;
-    font-weight: 600;
+    font-weight: 700;
+    font-family: 'Outfit', sans-serif;
 }}
-.badge-green {{ color: var(--green); background: var(--green-muted); }}
-.badge-red {{ color: var(--red); background: var(--red-muted); }}
-.badge-amber {{ color: var(--amber); background: var(--amber-muted); }}
-.badge-blue {{ color: var(--accent); background: rgba(59, 130, 246, 0.1); }}
+.badge-green {{ color: #22c55e; background: rgba(34, 197, 94, 0.14); border: 1px solid rgba(34, 197, 94, 0.2); }}
+.badge-red {{ color: #ef4444; background: rgba(239, 68, 68, 0.14); border: 1px solid rgba(239, 68, 68, 0.2); }}
+.badge-amber {{ color: #f59e0b; background: rgba(245, 158, 11, 0.14); border: 1px solid rgba(245, 158, 11, 0.2); }}
+.badge-blue {{ color: #3b82f6; background: rgba(59, 130, 246, 0.14); border: 1px solid rgba(59, 130, 246, 0.2); }}
 
 /* Empty state placeholder */
 .empty-state {{
@@ -288,20 +319,20 @@ html, body, [data-testid="stAppViewContainer"], [data-testid="stApp"], .main, .b
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    padding: 2rem 1rem;
+    padding: 2.2rem 1rem;
     border: 1px dashed var(--border);
     background: var(--bg-subtle);
     border-radius: var(--radius);
     text-align: center;
     color: var(--text-muted);
-    font-size: 0.76rem;
+    font-size: 0.78rem;
     margin-top: 0.5rem;
 }}
 .empty-state-icon {{
-    font-size: 1.4rem;
-    margin-bottom: 0.3rem;
+    font-size: 1.5rem;
+    margin-bottom: 0.4rem;
     color: var(--text-dim);
-    opacity: 0.75;
+    opacity: 0.85;
 }}
 
 /* Top Brand Row */
@@ -309,39 +340,45 @@ html, body, [data-testid="stAppViewContainer"], [data-testid="stApp"], .main, .b
     display: flex;
     justify-content: space-between;
     align-items: center;
-    margin-bottom: 1rem;
-    padding-bottom: 0.75rem;
+    margin-bottom: 1.25rem;
+    padding-bottom: 0.85rem;
     border-bottom: 1px solid var(--border);
 }}
 .brand-logo {{
     font-weight: 800;
-    font-size: 1.35rem;
-    letter-spacing: -0.04em;
+    font-size: 1.45rem;
+    letter-spacing: -0.03em;
     color: var(--text);
     display: flex;
     align-items: center;
     gap: 0.5rem;
+    font-family: 'Outfit', sans-serif;
 }}
-.brand-logo span {{ color: var(--accent); }}
+.brand-logo span {{ 
+    background: linear-gradient(135deg, #3b82f6 0%, #8b5cf6 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+}}
 .brand-meta {{
     display: flex;
     align-items: center;
-    gap: 10px;
-    font-size: 0.72rem;
+    gap: 12px;
+    font-size: 0.75rem;
     color: var(--text-muted);
 }}
 .brand-badge {{
-    padding: 3px 10px;
+    padding: 4px 12px;
     border-radius: 20px;
-    font-size: 0.68rem;
-    font-weight: 600;
-    letter-spacing: 0.03em;
+    font-size: 0.7rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    font-family: 'Outfit', sans-serif;
 }}
 
 /* Pulse animation for RUNNING status dot */
 @keyframes pulse-dot {{
-    0%   {{ box-shadow: 0 0 0 0 rgba(34,197,94,0.65); }}
-    70%  {{ box-shadow: 0 0 0 7px rgba(34,197,94,0); }}
+    0%   {{ box-shadow: 0 0 0 0 rgba(34,197,94,0.7); }}
+    70%  {{ box-shadow: 0 0 0 8px rgba(34,197,94,0); }}
     100% {{ box-shadow: 0 0 0 0 rgba(34,197,94,0); }}
 }}
 .pulse-dot {{
@@ -772,12 +809,14 @@ def serialize_market_state(m_state):
         # Bot details
         "bot_deployed": bot.deployed,
         "bot_deploy_price": bot.deploy_price,
+        "bot_last_deploy_time": getattr(bot, "last_deploy_time", 0.0),
         "bot_current_cycle_id": bot.current_cycle_id,
         "bot_cycle_start_time": bot.cycle_start_time,
         "bot_cycle_history": bot.cycle_history,
         "bot_max_floating_pnl": getattr(bot, "max_floating_pnl", -float("inf")),
         "bot_breakeven_activated": getattr(bot, "breakeven_activated", False),
-        "bot_in_runner_mode": getattr(bot, "in_runner_mode", False)
+        "bot_in_runner_mode": getattr(bot, "in_runner_mode", False),
+        "cancel_opposite_on_trigger": getattr(bot, "cancel_opposite_on_trigger", True)
     }
     return serialized
 
@@ -819,28 +858,39 @@ def deserialize_market_state(ser, symbol):
     
     # Recreate broker open positions
     broker.open_positions = {}
-    for pos_id, pos_dict in ser.get("broker_open_positions", {}).items():
-        pos = Position(pos_dict["type"], pos_dict["entry_price"], pos_dict["size"], pos_dict["entry_time"])
-        pos.position_id = pos_dict["position_id"]
+    for pos_id, pos_data in ser.get("broker_open_positions", {}).items():
+        if isinstance(pos_data, dict):
+            pos = Position(pos_data["type"], pos_data["entry_price"], pos_data["size"], pos_data["entry_time"])
+            pos.position_id = pos_data.get("position_id", pos_id)
+        else:
+            pos = pos_data
         broker.open_positions[pos_id] = pos
         if broker_class != "SimulatedBroker":
             try:
                 # Populate ticket mapping back (MT5Broker only)
-                ticket_num = int(pos_id.replace("live_", ""))
-                broker.ticket_to_position_id[ticket_num] = pos_id
-            except:
+                clean_id = str(pos_id).replace("live_", "")
+                if clean_id.isdigit():
+                    ticket_num = int(clean_id)
+                    broker.ticket_to_position_id[ticket_num] = pos_id
+            except Exception:
                 pass
                 
     # Recreate broker pending orders
     broker.pending_orders = {}
-    for order_id, o_dict in ser.get("broker_pending_orders", {}).items():
-        o = Order(o_dict["type"], o_dict["trigger_price"], o_dict["size"], o_dict["timestamp"])
-        o.order_id = o_dict["order_id"]
+    for order_id, o_data in ser.get("broker_pending_orders", {}).items():
+        if isinstance(o_data, dict):
+            o = Order(o_data["type"], o_data["trigger_price"], o_data["size"], o_data["timestamp"])
+            o.order_id = o_data.get("order_id", order_id)
+        else:
+            o = o_data
         broker.pending_orders[order_id] = o
         if broker_class != "SimulatedBroker":
             try:
-                broker.ticket_to_order_id[int(order_id)] = order_id
-            except:
+                clean_id = str(order_id).replace("live_", "")
+                if clean_id.isdigit():
+                    ticket_num = int(clean_id)
+                    broker.ticket_to_order_id[ticket_num] = order_id
+            except Exception:
                 pass
                 
     # Recreate Bot using safe fallbacks
@@ -862,7 +912,7 @@ def deserialize_market_state(ser, symbol):
         spacing_mode=saved_spacing_mode,
         stop_loss=ser.get("strat_sl", gs["stop_loss"]),
         max_cycle_duration=float('inf'),
-        cancel_opposite_on_trigger=False,
+        cancel_opposite_on_trigger=ser.get("cancel_opposite_on_trigger", False),
         use_trailing_stop=ser.get("strat_trailing", False),
         trailing_stop_distance=ser.get("strat_trailing_dist", 1.5),
         use_breakeven=ser.get("strat_breakeven", False),
@@ -873,6 +923,7 @@ def deserialize_market_state(ser, symbol):
     
     bot.deployed = ser.get("bot_deployed", False)
     bot.deploy_price = ser.get("bot_deploy_price", 0.0)
+    bot.last_deploy_time = ser.get("bot_last_deploy_time", 0.0)
     bot.current_cycle_id = ser.get("bot_current_cycle_id", 1)
     bot.cycle_start_time = ser.get("bot_cycle_start_time", 0.0)
     bot.cycle_history = ser.get("bot_cycle_history", [])
@@ -983,6 +1034,12 @@ if "markets" in st.session_state:
 
 if "error_message" not in st.session_state:
     st.session_state.error_message = None
+if "live_symbol" not in st.session_state:
+    st.session_state.live_symbol = "BTCUSDT"
+if "running" not in st.session_state:
+    st.session_state.running = False
+if "markets" not in st.session_state:
+    st.session_state.markets = {}
 
 if not state_loaded:
     if "markets" not in st.session_state:
@@ -1050,7 +1107,7 @@ if st.session_state.live_symbol not in st.session_state.markets:
         is_percent=True,
         stop_loss=gs["stop_loss"],
         max_cycle_duration=float('inf'),
-        cancel_opposite_on_trigger=True,
+        cancel_opposite_on_trigger=False,
         use_breakeven=False,
         breakeven_trigger=0.5
     )
@@ -1194,13 +1251,13 @@ settings_changed = (
 )
 
 # Apply settings to the bot instance
-bot.grid_levels = 10
+bot.grid_levels = int(st.session_state.get("strat_grid_levels", 5))
 bot.grid_gap = st.session_state.strat_gap
 bot.trap_offset = st.session_state.strat_offset
 bot.auto_restart = True
 bot.spacing_mode = st.session_state.strat_spacing_mode
 bot.max_cycle_duration = float('inf')
-bot.cancel_opposite_on_trigger = True
+bot.cancel_opposite_on_trigger = st.session_state.get(f"toggle_oco_{st.session_state.live_symbol}", getattr(bot, "cancel_opposite_on_trigger", False))
 # Target Profit, Stop Loss, Trailing Stop, and Breakeven exit levels update dynamically even during active cycles
 bot.target_profit = st.session_state.strat_target_profit
 bot.stop_loss = st.session_state.strat_sl
@@ -1324,26 +1381,28 @@ if not st.session_state.price_history:
 # 6. HEADER RENDERING
 _now_str = datetime.now().strftime("%a %d %b %Y  %H:%M:%S")
 _active_markets_count = sum(1 for m in st.session_state.markets.values() if m.get("running", False))
+_auto_markets_count = sum(1 for m in st.session_state.markets.values() if m.get("running", False) and m.get("bot") and getattr(m.get("bot"), "use_auto_reading", False))
+
 _broker_type_hdr = "Simulated Sandbox" if isinstance(st.session_state.broker, SimulatedBroker) else "MT5 Live"
 _broker_color = "#3b82f6" if _broker_type_hdr == "Simulated Sandbox" else "#f59e0b"
 _running_dot = '<span class="pulse-dot"></span>' if _active_markets_count > 0 else '<span class="idle-dot"></span>'
-st.markdown(f"""
-<div class="brand-container">
-    <div class="brand-logo">
-        ◆ MATY <span>BREAKOUT GRID BOT</span>
-    </div>
-    <div class="brand-meta">
-        {_running_dot}
-        <span style="font-weight:600;color:{'var(--green)' if _active_markets_count > 0 else 'var(--text-dim)'}">
-            {_active_markets_count} RUNNING
-        </span>
-        &nbsp;·&nbsp;
-        <span class="brand-badge" style="background:{_broker_color}18;color:{_broker_color};border:1px solid {_broker_color}33;">{_broker_type_hdr}</span>
-        &nbsp;·&nbsp;
-        <span style="font-family:'JetBrains Mono',monospace;font-size:0.7rem;">{_now_str}</span>
-    </div>
-</div>
-""", unsafe_allow_html=True)
+_auto_badge_html = f'&nbsp;&nbsp;<span style="font-size:0.72rem; background: rgba(34, 197, 94, 0.18); border: 1px solid rgba(34, 197, 94, 0.4); color: #22c55e; padding: 2px 8px; border-radius: 6px; font-weight: 700;">🤖 {_auto_markets_count} AUTO</span>' if _auto_markets_count > 0 else ''
+
+_hdr_html = (
+    f'<div class="brand-container">'
+    f'<div class="brand-logo">◆ PROFITY <span>AI</span></div>'
+    f'<div class="brand-meta">'
+    f'{_running_dot}'
+    f'<span style="font-weight:600;color:{"var(--green)" if _active_markets_count > 0 else "var(--text-dim)"}">{_active_markets_count} RUNNING</span>'
+    f'{_auto_badge_html}'
+    f'&nbsp;&nbsp;·&nbsp;&nbsp;'
+    f'<span class="brand-badge" style="background:{_broker_color}18;color:{_broker_color};border:1px solid {_broker_color}33;">{_broker_type_hdr}</span>'
+    f'&nbsp;&nbsp;·&nbsp;&nbsp;'
+    f'<span style="font-family:\'JetBrains Mono\',monospace;font-size:0.7rem;color:var(--text-muted);">{_now_str}</span>'
+    f'</div>'
+    f'</div>'
+)
+st.markdown(_hdr_html, unsafe_allow_html=True)
 
 # 7. MAIN 2-COLUMN WORKSTATION LAYOUT
 col_left, col_right = st.columns([1.0, 1.35], gap="large")
@@ -1396,25 +1455,42 @@ with col_left:
     sel_col1, sel_col2, sel_col3 = st.columns([4, 4, 4])
     
     with sel_col1:
-        market_options = {
-            "BTCUSDT (Bitcoin)": "BTCUSDT",
-            "ETHUSDT (Ethereum)": "ETHUSDT",
-            "SOLUSDT (Solana)": "SOLUSDT",
-            "BNBUSDT (Binance Coin)": "BNBUSDT",
-            "DOGEUSDT (Dogecoin)": "DOGEUSDT",
-            "XAUUSD (Gold)": "PAXGUSDT"
+        base_market_map = {
+            "BTCUSDT": "BTCUSDT (Bitcoin)",
+            "ETHUSDT": "ETHUSDT (Ethereum)",
+            "SOLUSDT": "SOLUSDT (Solana)",
+            "BNBUSDT": "BNBUSDT (Binance Coin)",
+            "DOGEUSDT": "DOGEUSDT (Dogecoin)",
+            "PAXGUSDT": "XAUUSD (Gold)"
         }
         
+        market_options = {}
+        market_reverse_map = {}
+        for sym_code, base_lbl in base_market_map.items():
+            m_state = st.session_state.get("markets", {}).get(sym_code, {})
+            is_run = m_state.get("running", False)
+            is_auto = m_state.get("bot") and getattr(m_state.get("bot"), "use_auto_reading", False)
+            
+            tags = []
+            if is_run:
+                tags.append("▶ RUNNING")
+            if is_auto:
+                tags.append("🤖 AUTO")
+            
+            tag_str = f"  [{' · '.join(tags)}]" if tags else ""
+            display_label = f"{base_lbl}{tag_str}"
+            
+            market_options[display_label] = sym_code
+            market_reverse_map[sym_code] = display_label
+        
         current_sym = st.session_state.get("live_symbol", "BTCUSDT")
-        default_idx = 0
-        for i, (label, val) in enumerate(market_options.items()):
-            if val == current_sym:
-                default_idx = i
-                break
+        current_disp_label = market_reverse_map.get(current_sym, "BTCUSDT (Bitcoin)")
+        opt_keys = list(market_options.keys())
+        default_idx = opt_keys.index(current_disp_label) if current_disp_label in opt_keys else 0
                 
         selected_label = st.selectbox(
             "Market / Symbol",
-            list(market_options.keys()),
+            opt_keys,
             index=default_idx,
             key="symbol_select_dropdown"
         )
@@ -1497,15 +1573,29 @@ with col_left:
     _sym_wk = st.session_state.live_symbol
     _active_label = _sym_short.get(st.session_state.live_symbol, st.session_state.live_symbol)
 
+    _curr_m_state = st.session_state.markets.get(st.session_state.live_symbol, {})
+    _curr_bot = _curr_m_state.get("bot")
+    _is_auto_active = getattr(_curr_bot, "use_auto_reading", False) and st.session_state.get("strat_use_auto_reading", False)
+    _is_manual_running = st.session_state.get("running", False) and not _is_auto_active
+
     # --- SECTION B: CONSOLIDATED MASTER CONTROL DESK (3 ROWS x 3 COLUMNS) ---
     st.markdown('<div class="control-title" style="margin-top: 10px;">🎛️ MASTER CONTROL DESK</div>', unsafe_allow_html=True)
-    
+    if _is_auto_active:
+        st.markdown('<div style="background:rgba(34,197,94,0.08);border:1px solid rgba(34,197,94,0.3);border-radius:8px;padding:6px 12px;font-size:0.74rem;color:#22c55e;margin-bottom:6px;">🤖 <strong>AUTO TRADING IS ON</strong> — Manual controls are locked. Click AUTO TRADING button to switch to Manual Mode.</div>', unsafe_allow_html=True)
+    elif _is_manual_running:
+        st.markdown('<div style="background:rgba(59,130,246,0.08);border:1px solid rgba(59,130,246,0.3);border-radius:8px;padding:6px 12px;font-size:0.74rem;color:#3b82f6;margin-bottom:6px;">▶ <strong>MANUAL BOT RUNNING</strong> — Auto Trading is locked. Pause the bot first to switch to Auto Mode.</div>', unsafe_allow_html=True)
+
     # ROW 1: PRIMARY EXECUTION & TRAP DEPLOYMENT
     cmd_r1_c1, cmd_r1_c2, cmd_r1_c3 = st.columns(3)
     
     with cmd_r1_c1:
-        if not st.session_state.running:
-            if st.button("▶ START BOT", type="primary", help="Start bot engine loop for active market", use_container_width=True, key=f"mcd_start_bot_{_sym_wk}"):
+        if not st.session_state.get("running", False):
+            _start_lbl = "🔒 AUTO ACTIVE" if _is_auto_active else "▶ START BOT"
+            if st.button(_start_lbl, type="primary", disabled=_is_auto_active, help="Start manual bot (disabled when Auto Trading is ON)", use_container_width=True, key=f"mcd_start_bot_{_sym_wk}"):
+                # Switching to Manual: ensure Auto is OFF first
+                if _curr_bot:
+                    _curr_bot.use_auto_reading = False
+                st.session_state.strat_use_auto_reading = False
                 try:
                     st.session_state.broker.sync()
                 except Exception as sync_err:
@@ -1555,7 +1645,8 @@ with col_left:
                 save_bot_state()
                 st.rerun()
         else:
-            if st.button("⏸ PAUSE BOT", type="secondary", help="Pause bot engine tick loop", use_container_width=True, key=f"mcd_pause_bot_{_sym_wk}"):
+            _pause_lbl = "🔒 AUTO ACTIVE" if _is_auto_active else "⏸ PAUSE BOT"
+            if st.button(_pause_lbl, type="secondary", disabled=_is_auto_active, help="Pause manual bot (disabled when Auto Trading is ON)", use_container_width=True, key=f"mcd_pause_bot_{_sym_wk}"):
                 st.session_state.running = False
                 if "markets" in st.session_state and st.session_state.live_symbol in st.session_state.markets:
                     st.session_state.markets[st.session_state.live_symbol]["running"] = False
@@ -1564,7 +1655,8 @@ with col_left:
                 st.rerun()
 
     with cmd_r1_c2:
-        if st.button("🎯 DEPLOY TRAPS", type="secondary", help=f"Deploy grid traps at current price for {_active_label}", use_container_width=True, key=f"mcd_deploy_traps_{_sym_wk}"):
+        _dep_btn_lbl = "🔒 AUTO-MANAGED" if _is_auto_active else "🎯 DEPLOY TRAPS"
+        if st.button(_dep_btn_lbl, type="secondary", disabled=_is_auto_active, help="Deploy grid traps manually (disabled when Auto Trading is ON)", use_container_width=True, key=f"mcd_deploy_traps_{_sym_wk}"):
             curr_m = st.session_state.markets.get(st.session_state.live_symbol)
             if curr_m:
                 bt = curr_m["bot"]
@@ -1580,7 +1672,8 @@ with col_left:
                 st.rerun()
 
     with cmd_r1_c3:
-        if st.button("🔄 RECENTER TRAPS", type="secondary", help=f"Recenter grid traps around live price for {_active_label}", use_container_width=True, key=f"mcd_recenter_traps_{_sym_wk}"):
+        _rec_btn_lbl = "🔒 AUTO-MANAGED" if _is_auto_active else "🔄 RECENTER TRAPS"
+        if st.button(_rec_btn_lbl, type="secondary", disabled=_is_auto_active, help="Recenter grid traps manually (disabled when Auto Trading is ON)", use_container_width=True, key=f"mcd_recenter_traps_{_sym_wk}"):
             curr_m = st.session_state.markets.get(st.session_state.live_symbol)
             if curr_m:
                 bt = curr_m["bot"]
@@ -1640,19 +1733,82 @@ with col_left:
                 st.toast(f"🧹 {_active_label}: cleaned up {cleaned_cnt} duplicate/orphan orders.")
                 st.rerun()
 
+    _curr_m_state = st.session_state.markets.get(st.session_state.live_symbol, {})
+    _curr_bot = _curr_m_state.get("bot")
+    _is_auto_active = getattr(_curr_bot, "use_auto_reading", False) and st.session_state.get("strat_use_auto_reading", False)
+    _is_manual_running = st.session_state.get("running", False) and not _is_auto_active
+    
+    # Auto button is locked if manual bot is actively running
+    _auto_btn_disabled = _is_manual_running
+    if _is_auto_active:
+        _mcd_auto_btn_lbl = "🟢 AUTO TRADING: ON (CLICK TO STOP)"
+    elif _is_manual_running:
+        _mcd_auto_btn_lbl = "🔒 MANUAL BOT RUNNING"
+    else:
+        _mcd_auto_btn_lbl = "🔴 AUTO TRADING: OFF (CLICK TO START)"
+    
     with cmd_r2_c3:
-        if st.button(f"⭐ GOLDEN PRESET", type="secondary", help=f"Apply Golden Settings preset for {_active_label}", use_container_width=True, key=f"mcd_defaults_{_sym_wk}"):
-            gs = get_coin_golden_settings(st.session_state.live_symbol)
-            st.session_state.strat_offset = gs["offset"]
-            st.session_state.strat_gap = gs["gap"]
-            st.session_state.strat_is_percent = True
-            st.session_state.strat_order_size = gs["order_size"]
-            st.session_state.strat_size_multiplier = gs["multiplier"]
-            st.session_state.strat_target_profit = gs["target_profit"]
-            sync_active_market_primitives()
-            save_bot_state()
-            st.toast(f"Reset parameters for {_active_label} to Golden Defaults!")
-            st.rerun()
+        if st.button(_mcd_auto_btn_lbl, type="primary" if _is_auto_active else "secondary", disabled=_auto_btn_disabled, help="Toggle Auto Trading Mode ON/OFF. Disabled when Manual Bot is running — pause it first.", use_container_width=True, key=f"mcd_defaults_{_sym_wk}"):
+            _cur_sym = st.session_state.live_symbol
+            _cur_price = float(st.session_state.get("last_price", 1000.0))
+            
+            if _is_auto_active:
+                # TOGGLE OFF AUTO TRADING MODE
+                st.session_state.strat_use_auto_reading = False
+                if _curr_bot:
+                    _curr_bot.use_auto_reading = False
+                _curr_m_state["running"] = False
+                st.session_state.running = False
+                sync_active_market_primitives()
+                save_bot_state()
+                st.toast(f"🔴 Auto Trading Mode STOPPED (OFF) for {_active_label}!")
+                st.rerun()
+            else:
+                # TOGGLE ON AUTO TRADING MODE
+                # Use TOTAL equity across ALL market brokers so every symbol
+                # gets the same capital tier — ETH and Gold on $1,000 both → Golden (5 levels)
+                _acc_bal = sum(
+                    float(getattr(m.get("broker"), "balance", 0.0))
+                    for m in st.session_state.markets.values()
+                    if m.get("broker")
+                ) or float(getattr(st.session_state.broker, "balance", 1000.0))
+                _klines_df = get_historical_klines(_cur_sym, interval="1m", limit=100)
+                _tech = calculate_technical_indicators(_klines_df)
+                _ob = get_order_book_depth(_cur_sym)
+                _news = get_economic_calendar()
+
+                from core.engine import AutoReadingEngine
+                _are = AutoReadingEngine()
+                _eval_res = _are.evaluate_market_and_account(
+                    symbol=_cur_sym,
+                    current_price=_cur_price,
+                    account_equity=_acc_bal,
+                    tech_indicators=_tech,
+                    orderbook_depth=_ob,
+                    macro_news=_news
+                )
+                
+                st.session_state.strat_use_auto_reading = True
+                st.session_state.strat_offset = _eval_res["buy_offset_pct"]
+                st.session_state.strat_gap = _eval_res["dynamic_gap_pct"]
+                st.session_state.strat_is_percent = True
+                st.session_state.strat_order_size = _eval_res["recommended_size"]
+                st.session_state.strat_size_multiplier = _eval_res["recommended_multiplier"]
+                st.session_state.strat_sl = _eval_res["recommended_stop_loss"]
+
+                if _curr_bot:
+                    _curr_bot.use_auto_reading = True
+                    try:
+                        _curr_bot.deploy_traps(_cur_price, time.time())
+                    except Exception as dep_err:
+                        print(f"Auto Trading deploy notice: {dep_err}")
+
+                _curr_m_state["running"] = True
+                st.session_state.running = True
+                sync_active_market_primitives()
+                save_bot_state()
+                st.toast(f"🟢 Activated Auto Trading Mode (STARTED) for {_active_label}!")
+                st.rerun()
 
     # ROW 3: SAFETY, EMERGENCY CLOSE & ENVIRONMENT RESET ACTIONS
     cmd_r3_c1, cmd_r3_c2, cmd_r3_c3 = st.columns(3)
@@ -1795,38 +1951,94 @@ with col_left:
 
     _strat_sym_label = {"BTCUSDT":"BTC","ETHUSDT":"ETH","SOLUSDT":"SOL","BNBUSDT":"BNB","DOGEUSDT":"DOGE","PAXGUSDT":"XAU"}.get(st.session_state.live_symbol, st.session_state.live_symbol)
     
-    st_header_col1, st_header_col2 = st.columns([2, 1])
+    st_header_col1, st_header_col2 = st.columns([1.2, 1.8])
     with st_header_col1:
         st.markdown(f'<div class="control-title">🎯 Strategy Tuning &nbsp;<span style="font-size:0.7rem;font-weight:400;opacity:0.55;border:1px solid rgba(255,255,255,0.15);border-radius:6px;padding:1px 7px;">for {_strat_sym_label}</span></div>', unsafe_allow_html=True)
     with st_header_col2:
-        if st.button(f"🔄 RESET TO GOLDEN", type="secondary", help=f"Reset strategy parameters for {_strat_sym_label} to Golden Settings defaults", use_container_width=True, key=f"strat_defaults_btn_{_sym_wk}"):
-            gs = get_coin_golden_settings(st.session_state.live_symbol)
-            st.session_state.strat_offset = gs["offset"]
-            st.session_state.strat_gap = gs["gap"]
-            st.session_state.strat_is_percent = True
-            st.session_state.strat_order_size = gs["order_size"]
-            st.session_state.strat_size_multiplier = gs["multiplier"]
-            st.session_state.strat_target_profit = gs["target_profit"]
-            st.session_state.strat_sl = gs["stop_loss"]
-            
-            # Clear per-symbol namespaced widget keys so input boxes visually reset to golden defaults
-            _sym_wk_reset = st.session_state.live_symbol
-            _strat_widget_keys = [
-                f"strat_is_percent_select_{_sym_wk_reset}",
-                f"strat_offset_input_pct_{_sym_wk_reset}", f"strat_offset_input_usd_{_sym_wk_reset}",
-                f"strat_gap_input_pct_{_sym_wk_reset}",    f"strat_gap_input_usd_{_sym_wk_reset}",
-                f"strat_target_profit_input_{_sym_wk_reset}", f"strat_sl_input_{_sym_wk_reset}",
-                f"strat_order_size_input_{_sym_wk_reset}", f"strat_size_multiplier_input_{_sym_wk_reset}",
-                f"strat_trailing_input_{_sym_wk_reset}", f"strat_trailing_dist_input_{_sym_wk_reset}",
-                f"strat_breakeven_input_{_sym_wk_reset}", f"strat_breakeven_trigger_input_{_sym_wk_reset}",
-            ]
-            for _k in _strat_widget_keys:
-                st.session_state.pop(_k, None)
+        btn_c1, btn_c2 = st.columns(2)
+        _is_auto_on = st.session_state.get("strat_use_auto_reading", True)
+        _auto_tune_lbl = f"🟢 AUTO-TRADING (ACTIVE ON)" if _is_auto_on else f"⚡ AUTO-TUNE (AUTO)"
+        with btn_c1:
+            if st.button(_auto_tune_lbl, type="primary" if _is_auto_on else "secondary", help=f"Dynamically calculate and apply Auto-Reading preset for {_strat_sym_label}", use_container_width=True, key=f"strat_auto_btn_{_sym_wk}"):
+                _cur_sym = st.session_state.live_symbol
+                _cur_price = float(st.session_state.get("last_price", 1000.0))
+                _acc_bal = float(getattr(st.session_state.broker, "balance", 1000.0))
+                _klines_df = get_historical_klines(_cur_sym, interval="1m", limit=100)
+                _tech = calculate_technical_indicators(_klines_df)
+                _ob = get_order_book_depth(_cur_sym)
+                _news = get_economic_calendar()
+
+                from core.engine import AutoReadingEngine
+                _are = AutoReadingEngine()
+                _eval_res = _are.evaluate_market_and_account(
+                    symbol=_cur_sym,
+                    current_price=_cur_price,
+                    account_equity=_acc_bal,
+                    tech_indicators=_tech,
+                    orderbook_depth=_ob,
+                    macro_news=_news
+                )
                 
-            sync_active_market_primitives()
-            save_bot_state()
-            st.toast(f"Reset strategy settings for {_strat_sym_label} to Golden Defaults.")
-            st.rerun()
+                st.session_state.strat_offset = _eval_res["buy_offset_pct"]
+                st.session_state.strat_gap = _eval_res["dynamic_gap_pct"]
+                st.session_state.strat_is_percent = True
+                st.session_state.strat_order_size = _eval_res["recommended_size"]
+                st.session_state.strat_size_multiplier = _eval_res["recommended_multiplier"]
+                st.session_state.strat_sl = _eval_res["recommended_stop_loss"]
+                st.session_state.strat_use_auto_reading = True
+                if hasattr(st.session_state, "bot") and st.session_state.bot:
+                    st.session_state.bot.use_auto_reading = True
+
+                _sym_wk_reset = st.session_state.live_symbol
+                _strat_widget_keys = [
+                    f"strat_is_percent_select_{_sym_wk_reset}",
+                    f"strat_offset_input_pct_{_sym_wk_reset}", f"strat_offset_input_usd_{_sym_wk_reset}",
+                    f"strat_gap_input_pct_{_sym_wk_reset}",    f"strat_gap_input_usd_{_sym_wk_reset}",
+                    f"strat_target_profit_input_{_sym_wk_reset}", f"strat_sl_input_{_sym_wk_reset}",
+                    f"strat_order_size_input_{_sym_wk_reset}", f"strat_size_multiplier_input_{_sym_wk_reset}",
+                    f"strat_use_auto_reading_input_{_sym_wk_reset}"
+                ]
+                for _k in _strat_widget_keys:
+                    st.session_state.pop(_k, None)
+                    
+                sync_active_market_primitives()
+                save_bot_state()
+                st.toast(f"⚡ {_strat_sym_label}: Applied Autonomous Auto-Reading preset!")
+                st.rerun()
+
+        with btn_c2:
+            if st.button(f"⭐ GOLDEN (MANUAL)", type="secondary", help=f"Reset strategy parameters for {_strat_sym_label} to Golden Settings defaults for manual tuning", use_container_width=True, key=f"strat_defaults_btn_{_sym_wk}"):
+                gs = get_coin_golden_settings(st.session_state.live_symbol)
+                st.session_state.strat_offset = gs["offset"]
+                st.session_state.strat_gap = gs["gap"]
+                st.session_state.strat_is_percent = True
+                st.session_state.strat_order_size = gs["order_size"]
+                st.session_state.strat_size_multiplier = gs["multiplier"]
+                st.session_state.strat_target_profit = gs["target_profit"]
+                st.session_state.strat_sl = gs["stop_loss"]
+                st.session_state.strat_use_auto_reading = False
+                if hasattr(st.session_state, "bot") and st.session_state.bot:
+                    st.session_state.bot.use_auto_reading = False
+                
+                # Clear per-symbol namespaced widget keys so input boxes visually reset to golden defaults
+                _sym_wk_reset = st.session_state.live_symbol
+                _strat_widget_keys = [
+                    f"strat_is_percent_select_{_sym_wk_reset}",
+                    f"strat_offset_input_pct_{_sym_wk_reset}", f"strat_offset_input_usd_{_sym_wk_reset}",
+                    f"strat_gap_input_pct_{_sym_wk_reset}",    f"strat_gap_input_usd_{_sym_wk_reset}",
+                    f"strat_target_profit_input_{_sym_wk_reset}", f"strat_sl_input_{_sym_wk_reset}",
+                    f"strat_order_size_input_{_sym_wk_reset}", f"strat_size_multiplier_input_{_sym_wk_reset}",
+                    f"strat_trailing_input_{_sym_wk_reset}", f"strat_trailing_dist_input_{_sym_wk_reset}",
+                    f"strat_breakeven_input_{_sym_wk_reset}", f"strat_breakeven_trigger_input_{_sym_wk_reset}",
+                    f"strat_use_auto_reading_input_{_sym_wk_reset}"
+                ]
+                for _k in _strat_widget_keys:
+                    st.session_state.pop(_k, None)
+                    
+                sync_active_market_primitives()
+                save_bot_state()
+                st.toast(f"Reset strategy settings for {_strat_sym_label} to Golden Defaults (Manual Mode).")
+                st.rerun()
 
     _cur_gap = st.session_state.strat_gap
     _cur_off = st.session_state.strat_offset
@@ -1856,7 +2068,70 @@ with col_left:
         unsafe_allow_html=True
     )
 
+    if st.session_state.get("strat_use_auto_reading", True):
+        # Calculate real-time auto-reading metrics for UI display
+        _cur_sym = st.session_state.live_symbol
+        _cur_price = float(st.session_state.get("last_price", 1000.0))
+        _acc_bal = float(getattr(st.session_state.broker, "balance", 1000.0))
+        
+        _klines_df = get_historical_klines(_cur_sym, interval="1m", limit=100)
+        _tech = calculate_technical_indicators(_klines_df)
+        _ob = get_order_book_depth(_cur_sym)
+        _news = get_economic_calendar()
+
+        from core.engine import AutoReadingEngine
+        _are = AutoReadingEngine()
+        _eval_res = _are.evaluate_market_and_account(
+            symbol=_cur_sym,
+            current_price=_cur_price,
+            account_equity=_acc_bal,
+            tech_indicators=_tech,
+            orderbook_depth=_ob,
+            macro_news=_news
+        )
+        
+        _bias_val = _eval_res["ema_trend_bias"]
+        _bias_lbl = "STRONG BULL 🚀" if _bias_val > 0.4 else ("BULLISH 📈" if _bias_val > 0.1 else ("STRONG BEAR 📉" if _bias_val < -0.4 else ("BEARISH 📉" if _bias_val < -0.1 else "NEUTRAL ⚖️")))
+        _bias_color = "#22c55e" if _bias_val > 0.1 else ("#ef4444" if _bias_val < -0.1 else "#f59e0b")
+        
+        _ob_delta = _eval_res["ob_delta"] * 100.0
+        _ob_src = _ob.get("source", "Live Depth")
+        _news_lbl = "⚠️ ACTIVE (2.5x Expansion)" if _eval_res["news_risk_mult"] > 1.0 else "🛡️ CLEAR (1.0x Normal)"
+        _news_color = "#ef4444" if _eval_res["news_risk_mult"] > 1.0 else "#22c55e"
+
+        _bo_score = _tech.get("breakout_score", 50)
+        _squeeze = "SQUEEZE ACTIVE ⚡" if _tech.get("is_bb_squeeze", False) else "NORMAL VOL"
+        _supp = _ob.get("support_wall", 0.0)
+        _resis = _ob.get("resistance_wall", 0.0)
+        _vwap_dev = _eval_res.get("vwap_dev_pct", 0.0)
+        _vwap_lbl = f"ABOVE VWAP ({_vwap_dev:+.2f}%) 🟢" if _vwap_dev >= 0.0 else f"BELOW VWAP ({_vwap_dev:+.2f}%) 🔴"
+        _vwap_color = "#22c55e" if _vwap_dev >= 0.0 else "#ef4444"
+
+        _diag_html = (
+            f'<div style="background: rgba(59, 130, 246, 0.08); border: 1px solid rgba(59, 130, 246, 0.25); border-radius: 10px; padding: 12px 16px; margin-bottom: 16px; font-size: 0.8rem;">'
+            f'<div style="color: #60a5fa; font-weight: 700; margin-bottom: 8px; font-size: 0.88rem; display: flex; align-items: center; justify-content: space-between;">'
+            f'<span>🤖 AUTO-READING LIVE MARKET REGIME & ACCOUNT DIAGNOSTICS &nbsp;&nbsp;<span style="font-size:0.72rem; background: rgba(34, 197, 94, 0.2); border: 1px solid rgba(34, 197, 94, 0.45); color: #22c55e; padding: 2px 8px; border-radius: 6px; font-weight: 700;">🟢 AUTO-TRADING ACTIVE</span></span>'
+            f'<span style="font-size:0.75rem; background: rgba(59, 130, 246, 0.2); border: 1px solid rgba(59, 130, 246, 0.4); padding: 3px 10px; border-radius: 6px; font-weight: 600;">Account Safety Tier: {_eval_res["capital_tier"]} (Max {_eval_res["recommended_levels"]} Levels @ {_eval_res["recommended_multiplier"]}x)</span>'
+            f'</div>'
+            f'<div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px 14px; margin-bottom: 10px; padding-bottom: 8px; border-bottom: 1px solid rgba(255,255,255,0.08); color: var(--text);">'
+            f'<div><strong>EMA 20/50/200 Bias:</strong> <span style="color: {_bias_color}; font-weight: 700;">{_bias_val:+.2f} ({_bias_lbl})</span></div>'
+            f'<div><strong>VWAP Anchor:</strong> <span style="color: {_vwap_color}; font-weight: 700;">{_vwap_lbl}</span></div>'
+            f'<div><strong>Orderbook Imbalance:</strong> <span style="font-weight: 700;">{_ob_delta:+.1f}%</span> <span style="font-size:0.7rem; opacity:0.6;">({_ob_src})</span></div>'
+            f'<div><strong>News Risk Shield:</strong> <span style="color: {_news_color}; font-weight: 700;">{_news_lbl}</span></div>'
+            f'</div>'
+            f'<div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px 14px; color: var(--text);">'
+            f'<div><strong>Auto Rec. Offsets:</strong> <span style="color: #22c55e; font-weight: 700;">Buy {_eval_res["buy_offset_pct"]}%</span> / <span style="color: #ef4444; font-weight: 700;">Sell {_eval_res["sell_offset_pct"]}%</span></div>'
+            f'<div><strong>Auto Dynamic Gap:</strong> <span style="font-weight: 700;">{_eval_res["dynamic_gap_pct"]}%</span></div>'
+            f'<div><strong>Auto Scaled Base Size:</strong> <span style="font-weight: 700;">{_eval_res["recommended_size"]} Lots</span></div>'
+            f'<div><strong>Protection Shield:</strong> <span style="font-size:0.75rem; color:#22c55e; font-weight:700;">2-Fill Breakeven Lock 🛡️</span></div>'
+            f'</div>'
+            f'</div>'
+        )
+        st.markdown(_diag_html, unsafe_allow_html=True)
+
     _sym_wk = st.session_state.live_symbol  # widget key namespace for this coin
+    _auto_hlp = "🔒 Managed automatically by Auto-Trading Engine" if _is_auto_active else "Manual strategy parameter"
+    
     strat_col1, strat_col2, strat_col3 = st.columns(3)
     with strat_col1:
         # Spacing Mode selectbox with 3 distinct modes: Percentage (%), USD Points ($), and Pips
@@ -1915,6 +2190,8 @@ with col_left:
             value=default_offset,
             step=offset_step,
             format="%.2f" if key_suffix == "pct" or default_offset % 1 != 0 else "%.1f",
+            disabled=_is_auto_active,
+            help=_auto_hlp,
             key=f"strat_offset_input_{key_suffix}_{_sym_wk}"
         )
         st.session_state.strat_offset = trap_offset_val
@@ -1926,6 +2203,8 @@ with col_left:
             value=default_gap,
             step=gap_step,
             format="%.2f" if key_suffix == "pct" or default_gap % 1 != 0 else "%.1f",
+            disabled=_is_auto_active,
+            help=_auto_hlp,
             key=f"strat_gap_input_{key_suffix}_{_sym_wk}"
         )
         st.session_state.strat_gap = grid_gap_val
@@ -1936,7 +2215,8 @@ with col_left:
             max_value=30,
             value=int(st.session_state.get("strat_grid_levels", 10)),
             step=1,
-            help="Number of pending stop orders placed per side (e.g. 10 = 10 BUY_STOP + 10 SELL_STOP = 20 total orders; 20 = 20 BUY_STOP + 20 SELL_STOP = 40 total orders).",
+            disabled=_is_auto_active,
+            help="Number of pending stop orders placed per side (e.g. 10 = 10 BUY_STOP + 10 SELL_STOP = 20 total orders). Managed by Auto-Trading when active.",
             key=f"strat_grid_levels_input_{_sym_wk}"
         )
         st.session_state.strat_grid_levels = grid_levels_val
@@ -1950,6 +2230,8 @@ with col_left:
             max_value=10000.0,
             value=float(st.session_state.strat_target_profit),
             step=1.0,
+            disabled=_is_auto_active,
+            help=_auto_hlp,
             key=f"strat_target_profit_input_{_sym_wk}"
         )
         st.session_state.strat_target_profit = target_profit_val
@@ -1960,6 +2242,8 @@ with col_left:
             max_value=100000.0,
             value=float(st.session_state.get("strat_sl", 150.0)),
             step=10.0,
+            disabled=_is_auto_active,
+            help=_auto_hlp,
             key=f"strat_sl_input_{_sym_wk}"
         )
         st.session_state.strat_sl = sl_val
@@ -2026,6 +2310,16 @@ with col_left:
             key=f"strat_use_adaptive_gap_input_{_sym_wk}"
         )
         st.session_state.strat_use_adaptive_gap = adaptive_gap_val
+
+        auto_reading_val = st.toggle(
+            "🤖 Enable Auto-Reading Autonomous Mode",
+            value=st.session_state.get("strat_use_auto_reading", True),
+            help="Automates trap setting using live EMA 20/50/200 trend bias, multi-exchange orderbook volume delta (Gate/OKX/Bybit/Binance), ATR volatility, news events, and account capital scaling ($100 to $10,000+).",
+            key=f"strat_use_auto_reading_input_{_sym_wk}"
+        )
+        st.session_state.strat_use_auto_reading = auto_reading_val
+        if hasattr(st.session_state, "bot") and st.session_state.bot:
+            st.session_state.bot.use_auto_reading = auto_reading_val
         
     with strat_col3:
         order_size_val = st.number_input(
@@ -2035,17 +2329,21 @@ with col_left:
             value=float(st.session_state.strat_order_size),
             step=0.0001 if st.session_state.strat_order_size < 0.1 else (0.01 if st.session_state.strat_order_size < 10.0 else 1.0),
             format="%.5f" if st.session_state.strat_order_size < 1.0 else ("%.2f" if st.session_state.strat_order_size < 100.0 else "%.1f"),
+            disabled=_is_auto_active,
+            help=_auto_hlp,
             key=f"strat_order_size_input_{_sym_wk}"
         )
         st.session_state.strat_order_size = order_size_val
 
         size_mult_val = st.number_input(
             "Size Multiplier (Martingale)",
-            min_value=0.5,
+            min_value=1.0,
             max_value=5.0,
             value=float(st.session_state.strat_size_multiplier),
             step=0.1,
             format="%.2f" if st.session_state.strat_size_multiplier % 0.1 != 0 else "%.1f",
+            disabled=_is_auto_active,
+            help=_auto_hlp,
             key=f"strat_size_multiplier_input_{_sym_wk}"
         )
         st.session_state.strat_size_multiplier = size_mult_val
@@ -2109,7 +2407,7 @@ with col_left:
 
             oco_toggle = st.toggle(
                 "⚖️ OCO Opposite Cancel Mode",
-                value=getattr(st.session_state.bot, "cancel_opposite_on_trigger", True),
+                value=getattr(st.session_state.bot, "cancel_opposite_on_trigger", False),
                 key=f"toggle_oco_{_sym_wk}"
             )
             st.session_state.bot.cancel_opposite_on_trigger = oco_toggle
@@ -2130,10 +2428,11 @@ with col_left:
             )
             st.session_state.bot.use_bb_filter = bb_filter_toggle
 
+            _default_weekend = ("PAXG" in _sym_wk.upper() or "XAU" in _sym_wk.upper())
             weekend_toggle = st.toggle(
                 "🗓️ Friday Weekend Protection",
-                value=getattr(st.session_state.bot, "use_weekend_shutdown", True),
-                help="Automatically liquidates pending grid traps on Friday evening before market close (Gold XAUUSD & Forex) to protect against weekend gap risk, then auto-resumes on Monday.",
+                value=getattr(st.session_state.bot, "use_weekend_shutdown", _default_weekend),
+                help="Cancels pending grid traps on Friday evening before market close (Gold XAUUSD & Forex) to eliminate weekend gap risk. Position profiting closes; loss positions hold safely under Stop Loss cap.",
                 key=f"toggle_weekend_shutdown_{_sym_wk}"
             )
             st.session_state.bot.use_weekend_shutdown = weekend_toggle
@@ -2165,20 +2464,37 @@ for _s, _m in st.session_state.markets.items():
         or _m.get("last_price")
         or get_default_price(_s)
     )
-    _pnl = sum(p.get_pnl(_price_for_pnl) for p in _brk.open_positions.values()) if _brk and _open_pos > 0 else 0.0
+    _pnl = sum(p.get_pnl(_price_for_pnl) for p in _brk.open_positions.values()) if (_brk and hasattr(_brk, "open_positions") and _open_pos > 0) else 0.0
     _realized = getattr(_brk, "realized_pnl", 0.0) if _brk else 0.0
-    _is_active = (_s == st.session_state.live_symbol)
+    _cur_live = st.session_state.get("live_symbol", "BTCUSDT")
+    _is_active = (_s == _cur_live)
     _label = _sym_short.get(_s, _s)
-    _dot = "🟢" if _is_running else ("🟡" if _open_pos > 0 else "⚫")
+    _is_auto_on = getattr(_m.get("bot"), "use_auto_reading", False)
+    _is_running = _m.get("running", False)
+
     _pnl_txt = f"+${_pnl:.2f}" if _pnl >= 0 else f"-${abs(_pnl):.2f}"
     _border = "2px solid #f59e0b" if _is_active else "1px solid rgba(255,255,255,0.08)"
     _bg = "rgba(245,158,11,0.08)" if _is_active else "rgba(255,255,255,0.03)"
+
+    if _is_running:
+        _dot = "🟢"
+        if _is_auto_on:
+            _status_txt = " 🤖 AUTO ON"
+        else:
+            _status_txt = " ▶ RUNNING"
+    elif _open_pos > 0:
+        _dot = "🟡"
+        _status_txt = " ⏸ PAUSED"
+    else:
+        _dot = "⚫"
+        _status_txt = " IDLE"
+
     _status_chips.append(
         f'<div style="display:inline-flex;align-items:center;gap:6px;padding:4px 10px;'
         f'border-radius:8px;border:{_border};background:{_bg};margin:2px 4px 2px 0;'
         f'font-size:0.72rem;font-weight:500;white-space:nowrap;">'
         f'{_dot} <strong>{_label}</strong>'
-        f'{" ▶ RUNNING" if _is_running else (" ⏸ PAUSED" if _open_pos > 0 else " IDLE")}'
+        f'{_status_txt}'
         f' &nbsp;|&nbsp; {_open_pos} pos &nbsp;|&nbsp; '
         f'<span style="color:{"#22c55e" if _pnl >= 0 else "#ef4444"}">{_pnl_txt}</span>'
         f'</div>'
@@ -2204,10 +2520,25 @@ if any_running:
     GLOBAL_RUNNERS["primary_session"] = session_id
     GLOBAL_RUNNERS["last_heartbeat"] = now_t
 
+    # Compute TOTAL account equity across ALL market brokers once
+    # This is passed to all bots so ETH and Gold on the same account
+    # get the SAME capital tier and grid level count (consistent Auto-Reading)
+    _total_equity = sum(
+        float(getattr(m.get("broker"), "balance", 0.0))
+        for m in st.session_state.markets.values()
+        if m.get("broker")
+    ) or float(getattr(st.session_state.broker, "balance", 1000.0))
+
     # Process ticks for all running markets
     for sym, m_state in list(st.session_state.markets.items()):
         if not m_state.get("running", False):
             continue
+
+        # Share total equity with bot so Auto-Reading uses same tier for all symbols
+        _mbot = m_state.get("bot")
+        if _mbot:
+            _mbot.shared_account_equity = _total_equity
+
             
         try:
             # 1. Fetch latest price
@@ -2241,7 +2572,8 @@ if any_running:
                 m_state["price_history"] = m_state["price_history"][-3000:]
                 
             # Update references if this is the active symbol
-            if sym == st.session_state.live_symbol:
+            _cur_live_sym = st.session_state.get("live_symbol", "BTCUSDT")
+            if sym == _cur_live_sym:
                 st.session_state.last_price = latest_price
                 st.session_state.price_history = m_state["price_history"]
                 
@@ -2268,7 +2600,7 @@ if any_running:
                     "BREAKEVEN": "Breakeven exit", "EARLY_RANGE_EXIT": "Smart Early Range Exit", "TIMEOUT": "Cycle timeout"
                 }.get(_reason, _reason)
                 st.toast(f"{_icon} {sym} Cycle {cycle_hit['cycle_id']}: {_label}! PnL: ${cycle_hit['pnl']:+.2f}")
-            if sym == st.session_state.live_symbol:
+            if sym == _cur_live_sym:
                 st.session_state.error_message = None
             m_state["consecutive_errors"] = 0
         except TradeDisabledError as tde:
@@ -2281,7 +2613,7 @@ if any_running:
             print(f"TradeDisabledError for {sym}: {tde}")
             m_state["running"] = False
             m_state["trade_disabled"] = True
-            if sym == st.session_state.live_symbol:
+            if sym == st.session_state.get("live_symbol", "BTCUSDT"):
                 st.session_state.running = False
                 st.session_state.error_message = _tde_msg
             import pathlib
@@ -2297,7 +2629,7 @@ if any_running:
             # Only pause after 10 consecutive ticks fail fatally to protect against transient network glitches
             if err_cnt >= 10:
                 m_state["running"] = False
-                if sym == st.session_state.live_symbol:
+                if sym == st.session_state.get("live_symbol", "BTCUSDT"):
                     st.session_state.running = False
                     st.session_state.error_message = f"Tick processing paused for {sym} after 10 failures: {e}"
                 import pathlib
@@ -2308,7 +2640,7 @@ if any_running:
     save_bot_state()
 
 # For symbols that are NOT running, we keep the active symbol price fresh on page load/interaction
-if not st.session_state.running:
+if not st.session_state.get("running", False):
     now = time.time()
     if not st.session_state.price_history or (now - st.session_state.price_history[-1][0] > 5.0):
         active_ps = st.session_state.markets.get(st.session_state.live_symbol, {}).get("price_source", "Live Market API")

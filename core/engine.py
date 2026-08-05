@@ -108,6 +108,351 @@ def get_pip_size(symbol: str, current_price: float = 0.0) -> float:
             return 0.0001
 
 
+class AutoReadingEngine:
+    """
+    Enhanced Auto-Reading Autonomous Trap & Market Regime Engine v2.
+    
+    Capabilities:
+    - Market Regime Detection: TRENDING / RANGING / REVERSAL
+    - RSI Overbought/Oversold signal integration (tightens counter-trend side)
+    - Session-Aware Gap Widening: Asian (tight), London/NY (wide for volatility)
+    - Dynamic Target Profit scaling by volatility tier
+    - Confidence Score 0-100 for each evaluation
+    - Smart Redeployment throttle: only fires when regime or bias shifts significantly
+    - Asymmetric grid: widens on counter-trend side, tightens on trend side
+    - News shield: doubles gap + halves size near HIGH-impact events
+    """
+    _last_eval_bias: float = 0.0
+    _last_eval_regime: str = "RANGING"
+    _last_eval_ts: float = 0.0
+    _REDEPLOY_COOLDOWN_SECS: float = 90.0     # Minimum seconds between re-evaluations
+    _BIAS_SHIFT_THRESHOLD: float = 0.20       # Redeploy if bias shifts by >=20%
+
+    def __init__(self):
+        self._last_eval_bias = 0.0
+        self._last_eval_regime = "RANGING"
+        self._last_eval_ts = 0.0
+
+    # ------------------------------------------------------------------ #
+    #  MARKET SESSION DETECTOR                                            #
+    # ------------------------------------------------------------------ #
+    @staticmethod
+    def _get_session_multiplier() -> tuple:
+        """Returns (gap_mult, size_mult, session_name) based on UTC hour."""
+        utc_hour = time.gmtime().tm_hour
+        if 23 <= utc_hour or utc_hour < 8:
+            return 0.75, 0.80, "ASIAN"       # Low liquidity: tighter grid
+        elif 8 <= utc_hour < 12:
+            return 1.30, 1.10, "LONDON"      # High volatility: wider grid
+        elif 12 <= utc_hour < 17:
+            return 1.50, 1.20, "NY_OVERLAP"  # Max volatility: widest grid
+        elif 17 <= utc_hour < 20:
+            return 1.10, 1.0, "NY"
+        else:
+            return 0.90, 0.90, "EVENING"
+
+    # ------------------------------------------------------------------ #
+    #  REGIME DETECTION                                                   #
+    # ------------------------------------------------------------------ #
+    @staticmethod
+    def _detect_regime(ema_bias: float, rsi: float, atr_pct: float, bb_width_pct: float) -> str:
+        """
+        Classifies market into TRENDING / RANGING / REVERSAL.
+        - TRENDING:   Strong EMA directional bias, normal-to-high ATR
+        - RANGING:    Weak EMA bias, low ATR, tight Bollinger Bands
+        - REVERSAL:   RSI extreme (>72 or <28) while price near EMA cross
+        """
+        if rsi > 72 or rsi < 28:
+            return "REVERSAL"
+        if abs(ema_bias) >= 0.50 and atr_pct >= 0.20:
+            return "TRENDING"
+        if abs(ema_bias) < 0.25 and atr_pct < 0.30 and bb_width_pct < 2.5:
+            return "RANGING"
+        return "TRENDING" if abs(ema_bias) >= 0.35 else "RANGING"
+
+    # ------------------------------------------------------------------ #
+    #  CONFIDENCE SCORE                                                   #
+    # ------------------------------------------------------------------ #
+    @staticmethod
+    def _confidence_score(ema_bias: float, ob_delta: float, vwap_bias: float, rsi: float, regime: str) -> int:
+        """Returns a confidence score 0-100 for the current evaluation."""
+        score = 50.0
+        # Strong EMA alignment
+        if abs(ema_bias) > 0.70: score += 20.0
+        elif abs(ema_bias) > 0.40: score += 10.0
+        # Orderbook confirms direction
+        if (ema_bias > 0 and ob_delta > 0.20) or (ema_bias < 0 and ob_delta < -0.20):
+            score += 15.0
+        # VWAP alignment
+        if (ema_bias > 0 and vwap_bias > 0.10) or (ema_bias < 0 and vwap_bias < -0.10):
+            score += 10.0
+        # RSI neutral zone = cleaner signals
+        if 40 <= rsi <= 60:
+            score += 5.0
+        # Regime bonus
+        if regime == "TRENDING": score += 5.0
+        elif regime == "REVERSAL": score -= 10.0
+        return int(max(0, min(100, score)))
+
+    # ------------------------------------------------------------------ #
+    #  SHOULD REDEPLOY?                                                   #
+    # ------------------------------------------------------------------ #
+    def should_redeploy(self, new_bias: float, new_regime: str) -> bool:
+        """Returns True if market conditions have shifted enough to warrant redeployment."""
+        now = time.time()
+        if now - self._last_eval_ts < self._REDEPLOY_COOLDOWN_SECS:
+            return False
+        bias_shift = abs(new_bias - self._last_eval_bias)
+        regime_changed = (new_regime != self._last_eval_regime)
+        return bias_shift >= self._BIAS_SHIFT_THRESHOLD or regime_changed
+
+    # ------------------------------------------------------------------ #
+    #  MAIN EVALUATION                                                    #
+    # ------------------------------------------------------------------ #
+    def evaluate_market_and_account(
+        self,
+        symbol: str,
+        current_price: float,
+        account_equity: float = 1000.0,
+        tech_indicators: Optional[dict] = None,
+        orderbook_depth: Optional[dict] = None,
+        macro_news: Optional[List[dict]] = None
+    ) -> dict:
+        tech = tech_indicators or {}
+        ob = orderbook_depth or {}
+        news = macro_news or []
+
+        # ---- 1. SIGNAL EXTRACTION & ATR VOLATILITY SMOOTHING ----
+        ema_bias = float(tech.get("ema_trend_bias", 0.0))
+        rsi = float(tech.get("rsi", 50.0))
+        raw_atr_pct = float(tech.get("atr_pct", 0.30))
+        
+        # Exponential ATR Spike Smoothing Filter (Prevents Post-Spike Grid Gap Inflation)
+        if not hasattr(self, "_smoothed_atr"):
+            self._smoothed_atr = raw_atr_pct
+        else:
+            self._smoothed_atr = 0.70 * self._smoothed_atr + 0.30 * raw_atr_pct
+        atr_pct = min(raw_atr_pct, self._smoothed_atr * 1.25)
+
+        bb_width_pct = float(tech.get("bb_width_pct", 2.0))
+        vwap_dev = float(tech.get("vwap_dev_pct", 0.0))
+        vwap_bias = max(-1.0, min(1.0, vwap_dev / 0.50))
+
+        # ---- 2. ORDERBOOK LIQUIDITY IMBALANCE RATIO (SMC Fakeout Eraser) ----
+        buy_pct = float(ob.get("buy_pressure_pct", 50.0))
+        ob_delta = (buy_pct - 50.0) / 50.0
+        asks_list = ob.get("asks", [])
+        bids_list = ob.get("bids", [])
+        ask_vol = sum([float(s) for _, s in asks_list]) if asks_list else 0.0
+        bid_vol = sum([float(s) for _, s in bids_list]) if bids_list else 0.0
+        ob_ratio = round(ask_vol / bid_vol, 3) if bid_vol > 0 else 1.0
+
+        # ---- 3. REGIME DETECTION ----
+        regime = self._detect_regime(ema_bias, rsi, atr_pct, bb_width_pct)
+
+        # ---- 4. COMBINED DIRECTIONAL BIAS & UNIDIRECTIONAL CONFLUENCE ----
+        # 45% EMA + 30% Orderbook + 15% VWAP + 10% RSI signal
+        rsi_signal = (rsi - 50.0) / 50.0  # -1.0 (oversold=buy) to +1.0 (overbought=sell)
+        combined_bias = (
+            0.45 * ema_bias
+            + 0.30 * ob_delta
+            + 0.15 * vwap_bias
+            + 0.10 * (-rsi_signal)  # RSI >70 = negative (fade overbought), <30 = positive
+        )
+        combined_bias = max(-1.0, min(1.0, combined_bias))
+
+        # Unidirectional Trap Mode: If trend confluence score >= +0.50 -> BUY_ONLY; <= -0.50 -> SELL_ONLY; else DUAL
+        if combined_bias >= 0.50:
+            unidirectional_mode = "BUY_ONLY"
+        elif combined_bias <= -0.50:
+            unidirectional_mode = "SELL_ONLY"
+        else:
+            unidirectional_mode = "DUAL"
+
+        # ---- 5. NEWS RISK SHIELD ----
+        now_ts = time.time()
+        news_risk_mult = 1.0
+        for ev in news:
+            if ev.get("impact") == "HIGH":
+                ev_ts = float(ev.get("timestamp", 0))
+                if abs(ev_ts - now_ts) <= 900:  # Within 15 minutes
+                    news_risk_mult = 2.5
+                    break
+
+        # ---- 6. SESSION TIMING ----
+        gap_session_mult, size_session_mult, session_name = self._get_session_multiplier()
+
+        # ---- 7. CONFIDENCE SCORE ----
+        confidence = self._confidence_score(ema_bias, ob_delta, vwap_bias, rsi, regime)
+
+        # ---- 8. ACCOUNT CAPITAL SCALING ----
+        sym_u = (symbol or "").upper()
+        default_sizes = {
+            "BTCUSDT": 0.001, "BTCUSD": 0.001,
+            "ETHUSDT": 0.10,  "ETHUSD": 0.10,
+            "PAXGUSDT": 0.01, "XAUUSD": 0.01,
+            "SOLUSDT": 1.0,   "SOLUSD": 1.0,
+            "BNBUSDT": 0.10,  "BNBUSD": 0.10,
+            "DOGEUSDT": 1000.0,"DOGEUSD": 1000.0,
+            "XRPUSDT": 100.0, "XRPUSD": 100.0,
+        }
+        # ---- 8a. CAPITAL TIER (shared across ALL symbols on same account) ----
+        # Note: account_equity here is the TOTAL account equity, not per-symbol.
+        # This ensures ETH and Gold on the same $1,000 account BOTH get the same tier level.
+        if account_equity < 250.0:
+            capital_tier = "$100 Micro"
+            base_size = default_sizes.get(sym_u, 0.001) * 0.5
+            lot_multiplier = 1.20
+            max_levels = 3
+            base_target_profit = 2.00
+            stop_loss = 50.0
+        elif account_equity < 2500.0:
+            capital_tier = "$1,000 Golden"
+            base_size = default_sizes.get(sym_u, 0.01)
+            lot_multiplier = 1.30   # Conservative 1.30x for fast recovery & low drawdown
+            max_levels = 5
+            base_target_profit = 4.50   # Quick Scalp Target Profit for fast exits
+            stop_loss = 150.0
+        else:
+            capital_tier = "$10,000 Pro"
+            scale = min(10.0, max(2.5, account_equity / 1000.0))
+            base_size = default_sizes.get(sym_u, 0.01) * scale
+            lot_multiplier = 1.25
+            max_levels = 8
+            base_target_profit = 25.0
+            stop_loss = 150.0 * (scale * 0.5)
+
+        # ---- 8b. SYMBOL VOLATILITY LEVEL CAP ----
+        # Ensures high-volatility symbols (Gold/BTC) do NOT get more levels
+        # than lower-volatility ones (ETH/SOL) on the same account.
+        # Grid levels are capped per symbol class — consistent on same account.
+        _sym_max_levels = {
+            "BTCUSDT": max_levels, "BTCUSD": max_levels,   # BTC: full tier levels
+            "PAXGUSDT": max_levels, "XAUUSD": max_levels,   # Gold: full tier levels
+            "ETHUSDT": max_levels, "ETHUSD": max_levels,    # ETH: full tier levels
+            "SOLUSDT": max_levels, "BNBUSDT": max_levels,   # SOL/BNB: full tier
+            "DOGEUSDT": max_levels, "XRPUSDT": max_levels,  # DOGE/XRP: full tier
+        }
+        # All symbols on the same account get the SAME max_levels from their shared capital tier
+        max_levels = _sym_max_levels.get(sym_u, max_levels)
+
+
+        # ---- 9. GRID GEOMETRY ----
+        base_gap = max(0.05, round(atr_pct * 0.35, 2))
+        base_offset = max(0.08, round(atr_pct * 0.50, 2))
+
+        # Regime-specific gap scaling
+        if regime == "RANGING":
+            regime_gap_mult = 0.70    # Tighter for range-fill micro-profits
+        elif regime == "TRENDING":
+            regime_gap_mult = 1.00
+        else:  # REVERSAL
+            regime_gap_mult = 1.40    # Wider — protect against false breakouts at extremes
+
+        # Asymmetric offsets: tighter toward trend side, wider counter
+        buy_offset = round(base_offset * (1.0 - 0.35 * combined_bias) * news_risk_mult, 3)
+        sell_offset = round(base_offset * (1.0 + 0.35 * combined_bias) * news_risk_mult, 3)
+        buy_offset = max(0.02, buy_offset)
+        sell_offset = max(0.02, sell_offset)
+
+        # Final dynamic gap with session + regime + BB width
+        bb_scale = max(0.5, min(2.5, bb_width_pct / 2.0))
+        dynamic_gap = max(0.03, round(
+            base_gap * bb_scale * regime_gap_mult * gap_session_mult,
+            3
+        ))
+
+        # ---- Symbol-Specific Noise Buffer & Golden Offset/Gap Architecture ----
+        if any(x in sym_u for x in ["PAXG", "XAU", "GOLD"]):
+            # Gold Precision Scalper (0.10% Offset = $4.05 USD, 0.12% Gap = $4.86 USD)
+            dynamic_gap = max(0.12, dynamic_gap)
+            buy_offset = max(0.10, buy_offset)
+            sell_offset = max(0.10, sell_offset)
+            lot_multiplier = min(1.25, lot_multiplier)
+            base_target_profit = 2.50
+        elif any(x in sym_u for x in ["BTC"]):
+            # BTC Golden Sweet Spot (0.22% Offset = ~$143 USD, 0.20% Gap = ~$130 USD)
+            # Spacing BUY and SELL $286 USD apart prevents accidental dual-side noise fills!
+            dynamic_gap = max(0.20, dynamic_gap)
+            buy_offset = max(0.22, buy_offset)
+            sell_offset = max(0.22, sell_offset)
+            lot_multiplier = min(1.25, lot_multiplier)
+            base_target_profit = 3.50
+        elif any(x in sym_u for x in ["ETH"]):
+            # ETH Golden Sweet Spot (0.20% Offset = ~$5.00 USD, 0.18% Gap = ~$4.50 USD)
+            dynamic_gap = max(0.18, dynamic_gap)
+            buy_offset = max(0.20, buy_offset)
+            sell_offset = max(0.20, sell_offset)
+            lot_multiplier = min(1.25, lot_multiplier)
+            base_target_profit = 3.50
+        elif any(x in sym_u for x in ["SOL", "BNB"]):
+            # SOL/BNB Noise Buffer (0.18% Offset, 0.15% Gap)
+            dynamic_gap = max(0.15, dynamic_gap)
+            buy_offset = max(0.18, buy_offset)
+            sell_offset = max(0.18, sell_offset)
+            lot_multiplier = min(1.25, lot_multiplier)
+            base_target_profit = 3.00
+        elif any(x in sym_u for x in ["DOGE", "XRP"]):
+            # DOGE/XRP Noise Buffer (0.15% Offset, 0.12% Gap)
+            dynamic_gap = max(0.12, dynamic_gap)
+            buy_offset = max(0.15, buy_offset)
+            sell_offset = max(0.15, sell_offset)
+            lot_multiplier = min(1.25, lot_multiplier)
+            base_target_profit = 2.50
+
+        # ---- 10. DYNAMIC TARGET PROFIT (Orderbook S/R Anchored) ----
+        # Scale target by ATR volatility + session activity
+        vol_tp_scale = max(0.5, min(3.0, atr_pct / 0.30))  # 0.30% ATR = 1.0x
+        dynamic_target_profit = round(base_target_profit * vol_tp_scale * (gap_session_mult * 0.8 + 0.2), 2)
+
+        # Orderbook S/R Anchoring: Anchor TP 0.10% below nearest Ask Resistance Wall
+        if orderbook_depth and "asks" in orderbook_depth and len(orderbook_depth["asks"]) > 0:
+            try:
+                top_ask = min([float(p) for p, _ in orderbook_depth["asks"]])
+                dist_pct = (top_ask - current_price) / current_price * 100.0
+                if 0.10 < dist_pct < 2.0:
+                    sr_tp = round(dist_pct * 0.85 * current_price * (base_size / 100.0), 2)
+                    dynamic_target_profit = max(2.50, min(dynamic_target_profit, sr_tp))
+            except Exception:
+                pass
+
+        # ---- 11. ADAPTIVE LOT SIZE (by confidence) ----
+        conf_scale = 0.7 + 0.6 * (confidence / 100.0)  # 0.70x at confidence=0, 1.30x at confidence=100
+        adj_size = round(base_size * conf_scale * size_session_mult, 6)
+
+        # ---- 12. UPDATE STATE FOR REDEPLOYMENT THROTTLE ----
+        self._last_eval_bias = combined_bias
+        self._last_eval_regime = regime
+        self._last_eval_ts = now_ts
+
+        return {
+            # Strategy classification
+            "capital_tier": capital_tier,
+            "market_regime": regime,
+            "session_name": session_name,
+            "confidence_score": confidence,
+            "unidirectional_mode": unidirectional_mode,
+            "ob_ratio": ob_ratio,
+            # Bias signals
+            "ema_trend_bias": ema_bias,
+            "combined_bias": round(combined_bias, 3),
+            "vwap_dev_pct": vwap_dev,
+            "ob_delta": round(ob_delta, 3),
+            "rsi": rsi,
+            "news_risk_mult": news_risk_mult,
+            # Grid geometry
+            "buy_offset_pct": buy_offset,
+            "sell_offset_pct": sell_offset,
+            "dynamic_gap_pct": dynamic_gap,
+            # Risk/money management
+            "recommended_size": round(adj_size, 6),
+            "recommended_multiplier": lot_multiplier,
+            "recommended_levels": max_levels,
+            "recommended_stop_loss": round(stop_loss, 2),
+            "recommended_target_profit": dynamic_target_profit,
+        }
+
+
 class BreakoutGridBot:
     def __init__(
         self,
@@ -117,7 +462,7 @@ class BreakoutGridBot:
         trap_offset: float = 5.0,
         order_size: float = 0.1,
         order_size_multiplier: float = 1.0,
-        target_profit: float = 10.0,
+        target_profit: float = 4.50,
         auto_restart: bool = True,
         is_percent: bool = False,
         spacing_mode: Optional[str] = None,
@@ -135,7 +480,8 @@ class BreakoutGridBot:
         use_adaptive_gap: bool = False,
         base_bb_width: float = 0.005,
         adaptive_gap_min_mult: float = 0.5,
-        adaptive_gap_max_mult: float = 2.5
+        adaptive_gap_max_mult: float = 2.5,
+        use_auto_reading: bool = True
     ):
         self.broker = broker
         self.grid_levels = grid_levels
@@ -167,6 +513,8 @@ class BreakoutGridBot:
         self.base_bb_width = base_bb_width
         self.adaptive_gap_min_mult = adaptive_gap_min_mult
         self.adaptive_gap_max_mult = adaptive_gap_max_mult
+        self.use_auto_reading = use_auto_reading
+        self.auto_reading_engine = AutoReadingEngine()
 
         # Risk Control Circuit Breaker & Macro News Shield
         self.max_daily_drawdown: float = 0.0  # 0.0 disabled; e.g. 250.0 = max -$250 loss cap
@@ -183,8 +531,8 @@ class BreakoutGridBot:
         self.weekend_shutdown_utc_hour: int = 20  # Shutdown Friday at 20:00 UTC (8 PM UTC)
         self.weekend_shutdown_triggered: bool = False
 
-        # Grid Maintenance Engine Toggles
-        self.use_grid_repair: bool = True
+        # Grid Maintenance Engine Toggles (Disabled by default for Strict Single-Basket Cycle Isolation)
+        self.use_grid_repair: bool = False
         self.use_auto_cleanup: bool = True
 
         self.deployed = False
@@ -367,6 +715,10 @@ class BreakoutGridBot:
             self.max_cycle_duration = float("inf")
         if not hasattr(self, "auto_restart"):
             self.auto_restart = True
+        if not hasattr(self, "use_auto_reading"):
+            self.use_auto_reading = True
+        if not hasattr(self, "auto_reading_engine"):
+            self.auto_reading_engine = AutoReadingEngine()
 
     def deploy_traps(self, current_price: float, timestamp: float, bb_width: Optional[float] = None):
         """
@@ -390,10 +742,6 @@ class BreakoutGridBot:
 
         self.broker.cancel_all_orders()
         self.deploy_price = current_price
-        self.deploy_order_size = self.order_size
-        self.deploy_order_size_multiplier = self.order_size_multiplier
-        self.deploy_grid_gap = effective_gap
-        self.deploy_trap_offset = self.trap_offset
         self.cycle_start_time = timestamp
         if not hasattr(self, "price_history_ticks") or self.price_history_ticks is None:
             self.price_history_ticks = []
@@ -401,21 +749,82 @@ class BreakoutGridBot:
             self.price_history_ticks.clear()
         self._last_trigger_time = timestamp
 
-        # Calculate absolute gap and offset
-        offset_val, gap_val = self.calculate_offset_and_gap(current_price, effective_gap, self.trap_offset)
+        # Auto-Reading Engine Execution
+        if getattr(self, "_custom_auto_eval", None):
+            eval_res = self._custom_auto_eval
+            self.last_auto_eval = eval_res
+            buy_offset_val = current_price * (eval_res["buy_offset_pct"] / 100.0)
+            sell_offset_val = current_price * (eval_res["sell_offset_pct"] / 100.0)
+            gap_val = current_price * (eval_res["dynamic_gap_pct"] / 100.0)
+        elif getattr(self, "use_auto_reading", True):
+            try:
+                from core.data import get_historical_klines, calculate_technical_indicators, get_order_book_depth, get_economic_calendar
+                sym_str = getattr(self.broker, "symbol", "BTCUSDT")
+                klines_df = get_historical_klines(sym_str, interval="1m", limit=100)
+                tech = calculate_technical_indicators(klines_df)
+                ob = get_order_book_depth(sym_str)
+                news = get_economic_calendar()
+                # Use shared_account_equity if set by app.py (total across all market brokers),
+                # so ETH and Gold on the same account always get the same capital tier & levels.
+                bal = float(
+                    getattr(self, "shared_account_equity", None)
+                    or getattr(self.broker, "balance", 1000.0)
+                )
+
+                eval_res = self.auto_reading_engine.evaluate_market_and_account(
+                    symbol=sym_str,
+                    current_price=current_price,
+                    account_equity=bal,
+                    tech_indicators=tech,
+                    orderbook_depth=ob,
+                    macro_news=news
+                )
+                
+                self.order_size = eval_res["recommended_size"]
+                self.order_size_multiplier = eval_res["recommended_multiplier"]
+                self.grid_levels = eval_res["recommended_levels"]
+                self.stop_loss = eval_res["recommended_stop_loss"]
+                # Apply dynamic target profit from enhanced AutoReadingEngine
+                if "recommended_target_profit" in eval_res:
+                    self.target_profit = eval_res["recommended_target_profit"]
+                # Store latest evaluation for UI display
+                self.last_auto_eval = eval_res
+                
+                buy_offset_val = current_price * (eval_res["buy_offset_pct"] / 100.0)
+                sell_offset_val = current_price * (eval_res["sell_offset_pct"] / 100.0)
+                gap_val = current_price * (eval_res["dynamic_gap_pct"] / 100.0)
+
+            except Exception as auto_err:
+                print(f"Auto-Reading execution notice: {auto_err}")
+                buy_offset_val, gap_val = self.calculate_offset_and_gap(current_price, effective_gap, self.trap_offset)
+                sell_offset_val = buy_offset_val
+        else:
+            buy_offset_val, gap_val = self.calculate_offset_and_gap(current_price, effective_gap, self.trap_offset)
+            sell_offset_val = buy_offset_val
+
+        self.deploy_order_size = self.order_size
+        self.deploy_order_size_multiplier = self.order_size_multiplier
+        self.deploy_grid_gap = gap_val
+        self.deploy_trap_offset = buy_offset_val
 
         try:
-            # Place Buy Stop orders above the current price with strict Martingale scaling
-            for i in range(self.grid_levels):
-                trigger_price = current_price + offset_val + (i * gap_val)
-                level_size = self.calculate_level_size(self.order_size, self.order_size_multiplier, i)
-                self.broker.place_order("BUY_STOP", trigger_price, level_size, timestamp)
+            unidirectional_mode = "DUAL"
+            if getattr(self, "use_auto_reading", True) and hasattr(self, "last_auto_eval"):
+                unidirectional_mode = self.last_auto_eval.get("unidirectional_mode", "DUAL")
 
-            # Place Sell Stop orders below the current price with strict Martingale scaling
-            for i in range(self.grid_levels):
-                trigger_price = current_price - offset_val - (i * gap_val)
-                level_size = self.calculate_level_size(self.order_size, self.order_size_multiplier, i)
-                self.broker.place_order("SELL_STOP", trigger_price, level_size, timestamp)
+            # Place Buy Stop orders above current_price (suppressed if SELL_ONLY)
+            if unidirectional_mode != "SELL_ONLY":
+                for i in range(self.grid_levels):
+                    trigger_price = current_price + buy_offset_val + (i * gap_val)
+                    level_size = self.calculate_level_size(self.order_size, self.order_size_multiplier, i)
+                    self.broker.place_order("BUY_STOP", trigger_price, level_size, timestamp)
+
+            # Place Sell Stop orders below current_price (suppressed if BUY_ONLY)
+            if unidirectional_mode != "BUY_ONLY":
+                for i in range(self.grid_levels):
+                    trigger_price = current_price - sell_offset_val - (i * gap_val)
+                    level_size = self.calculate_level_size(self.order_size, self.order_size_multiplier, i)
+                    self.broker.place_order("SELL_STOP", trigger_price, level_size, timestamp)
 
             self.deployed = True
         except Exception as e:
@@ -454,7 +863,33 @@ class BreakoutGridBot:
         gap_config = getattr(self, "deploy_grid_gap", self.grid_gap)
         offset_config = getattr(self, "deploy_trap_offset", self.trap_offset)
 
-        offset_val, gap_val = self.calculate_offset_and_gap(center_price, gap_config, offset_config)
+        if getattr(self, "use_auto_reading", True):
+            try:
+                from core.data import get_historical_klines, calculate_technical_indicators, get_order_book_depth, get_economic_calendar
+                sym_str = getattr(self.broker, "symbol", "BTCUSDT")
+                klines_df = get_historical_klines(sym_str, interval="1m", limit=100)
+                tech = calculate_technical_indicators(klines_df)
+                ob = get_order_book_depth(sym_str)
+                news = get_economic_calendar()
+                bal = float(getattr(self.broker, "balance", 1000.0))
+
+                eval_res = self.auto_reading_engine.evaluate_market_and_account(
+                    symbol=sym_str,
+                    current_price=current_price,
+                    account_equity=bal,
+                    tech_indicators=tech,
+                    orderbook_depth=ob,
+                    macro_news=news
+                )
+                buy_offset_val = center_price * (eval_res["buy_offset_pct"] / 100.0)
+                sell_offset_val = center_price * (eval_res["sell_offset_pct"] / 100.0)
+                gap_val = center_price * (eval_res["dynamic_gap_pct"] / 100.0)
+            except Exception:
+                buy_offset_val, gap_val = self.calculate_offset_and_gap(center_price, gap_config, offset_config)
+                sell_offset_val = buy_offset_val
+        else:
+            buy_offset_val, gap_val = self.calculate_offset_and_gap(center_price, gap_config, offset_config)
+            sell_offset_val = buy_offset_val
 
         # Collect existing pending trigger prices AND open position entry prices to prevent duplication
         buy_pending = [o for o in self.broker.pending_orders.values() if o.type == "BUY_STOP"]
@@ -462,21 +897,44 @@ class BreakoutGridBot:
         sell_pending = [o for o in self.broker.pending_orders.values() if o.type == "SELL_STOP"]
         sell_open = [p for p in self.broker.open_positions.values() if p.type == "SELL"]
 
+        # ---- Idle Grid Dynamic Compression (Post-Spike Gap Compression) ----
+        # If 0 positions are open and pending orders exist from a prior ATR spike:
+        # Check if live gap_val has decayed significantly below the existing pending orders' gap.
+        # If live gap_val < pending_gap * 0.70 and grid has been idle for >180s, auto-recenter & compress!
+        if len(self.broker.open_positions) == 0 and len(buy_pending) >= 2:
+            buy_prices = sorted([o.trigger_price for o in buy_pending])
+            existing_gap = buy_prices[1] - buy_prices[0]
+            grid_age = timestamp - getattr(self, "last_deploy_time", 0.0)
+            if existing_gap > 0 and gap_val < (existing_gap * 0.70) and grid_age >= 180:
+                self.broker.cancel_all_orders()
+                self.deploy_traps(center_price, timestamp)
+                return 0
+
         existing_buy_levels = [o.trigger_price for o in buy_pending] + [p.entry_price for p in buy_open]
         existing_sell_levels = [o.trigger_price for o in sell_pending] + [p.entry_price for p in sell_open]
+
+        # OCO Mode Guard: If cancel_opposite_on_trigger is enabled and positions are open in ONE direction,
+        # DO NOT repair or place opposite trap orders to prevent 10-level double-sided hedge lock!
+        cancel_opp = getattr(self, "cancel_opposite_on_trigger", True)
+        allow_buy_repair = True
+        allow_sell_repair = True
+        if cancel_opp:
+            if len(sell_open) > 0 and len(buy_open) == 0:
+                allow_buy_repair = False  # Active SELL positions -> suppress BUY traps
+            elif len(buy_open) > 0 and len(sell_open) == 0:
+                allow_sell_repair = False # Active BUY positions -> suppress SELL traps
 
         placed_count = 0
         try:
             buy_placed = 0
             sell_placed = 0
-            # Check and place missing BUY_STOP levels ONLY if total BUY levels < self.grid_levels
-            if len(buy_pending) + len(buy_open) < self.grid_levels:
+            # Check and place missing BUY_STOP levels ONLY if allow_buy_repair is True
+            if allow_buy_repair and (len(buy_pending) + len(buy_open) < self.grid_levels):
                 for i in range(self.grid_levels):
                     if len(buy_pending) + len(buy_open) + buy_placed >= self.grid_levels:
                         break
-                    target_price = center_price + offset_val + (i * gap_val)
+                    target_price = center_price + buy_offset_val + (i * gap_val)
                     if target_price <= current_price:
-                        # If center-based target_price has been passed by market movement, place above current_price
                         target_price = current_price + (gap_val * 0.5) + (i * gap_val)
                     
                     # Only place if level doesn't exist near existing BUY levels
@@ -486,14 +944,13 @@ class BreakoutGridBot:
                         buy_placed += 1
                         existing_buy_levels.append(target_price)
 
-            # Check and place missing SELL_STOP levels ONLY if total SELL levels < self.grid_levels
-            if len(sell_pending) + len(sell_open) < self.grid_levels:
+            # Check and place missing SELL_STOP levels ONLY if allow_sell_repair is True
+            if allow_sell_repair and (len(sell_pending) + len(sell_open) < self.grid_levels):
                 for i in range(self.grid_levels):
                     if len(sell_pending) + len(sell_open) + sell_placed >= self.grid_levels:
                         break
-                    target_price = center_price - offset_val - (i * gap_val)
+                    target_price = center_price - sell_offset_val - (i * gap_val)
                     if target_price >= current_price:
-                        # If center-based target_price has been passed by market movement, place below current_price
                         target_price = current_price - (gap_val * 0.5) - (i * gap_val)
 
                     # Only place if level doesn't exist near existing SELL levels
@@ -527,13 +984,39 @@ class BreakoutGridBot:
 
         center_price = self.deploy_price if self.deploy_price > 0 else current_price
 
-        offset_val, gap_val = self.calculate_offset_and_gap(center_price, self.grid_gap, self.trap_offset)
+        if getattr(self, "use_auto_reading", True):
+            try:
+                from core.data import get_historical_klines, calculate_technical_indicators, get_order_book_depth, get_economic_calendar
+                sym_str = getattr(self.broker, "symbol", "BTCUSDT")
+                klines_df = get_historical_klines(sym_str, interval="1m", limit=100)
+                tech = calculate_technical_indicators(klines_df)
+                ob = get_order_book_depth(sym_str)
+                news = get_economic_calendar()
+                bal = float(getattr(self.broker, "balance", 1000.0))
+
+                eval_res = self.auto_reading_engine.evaluate_market_and_account(
+                    symbol=sym_str,
+                    current_price=current_price,
+                    account_equity=bal,
+                    tech_indicators=tech,
+                    orderbook_depth=ob,
+                    macro_news=news
+                )
+                buy_offset_val = center_price * (eval_res["buy_offset_pct"] / 100.0)
+                sell_offset_val = center_price * (eval_res["sell_offset_pct"] / 100.0)
+                gap_val = center_price * (eval_res["dynamic_gap_pct"] / 100.0)
+            except Exception:
+                buy_offset_val, gap_val = self.calculate_offset_and_gap(center_price, self.grid_gap, self.trap_offset)
+                sell_offset_val = buy_offset_val
+        else:
+            buy_offset_val, gap_val = self.calculate_offset_and_gap(center_price, self.grid_gap, self.trap_offset)
+            sell_offset_val = buy_offset_val
 
         tolerance = gap_val * 0.5
 
         # Build the set of valid grid prices (expected levels)
-        valid_buy_levels = [center_price + offset_val + (i * gap_val) for i in range(self.grid_levels)]
-        valid_sell_levels = [center_price - offset_val - (i * gap_val) for i in range(self.grid_levels)]
+        valid_buy_levels = [center_price + buy_offset_val + (i * gap_val) for i in range(self.grid_levels)]
+        valid_sell_levels = [center_price - sell_offset_val - (i * gap_val) for i in range(self.grid_levels)]
 
         cancelled_ids = []
 
@@ -610,8 +1093,17 @@ class BreakoutGridBot:
                     self.weekend_shutdown_triggered = True
                     self.deployed = False
                     try:
+                        # 1. Always cancel pending trap orders to prevent new weekend fills
                         self.broker.cancel_all_orders()
-                        self.broker.close_all_positions(current_price, timestamp)
+
+                        # 2. SMART PROFIT EXIT: Only close open positions if total floating PnL is in PROFIT (>= $0.00).
+                        # If positions are in floating loss, DO NOT force close at a loss — hold safely through weekend!
+                        float_pnl = self.broker.get_floating_pnl(current_price)
+                        if len(self.broker.open_positions) > 0 and float_pnl >= 0.0:
+                            self.broker.close_all_positions(current_price, timestamp)
+                            print(f"[WEEKEND SHUTDOWN] Closed profiting positions (+${float_pnl:.2f}) before Friday market close.")
+                        elif len(self.broker.open_positions) > 0:
+                            print(f"[WEEKEND SHUTDOWN] Holding open positions (${float_pnl:.2f}) through weekend to avoid forced loss realization.")
                     except Exception as e:
                         print(f"Notice: Weekend shutdown cleanup error: {e}")
                     print(f"[WEEKEND SHUTDOWN] Friday Market Protection triggered @ {now_utc.strftime('%H:%M UTC')}. Pausing grid execution until Monday.")
@@ -643,8 +1135,16 @@ class BreakoutGridBot:
             return None
         # ─────────────────────────────────────────────────────────────────────────
 
-        # Let broker process the price tick to trigger any pending orders
-        triggered_positions = self.broker.process_tick(previous_price, current_price, timestamp)
+        # Dynamic Spread Guard: Skip order fills if broker spread is abnormally wide (> 3x max spread limit)
+        if hasattr(self.broker, "get_current_spread"):
+            cur_spread = self.broker.get_current_spread()
+            max_allowed = getattr(self, "max_allowed_spread", 4.5)
+            if cur_spread > max_allowed:
+                triggered_positions = []
+            else:
+                triggered_positions = self.broker.process_tick(previous_price, current_price, timestamp)
+        else:
+            triggered_positions = self.broker.process_tick(previous_price, current_price, timestamp)
 
         # Update last-trigger time whenever a new position is filled
         if triggered_positions:
@@ -662,13 +1162,21 @@ class BreakoutGridBot:
         # Calculate floating profit/loss
         float_pnl = self.broker.get_floating_pnl(current_price)
 
-        # Automatic Grid Repair check: if positions are open and not in Runner Mode, maintain grid trap density
-        if len(self.broker.open_positions) > 0 and not getattr(self, "in_runner_mode", False) and getattr(self, "use_grid_repair", True):
-            if len(self.broker.pending_orders) < (self.grid_levels * 2):
+        # Automatic Autonomous Grid Repair: Instantly auto-restore missing trap levels on ticks without manual intervention
+        if not getattr(self, "in_runner_mode", False) and getattr(self, "use_grid_repair", True):
+            target_traps = self.grid_levels if getattr(self, "cancel_opposite_on_trigger", False) else (self.grid_levels * 2)
+            if len(self.broker.pending_orders) < target_traps:
                 try:
                     self.repair_grid(current_price, timestamp)
                 except Exception as repair_err:
                     print(f"Auto-repair notice: {repair_err}")
+
+        # Automatic Pending Trap Cleanup: Purge orphan or duplicate pending stop orders
+        if getattr(self, "use_auto_cleanup", True) and len(self.broker.pending_orders) > 0:
+            try:
+                self.cleanup_grid(current_price)
+            except Exception:
+                pass
 
         # Track tick price history and velocity (Delta P / Delta t)
         if not hasattr(self, "price_history_ticks") or self.price_history_ticks is None:
@@ -678,11 +1186,22 @@ class BreakoutGridBot:
             self.price_history_ticks.pop(0)
 
         avg_delta = 0.0
+        avg_delta_pct = 0.0
         is_reversing = False
         if len(self.price_history_ticks) >= 3:
             recent_deltas = [self.price_history_ticks[i] - self.price_history_ticks[i-1] for i in range(1, len(self.price_history_ticks))]
             avg_delta = sum(recent_deltas) / len(recent_deltas)
+            avg_delta_pct = (avg_delta / current_price * 100.0) if current_price > 0 else 0.0
             is_reversing = (recent_deltas[-1] < 0 and recent_deltas[-2] < 0)
+
+        # Velocity Circuit Breaker (Black Swan Trend Shield)
+        # If price moves parabolically in one direction (> 1.2% move in 10 ticks) with 2+ open positions,
+        # execute early trend protection exit to cap drawdown at minimal loss!
+        velocity_shield_hit = False
+        if len(self.broker.open_positions) >= 2 and len(self.price_history_ticks) >= 5:
+            total_delta_pct = abs(self.price_history_ticks[-1] - self.price_history_ticks[0]) / self.price_history_ticks[0] * 100.0
+            if total_delta_pct >= 1.2 and float_pnl < 0:
+                velocity_shield_hit = True
 
         # Dynamic friction floor based on open position count to cover spread, commission & swap fees
         num_pos = len(self.broker.open_positions)
@@ -711,6 +1230,10 @@ class BreakoutGridBot:
         breakeven_hit = False
         early_range_hit = False
         prop_guard_hit = False
+        hedge_lock_hit = False
+        momentum_scalp_hit = False
+        wvap_exit_hit = False
+        single_fill_scalp_hit = False
 
         # SMART TIMEOUT: Only exits if PnL is at or above breakeven (friction_floor).
         # If the cycle is in the red when time expires, do NOT force-exit — let Stop Loss
@@ -734,8 +1257,12 @@ class BreakoutGridBot:
             if float_pnl > getattr(self, 'max_floating_pnl', -float("inf")):
                 self.max_floating_pnl = float_pnl
 
-            # 1. SMART PROFIT EXPANSION (RUNNER MODE)
-            if self.use_smart_trailing and float_pnl >= self.target_profit:
+            # 1. SMART PROFIT EXPANSION (DYNAMIC HIGH-VELOCITY & TARGET RUNNER MODE)
+            num_fills = len(self.broker.open_positions)
+            is_multi_fill_profit = (num_fills >= 2 and float_pnl >= friction_floor + 2.00)
+            is_high_velocity_spike = (abs(avg_delta_pct) >= 0.15 and float_pnl >= friction_floor + 1.00)
+            
+            if self.use_smart_trailing and (float_pnl >= max(self.target_profit, friction_floor + 1.00) or is_multi_fill_profit or is_high_velocity_spike):
                 if not self.in_runner_mode:
                     self.in_runner_mode = True
                     # Immediately cancel all pending traps to prevent opposite triggers during pullback!
@@ -746,10 +1273,10 @@ class BreakoutGridBot:
 
             if self.in_runner_mode:
                 lock_pct = 0.90 if is_reversing else getattr(self, 'profit_lock_pct', 0.80)
-                hard_min_floor = max(self.target_profit * 0.50, friction_floor + 2.00)
-                # Cushion peak floor so 1-tick spread noise ($2.50) right after target hit doesn't trigger exit immediately
-                cushioned_peak_floor = max(hard_min_floor, self.max_floating_pnl - max(2.50, self.max_floating_pnl * (1.0 - lock_pct)))
-                runner_floor = min(cushioned_peak_floor, self.max_floating_pnl * lock_pct)
+                # Unbreakable net-positive floor: strictly >= friction_floor + $1.00 to guarantee ZERO loss
+                unbreakable_net_floor = max(friction_floor + 1.00, self.target_profit)
+                trailing_peak_floor = self.max_floating_pnl * lock_pct
+                runner_floor = max(unbreakable_net_floor, trailing_peak_floor)
                 if float_pnl <= runner_floor:
                     runner_hit = True
             else:
@@ -797,10 +1324,56 @@ class BreakoutGridBot:
                 if float_pnl >= target_floor:
                     early_range_hit = True
 
-        if target_hit or runner_hit or trailing_stop_hit or stop_loss_hit or timeout_hit or breakeven_hit or early_range_hit or prop_guard_hit:
-            if runner_hit:          reason = "RUNNER_EXPANSION"
+            # 5. HEDGE-LOCK UN-LOCK CHECK (When positions exist in BOTH directions)
+            # Dual-side hedge baskets MUST ONLY be unlocked when net floating PnL is positive in cash (>= friction_floor + $1.00)!
+            # NEVER force-exit a dual-side hedge basket at a loss!
+            hedge_lock_hit = False
+            buy_positions = [p for p in self.broker.open_positions.values() if p.type == "BUY"]
+            sell_positions = [p for p in self.broker.open_positions.values() if p.type == "SELL"]
+            if buy_positions and sell_positions:
+                if float_pnl >= friction_floor + 1.00:
+                    hedge_lock_hit = True
+            # 6. MICRO-VELOCITY MOMENTUM SCALP EXIT (Positive Momentum Lock)
+            # Only exit on positive delta (avg_delta > 0) when momentum hesitates at high floating profit.
+            # NEVER exit early on negative delta (avg_delta < 0) — allow grid traps to lower entry average for full recovery!
+            momentum_scalp_hit = False
+            if len(self.broker.open_positions) > 0 and float_pnl >= max(3.00, self.target_profit * 0.50):
+                if len(self.price_history_ticks) >= 5 and avg_delta > 0 and abs(avg_delta_pct) < 0.05:
+                    momentum_scalp_hit = True
+
+            # 7. VOLUME WEIGHTED AVERAGE COST RECOVERY EXIT (WVAP Exit on 2+ Fills)
+            # On 2 or more grid level fills, as soon as price recovers to WVAP_entry + friction + $2.00,
+            # exit the multi-position basket in net cash profit on a 5% micro-pullback!
+            wvap_exit_hit = False
+            if len(self.broker.open_positions) >= 2 and not self.in_runner_mode:
+                wvap_target = max(2.00, friction_floor)
+                if float_pnl >= wvap_target:
+                    wvap_exit_hit = True
+
+            # 8. SINGLE-FILL QUICK PERCENT SCALP EXIT (Equalized for Crypto & Gold)
+            # When exactly 1 position is open and price moves >= trap_offset (min 0.08%) in profit direction,
+            # exit immediately as a 1-fill quick scalp winner without waiting for high fixed dollar TP!
+            single_fill_scalp_hit = False
+            if len(self.broker.open_positions) == 1 and not self.in_runner_mode:
+                open_pos = list(self.broker.open_positions.values())[0]
+                if open_pos.type == "BUY":
+                    move_pct = (current_price - open_pos.entry_price) / open_pos.entry_price * 100.0
+                else:
+                    move_pct = (open_pos.entry_price - current_price) / open_pos.entry_price * 100.0
+                
+                target_move_threshold = max(0.08, getattr(self, "trap_offset", 0.08) * 0.90)
+                if move_pct >= target_move_threshold and float_pnl > 0.05 and not is_high_velocity_spike:
+                    single_fill_scalp_hit = True
+
+        if target_hit or runner_hit or trailing_stop_hit or stop_loss_hit or timeout_hit or breakeven_hit or early_range_hit or prop_guard_hit or hedge_lock_hit or velocity_shield_hit or momentum_scalp_hit or wvap_exit_hit or single_fill_scalp_hit:
+            if single_fill_scalp_hit: reason = "SINGLE_FILL_QUICK_SCALP"
+            elif wvap_exit_hit:     reason = "WVAP_COST_RECOVERY"
+            elif momentum_scalp_hit: reason = "MOMENTUM_SCALP_EXIT"
+            elif velocity_shield_hit: reason = "VELOCITY_TREND_SHIELD"
+            elif runner_hit:        reason = "RUNNER_EXPANSION"
             elif target_hit:        reason = "TARGET_PROFIT"
             elif prop_guard_hit:    reason = "PROP_FIRM_GUARD"
+            elif hedge_lock_hit:   reason = "HEDGE_LOCK_UNLOCKED"
             elif early_range_hit:   reason = "EARLY_RANGE_EXIT"
             elif trailing_stop_hit: reason = "TRAILING_STOP"
             elif breakeven_hit:     reason = "BREAKEVEN"

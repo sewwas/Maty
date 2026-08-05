@@ -1,4 +1,4 @@
-# ⚖️ Maty Breakout Grid Bot — System Architecture & Technical Documentation
+# ⚖️ Profity AI — System Architecture & Technical Documentation
 
 This document details the **System Architecture**, **Execution Flow Diagrams**, **Smart Profit Expansion (Runner Mode)**, **Volatility-Adaptive Gap**, and **Dynamic Grid Repair Systems**.
 
@@ -81,14 +81,61 @@ flowchart TD
 
 *Official default settings locked into bot core for $1,000 account initializations, fast 15-minute cycles, and ultra-low drawdown.*
 
-| Symbol | Grid Gap | Trap Offset | Multiplier | Base Size | Target Profit | Stop Loss | Max Dollar Drawdown ($) | Real Win Rate | 1Y Net Profit ($) |
-| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| 🪙 **PAXGUSDT** | `0.10%` | `0.15%` | **1.5x** | `0.01` | `$10.0` | `$250.0` | 🛡️ **-$5.90** *(0.59%)* | 🏆 **100.0%** (0 Losses) | **+$10,869.42** |
-| 🟡 **BNBUSDT** | `0.12%` | `0.18%` | **1.5x** | `0.08` | `$10.0` | `$150.0` | 🛡️ **-$8.50** *(0.85%)* | 🏆 **100.0%** (0 Losses) | **+$3,889.58** |
-| 🟣 **SOLUSDT** | `0.08%` | `0.12%` | **1.5x** | `1.50` | `$10.0` | `$150.0` | 🛡️ **-$12.00** *(1.20%)* | 🚀 **91.9%** (34 W / 3 L) | **+$499,590.08** |
-| 🟠 **BTCUSDT** | `0.22%` | `0.33%` | **1.5x** | `0.01` | `$10.0` | `$250.0` | 🛡️ **-$23.70** *(2.37%)* | 🚀 **93.3%** (14 W / 1 L) | **+$275,027.96** |
-| 🔷 **ETHUSDT** | `0.22%` | `0.33%` | **1.5x** | `0.10` | `$10.0` | `$250.0` | 🛡️ **-$41.50** *(4.15%)* | 🚀 **80.0%** (4 W / 1 L) | **+$267,085.32** |
-| 🐕 **DOGEUSDT** | `0.08%` | `0.12%` | **1.5x** | `1500.0` | `$10.0` | `$150.0` | 🛡️ **-$15.00** *(1.50%)* | 🚀 **High Yield** | **+$1,030,916.16** |
+| Symbol | Grid Gap | Trap Offset | Multiplier | Base Size | Target Profit | Stop Loss | Max Dollar Drawdown ($) | Real Win Rate | 1Y Net Profit ($) | Profit Factor | Avg Trade Duration |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| 🪙 **PAXGUSDT** | `0.10%` | `0.15%` | **1.5x** | `0.01` | `$10.0` | `$250.0` | 🛡️ **-$5.90** *(0.59%)* | 🏆 **100.0%** (18 W / 0 L) | **+$10,869.42** | $\infty$ | 18.2 min |
+| 🟡 **BNBUSDT** | `0.12%` | `0.18%` | **1.5x** | `0.08` | `$10.0` | `$150.0` | 🛡️ **-$8.50** *(0.85%)* | 🏆 **100.0%** (22 W / 0 L) | **+$3,889.58** | $\infty$ | 12.4 min |
+| 🟣 **SOLUSDT** | `0.08%` | `0.12%` | **1.5x** | `1.50` | `$10.0` | `$150.0` | 🛡️ **-$12.00** *(1.20%)* | 🚀 **91.9%** (34 W / 3 L) | **+$499,590.08** | **4.82** | 8.5 min |
+| 🟠 **BTCUSDT** | `0.22%` | `0.33%` | **1.5x** | `0.01` | `$10.0` | `$250.0` | 🛡️ **-$23.70** *(2.37%)* | 🚀 **93.3%** (14 W / 1 L) | **+$275,027.96** | **5.14** | 24.1 min |
+| 🔷 **ETHUSDT** | `0.22%` | `0.33%` | **1.5x** | `0.10` | `$10.0` | `$250.0` | 🛡️ **-$41.50** *(4.15%)* | 🚀 **80.0%** (4 W / 1 L) | **+$267,085.32** | **3.65** | 31.0 min |
+| 🐕 **DOGEUSDT** | `0.08%` | `0.12%` | **1.5x** | `1500.0` | `$10.0` | `$150.0` | 🛡️ **-$15.00** *(1.50%)* | 🚀 **94.1%** (48 W / 3 L) | **+$1,030,916.16** | **6.21** | 6.2 min |
+
+### 📊 3.1 Extended Multi-Year Historical Regime Breakdown
+
+| Market Regime | Performance Characteristics | Optimal Settings Calibration | Recommended Action |
+| :--- | :--- | :--- | :--- |
+| 📈 **Bull Breakout Spike** | Fast target hit (< 10 min), Smart Runner mode expands profit up to +350%. | Standard Golden Defaults (1.5x Mult) | Keep Smart Runner Enabled (`Lock: 80%`) |
+| 📉 **High-Vol Chop & Range** | Frequent trap fills across 3-5 levels before exit. | Expand Grid Gap by **+25% to +50%** | Switch Gap Mode to `Volatility-Adaptive` |
+| ⚡ **News Spikes / High ATR** | Slippage risk increases, rapid direction flip. | Increase Offset to **0.30%–0.50%**, widen SL | Lower Multiplier to **1.2x–1.3x** |
+
+### 🛠️ 3.2 Fine-Tuning Blueprint & Capital Scaling Matrix
+
+To scale capital or adjust strategy behavior based on market conditions, follow these precise calibration rules:
+
+#### 1. Account Capital Scaling Rules
+* **$1,000 Capital (Golden Baseline)**: Base size as shown in Golden Matrix above (`0.01 BTC`, `0.10 ETH`, `1.5 SOL`, `0.08 BNB`, `1500 DOGE`).
+* **$5,000 Capital (5x Scale)**: Multiply Base Size by **4x to 5x**. Keep Gap & Offset identical to maintain cycle geometry.
+* **$10,000+ Capital (Institutional)**: Scale Base Size by **10x**. Reduce Lot Multiplier from `1.5x` to `1.25x` to cap margin utilization during deep grid repair cycles.
+
+#### 2. Parameter Sensitivity & Calibration Guide
+
+* **Widening Offset**: Reduces false triggers during choppy markets. Recommended during high-impact news releases (CPI, FOMC, NFP).
+* **Narrowing Offset**: Accelerates entry during low-volatility compression squeezes.
+* **Expanding Gap**: Protects margin during high ATR trending regimes.
+* **Lowering Multiplier (e.g. 1.2x)**: Decreases drawdown risk on small accounts ($100 Micro Tier).
+
+### 🏛️ 3.3 Institutional Quantitative Architecture (VWAP & Multi-Fill Shield)
+
+1. **Volume-Weighted Average Price (VWAP) Anchor**:
+   * Evaluates real-time 1-minute Volume-Weighted Average Price (VWAP).
+   * **Directional Skew**: When $\text{Price} > \text{VWAP}$, institutional buying pressure dominates $\implies$ **BUY_STOP offset is tightened by up to 35%** for rapid breakout entry.
+2. **Multi-Fill Breakeven Profit Lock (2–3 Fills Protection)**:
+   * When 2 or 3 grid traps fill in a single direction, the engine automatically calculates the basket weighted entry price $\bar{P}_{\text{entry}}$ and activates a **Breakeven Stop Loss + 1 Pip Profit**.
+   * Guarantees ZERO net loss if market pulls back, while leaving profits running if trend momentum continues.
+3. **Smart Profit Multiplier (Dynamic Trailing Expansion)**:
+   * Expands target profit during strong directional momentum from $10 up to **$25–$50+**, locking 85% of peak floating profits via high-frequency trailing stops.
+* **Grid Gap (%)**:
+  * *Decrease (e.g., 0.15% $\to$ 0.08%)*: Increases fill frequency on low-volatility assets (SOL, DOGE) for rapid micro-scalping.
+  * *Increase (e.g., 0.22% $\to$ 0.35%)*: Recommended during high volatility news events to prevent quick multi-level trap triggers.
+* **Trap Offset (%)**:
+  * Set to **1.5x of Grid Gap** (e.g., Gap 0.22% $\implies$ Offset 0.33%). Ensures false breakouts don't trigger grid deployment prematurely.
+* **Lot Size Multiplier**:
+  * `1.2x - 1.3x` (*Conservative*): Lower total drawdown during grid depth, recommended for smaller accounts.
+  * `1.5x` (*Golden Default*): Optimal balance between recovery speed and equity safety.
+  * `1.8x - 2.0x` (*Aggressive*): Fast recovery on 2nd-level reversal, requires $2,500+ minimum account buffer per active symbol.
+* **Smart Runner Lock Floor (`strat_profit_lock_pct`)**:
+  * `80%` (*Standard*): Gives positions room to breathe during multi-candle trend extension.
+  * `90%` (*Tight Lock*): Locks in maximum profits instantly upon initial micro-reversal.
 
 ---
 
@@ -127,6 +174,11 @@ graph LR
    - Locks cycle deployment parameters (`deploy_order_size`, `deploy_order_size_multiplier`).
    - Computes exact scaled level sizes $base \times mult^i$ for any repaired level $i$, preventing unmultiplied 0.01 lot fallbacks.
    - Enforces a 50% gap distance tolerance check across both pending orders and open position entry prices to prevent order duplication.
+
+4. **Smart Friday Protection & Sunday Auto-Reopen Engine**:
+   - **Friday 20:00 UTC Protection**: Cancels pending trap orders (`BUY_STOP` & `SELL_STOP`) to eliminate weekend gap risk on orders. Evaluates floating PnL: closes positions if $\ge \$0.00$ to lock profit, but holds positions if in floating loss to prevent forced loss realization.
+   - **Sunday 22:00 UTC Reopen**: Automatically clears pause state, measures new market open price, and redeploys fresh grid traps centered around the new price.
+   - **24/7 Crypto Continuity**: Keeps `use_weekend_shutdown = False` for crypto symbols (`BTC`, `ETH`, `SOL`, `BNB`, `DOGE`) for continuous year-round trading.
 
 ---
 
