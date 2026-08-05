@@ -248,7 +248,7 @@ class AutoReadingEngine:
         ob_ratio = round(ask_vol / bid_vol, 3) if bid_vol > 0 else 1.0
 
         # ---- 3. REGIME DETECTION ----
-        regime = self._detect_regime(ema_bias, rsi, atr_pct, bb_width_pct)
+        regime = tech.get("regime") if tech.get("regime") else self._detect_regime(ema_bias, rsi, atr_pct, bb_width_pct)
 
         # ---- 4. COMBINED DIRECTIONAL BIAS & UNIDIRECTIONAL CONFLUENCE ----
         # 45% EMA + 30% Orderbook + 15% VWAP + 10% RSI signal
@@ -362,43 +362,51 @@ class AutoReadingEngine:
             3
         ))
 
-        # ---- Symbol-Specific Noise Buffer & Golden Offset/Gap Architecture ----
+        # ---- Symbol-Specific Dynamic Volatility-Adaptive Architecture ----
+        # Quiet / Ranging markets: shrink offset & gap down to Ultra-Sniper floors for fast 30-sec micro-profits!
+        # High Volatility / Trending markets: expand offset & gap up for maximum trend expansion safety!
+        is_quiet_market = (regime == "RANGING" or atr_pct < 0.25)
+        
         if any(x in sym_u for x in ["PAXG", "XAU", "GOLD"]):
-            # Gold Precision Scalper (0.10% Offset = $4.05 USD, 0.12% Gap = $4.86 USD)
-            dynamic_gap = max(0.12, dynamic_gap)
-            buy_offset = max(0.10, buy_offset)
-            sell_offset = max(0.10, sell_offset)
+            min_gap = 0.08 if is_quiet_market else 0.12
+            min_offset = 0.06 if is_quiet_market else 0.10
+            dynamic_gap = max(min_gap, dynamic_gap)
+            buy_offset = max(min_offset, buy_offset)
+            sell_offset = max(min_offset, sell_offset)
             lot_multiplier = min(1.25, lot_multiplier)
             base_target_profit = 2.50
         elif any(x in sym_u for x in ["BTC"]):
-            # BTC Golden Sweet Spot (0.22% Offset = ~$143 USD, 0.20% Gap = ~$130 USD)
-            # Spacing BUY and SELL $286 USD apart prevents accidental dual-side noise fills!
-            dynamic_gap = max(0.20, dynamic_gap)
-            buy_offset = max(0.22, buy_offset)
-            sell_offset = max(0.22, sell_offset)
+            min_gap = 0.10 if is_quiet_market else 0.20
+            min_offset = 0.08 if is_quiet_market else 0.22
+            dynamic_gap = max(min_gap, dynamic_gap)
+            buy_offset = max(min_offset, buy_offset)
+            sell_offset = max(min_offset, sell_offset)
             lot_multiplier = min(1.25, lot_multiplier)
-            base_target_profit = 3.50
+            base_target_profit = 2.50 if is_quiet_market else 3.50
         elif any(x in sym_u for x in ["ETH"]):
-            # ETH Golden Sweet Spot (0.20% Offset = ~$5.00 USD, 0.18% Gap = ~$4.50 USD)
-            dynamic_gap = max(0.18, dynamic_gap)
-            buy_offset = max(0.20, buy_offset)
-            sell_offset = max(0.20, sell_offset)
+            min_gap = 0.10 if is_quiet_market else 0.18
+            min_offset = 0.08 if is_quiet_market else 0.20
+            dynamic_gap = max(min_gap, dynamic_gap)
+            buy_offset = max(min_offset, buy_offset)
+            sell_offset = max(min_offset, sell_offset)
             lot_multiplier = min(1.25, lot_multiplier)
-            base_target_profit = 3.50
+            base_target_profit = 2.50 if is_quiet_market else 3.50
         elif any(x in sym_u for x in ["SOL", "BNB"]):
-            # SOL/BNB Noise Buffer (0.18% Offset, 0.15% Gap)
-            dynamic_gap = max(0.15, dynamic_gap)
-            buy_offset = max(0.18, buy_offset)
-            sell_offset = max(0.18, sell_offset)
+            min_gap = 0.08 if is_quiet_market else 0.15
+            min_offset = 0.06 if is_quiet_market else 0.18
+            dynamic_gap = max(min_gap, dynamic_gap)
+            buy_offset = max(min_offset, buy_offset)
+            sell_offset = max(min_offset, sell_offset)
             lot_multiplier = min(1.25, lot_multiplier)
-            base_target_profit = 3.00
+            base_target_profit = 2.50 if is_quiet_market else 3.00
         elif any(x in sym_u for x in ["DOGE", "XRP"]):
-            # DOGE/XRP Noise Buffer (0.15% Offset, 0.12% Gap)
-            dynamic_gap = max(0.12, dynamic_gap)
-            buy_offset = max(0.15, buy_offset)
-            sell_offset = max(0.15, sell_offset)
+            min_gap = 0.06 if is_quiet_market else 0.12
+            min_offset = 0.05 if is_quiet_market else 0.15
+            dynamic_gap = max(min_gap, dynamic_gap)
+            buy_offset = max(min_offset, buy_offset)
+            sell_offset = max(min_offset, sell_offset)
             lot_multiplier = min(1.25, lot_multiplier)
-            base_target_profit = 2.50
+            base_target_profit = 2.00 if is_quiet_market else 2.50
 
         # ---- 10. DYNAMIC TARGET PROFIT (Orderbook S/R Anchored) ----
         # Scale target by ATR volatility + session activity
