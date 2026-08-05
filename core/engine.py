@@ -1256,8 +1256,10 @@ class BreakoutGridBot:
         # Dynamic friction floor based on open position count to cover spread, commission & swap fees
         num_pos = len(self.broker.open_positions)
         accumulated_swaps = sum(abs(getattr(p, 'swap', 0.0)) for p in self.broker.open_positions.values())
-        # Gold/Forex spread + Exness commission requires ~$1.50 per open position + $3.00 base friction + accumulated swaps
-        friction_floor = max(4.00, 4.00 + (num_pos * 1.50) + accumulated_swaps)
+        duration_hours = max(0.0, (timestamp - getattr(self, "cycle_start_time", timestamp)) / 3600.0)
+        duration_swap_buffer = num_pos * min(5.0, duration_hours * 0.50)
+        # Gold/Forex spread + Exness commission requires ~$1.50 per open position + $3.00 base friction + accumulated swaps + duration buffer
+        friction_floor = max(4.00, 4.00 + (num_pos * 1.50) + accumulated_swaps + duration_swap_buffer)
 
         # ── STAGNANT GRID AUTO-REDEPLOY ─────────────────────────────────────────
         # If the grid has had zero fills for a long time AND no positions are open,
@@ -1344,7 +1346,7 @@ class BreakoutGridBot:
                 unbreakable_net_floor = max(friction_floor + 1.00, effective_target_profit * 0.50)
                 trailing_peak_floor = self.max_floating_pnl * lock_pct
                 runner_floor = max(unbreakable_net_floor, trailing_peak_floor)
-                if float_pnl <= runner_floor:
+                if float_pnl <= runner_floor and float_pnl >= friction_floor + 1.00:
                     runner_hit = True
             else:
                 # Dynamic Volume-Scaled Target Profit (strictly net positive cash profit after spread & commission)
