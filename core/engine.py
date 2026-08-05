@@ -377,32 +377,36 @@ class AutoReadingEngine:
             lot_multiplier = min(1.25, lot_multiplier)
             base_target_profit = 2.50
         elif any(x in sym_u for x in ["BTC"]):
+            # BTC Quiet Offset 0.09% (+$0.01% boost)
             min_gap = 0.10 if is_quiet_market else 0.20
-            min_offset = 0.08 if is_quiet_market else 0.22
+            min_offset = 0.09 if is_quiet_market else 0.22
             dynamic_gap = max(min_gap, dynamic_gap)
             buy_offset = max(min_offset, buy_offset)
             sell_offset = max(min_offset, sell_offset)
             lot_multiplier = min(1.25, lot_multiplier)
             base_target_profit = 2.50 if is_quiet_market else 3.50
         elif any(x in sym_u for x in ["ETH"]):
+            # ETH Quiet Offset 0.09% (+$0.01% boost)
             min_gap = 0.10 if is_quiet_market else 0.18
-            min_offset = 0.08 if is_quiet_market else 0.20
+            min_offset = 0.09 if is_quiet_market else 0.20
             dynamic_gap = max(min_gap, dynamic_gap)
             buy_offset = max(min_offset, buy_offset)
             sell_offset = max(min_offset, sell_offset)
             lot_multiplier = min(1.25, lot_multiplier)
             base_target_profit = 2.50 if is_quiet_market else 3.50
         elif any(x in sym_u for x in ["SOL", "BNB"]):
+            # SOL/BNB Quiet Offset 0.07% (+$0.01% boost)
             min_gap = 0.08 if is_quiet_market else 0.15
-            min_offset = 0.06 if is_quiet_market else 0.18
+            min_offset = 0.07 if is_quiet_market else 0.18
             dynamic_gap = max(min_gap, dynamic_gap)
             buy_offset = max(min_offset, buy_offset)
             sell_offset = max(min_offset, sell_offset)
             lot_multiplier = min(1.25, lot_multiplier)
             base_target_profit = 2.50 if is_quiet_market else 3.00
         elif any(x in sym_u for x in ["DOGE", "XRP"]):
+            # DOGE/XRP Quiet Offset 0.06% (+$0.01% boost)
             min_gap = 0.06 if is_quiet_market else 0.12
-            min_offset = 0.05 if is_quiet_market else 0.15
+            min_offset = 0.06 if is_quiet_market else 0.15
             dynamic_gap = max(min_gap, dynamic_gap)
             buy_offset = max(min_offset, buy_offset)
             sell_offset = max(min_offset, sell_offset)
