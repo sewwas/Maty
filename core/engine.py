@@ -1225,8 +1225,9 @@ class BreakoutGridBot:
 
         # Dynamic friction floor based on open position count to cover spread, commission & swap fees
         num_pos = len(self.broker.open_positions)
-        # Gold/Forex spread + Exness commission requires ~$1.50 per open position + $3.00 base friction
-        friction_floor = max(4.00, 4.00 + (num_pos * 1.50))
+        accumulated_swaps = sum(abs(getattr(p, 'swap', 0.0)) for p in self.broker.open_positions.values())
+        # Gold/Forex spread + Exness commission requires ~$1.50 per open position + $3.00 base friction + accumulated swaps
+        friction_floor = max(4.00, 4.00 + (num_pos * 1.50) + accumulated_swaps)
 
         # ── STAGNANT GRID AUTO-REDEPLOY ─────────────────────────────────────────
         # If the grid has had zero fills for a long time AND no positions are open,
