@@ -1310,8 +1310,8 @@ class BreakoutGridBot:
                 buy_pos_list = [p for p in self.broker.open_positions.values() if p.type == "BUY"]
                 sell_pos_list = [p for p in self.broker.open_positions.values() if p.type == "SELL"]
                 
-                is_price_in_profit_direction = True
-                min_dist_met = True
+                is_price_in_profit_direction = False
+                min_dist_met = False
                 min_move_pct = max(0.04, getattr(self, "trap_offset", 0.07) * 0.60)
 
                 if buy_pos_list and not sell_pos_list:
@@ -1323,7 +1323,7 @@ class BreakoutGridBot:
                     is_price_in_profit_direction = (current_price < avg_sell_px)
                     min_dist_met = ((avg_sell_px - current_price) / avg_sell_px * 100.0) >= min_move_pct
 
-                if float_pnl >= effective_target_profit and is_price_in_profit_direction and min_dist_met:
+                if float_pnl >= effective_target_profit and float_pnl >= friction_floor + 1.00 and is_price_in_profit_direction and min_dist_met:
                     target_hit = True
 
             # 2. MULTI-STAGE RATCHETED BREAKEVEN PROTECTION
