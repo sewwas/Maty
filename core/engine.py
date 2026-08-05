@@ -527,7 +527,7 @@ class BreakoutGridBot:
         # Risk Control Circuit Breaker & Macro News Shield
         self.max_daily_drawdown: float = 0.0  # 0.0 disabled; e.g. 250.0 = max -$250 loss cap
         self.daily_circuit_breaker_tripped: bool = False
-        self.use_news_shield: bool = False
+        self.use_news_shield: bool = True
 
         # Prop Firm Challenge Compliance Engine (FTMO / FundedNext / Funding Pips)
         self.prop_firm_guard_enabled: bool = False
