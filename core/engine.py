@@ -488,7 +488,7 @@ class BreakoutGridBot:
         auto_restart: bool = True,
         is_percent: bool = False,
         spacing_mode: Optional[str] = None,
-        stop_loss: float = 20.0,
+        stop_loss: float = 0.0,
         max_cycle_duration: float = 3600.0,
         cancel_opposite_on_trigger: bool = False,
         use_trailing_stop: bool = False,
@@ -732,7 +732,7 @@ class BreakoutGridBot:
         if not hasattr(self, "target_profit"):
             self.target_profit = 10.0
         if not hasattr(self, "stop_loss"):
-            self.stop_loss = 250.0
+            self.stop_loss = 0.0
         if not hasattr(self, "max_cycle_duration"):
             self.max_cycle_duration = float("inf")
         if not hasattr(self, "auto_restart"):
@@ -1287,11 +1287,16 @@ class BreakoutGridBot:
                 if float_pnl <= -daily_limit:
                     prop_guard_hit = True
 
-            # 0. DYNAMIC RISK-SCALED STOP LOSS ENGINE
-            # Dynamically scales Stop Loss based on account balance/equity (default 10% max equity risk)
+            # 0. PURE DYNAMIC RISK-SCALED STOP LOSS ENGINE (Zero Hardcoded Stop Loss)
+            # Dynamically scales Stop Loss based on account balance/equity and open grid basket volume
             account_eq = getattr(self.broker, "account_equity", getattr(self.broker, "initial_balance", 1000.0))
             max_eq_risk_pct = getattr(self, "stop_loss_pct", 10.0)
-            dynamic_sl_dollar = max(50.0, account_eq * (max_eq_risk_pct / 100.0))
+            
+            # Basket Volume Multiplier: 1 fill = 1.0x, 2 fills = 1.25x, 3 fills = 1.50x, 4+ fills = 1.75x
+            num_open = len(self.broker.open_positions)
+            volume_risk_scale = 1.0 + (max(0, num_open - 1) * 0.25)
+            
+            dynamic_sl_dollar = max(50.0, account_eq * (max_eq_risk_pct / 100.0) * volume_risk_scale)
             effective_stop_loss = max(self.stop_loss, dynamic_sl_dollar) if self.stop_loss > 0 else dynamic_sl_dollar
 
             if float_pnl <= -effective_stop_loss:
