@@ -856,6 +856,13 @@ class BreakoutGridBot:
             elif ob_ratio < 0.33:  # Heavy Bid/Buy Pressure (>75% Bids) -> Suppress SELL_STOP traps into buy wall
                 unidirectional_mode = "BUY_ONLY" if unidirectional_mode == "DUAL" else unidirectional_mode
 
+            # Trend Confluence Gate: Strictly deploy traps aligned with strong directional bias (abs(bias) >= 0.35)
+            combined_bias = self.last_auto_eval.get("combined_bias", 0.0) if hasattr(self, "last_auto_eval") and self.last_auto_eval else 0.0
+            if combined_bias >= 0.35 and unidirectional_mode == "DUAL":
+                unidirectional_mode = "BUY_ONLY"
+            elif combined_bias <= -0.35 and unidirectional_mode == "DUAL":
+                unidirectional_mode = "SELL_ONLY"
+
             # Place Buy Stop orders above current_price (suppressed if SELL_ONLY)
             if unidirectional_mode != "SELL_ONLY":
                 for i in range(self.grid_levels):
