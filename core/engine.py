@@ -738,6 +738,13 @@ class BreakoutGridBot:
                 print(f"[{getattr(self.broker, 'symbol', 'BOT')}] Daily Drawdown Circuit Breaker TRIPPED (-${abs(realized):.2f} <= -${self.max_daily_drawdown:.2f}). Deployment halted.")
                 return
 
+        # Existing Open Positions Guard:
+        # If open positions already exist when deploy_traps is called (e.g. restarting Auto mode or clicking Deploy),
+        # DO NOT deploy a duplicate new grid! Instead, run repair_grid to safely manage existing positions without duplication.
+        if len(self.broker.open_positions) > 0 and getattr(self, "use_grid_repair", True):
+            self.repair_grid(current_price, timestamp)
+            return
+
         effective_gap = self.get_effective_gap(current_price, bb_width)
 
         self.broker.cancel_all_orders()
