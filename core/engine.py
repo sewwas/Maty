@@ -334,18 +334,16 @@ class AutoReadingEngine:
             stop_loss = max(50.0, account_equity * (getattr(self, "stop_loss_pct", 10.0) / 100.0))
 
         # ---- 8b. SYMBOL VOLATILITY LEVEL CAP ----
-        # Ensures high-volatility symbols (Gold/BTC) do NOT get more levels
-        # than lower-volatility ones (ETH/SOL) on the same account.
-        # Grid levels are capped per symbol class — consistent on same account.
-        _sym_max_levels = {
-            "BTCUSDT": max_levels, "BTCUSD": max_levels,   # BTC: full tier levels
-            "PAXGUSDT": max_levels, "XAUUSD": max_levels,   # Gold: full tier levels
-            "ETHUSDT": max_levels, "ETHUSD": max_levels,    # ETH: full tier levels
-            "SOLUSDT": max_levels, "BNBUSDT": max_levels,   # SOL/BNB: full tier
-            "DOGEUSDT": max_levels, "XRPUSDT": max_levels,  # DOGE/XRP: full tier
-        }
-        # All symbols on the same account get the SAME max_levels from their shared capital tier
-        max_levels = _sym_max_levels.get(sym_u, max_levels)
+        # High-volatility assets (Gold / BTC) are capped at max 5 levels for risk protection on large accounts
+        if any(x in clean_sym for x in ["XAU", "GOLD", "PAXG", "BTC"]):
+            max_levels = min(5, max_levels)
+        else:
+            _sym_max_levels = {
+                "ETHUSDT": max_levels, "ETHUSD": max_levels,
+                "SOLUSDT": max_levels, "BNBUSDT": max_levels,
+                "DOGEUSDT": max_levels, "XRPUSDT": max_levels,
+            }
+            max_levels = _sym_max_levels.get(clean_sym, max_levels)
 
 
         # ---- 9. GRID GEOMETRY ----
