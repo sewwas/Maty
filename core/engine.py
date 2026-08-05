@@ -368,8 +368,9 @@ class AutoReadingEngine:
         is_quiet_market = (regime == "RANGING" or atr_pct < 0.25)
         
         if any(x in sym_u for x in ["PAXG", "XAU", "GOLD"]):
+            # Gold Precision Scalper (0.07% Offset = $2.835 USD, 0.08% Gap = $3.24 USD)
             min_gap = 0.08 if is_quiet_market else 0.12
-            min_offset = 0.06 if is_quiet_market else 0.10
+            min_offset = 0.07 if is_quiet_market else 0.10
             dynamic_gap = max(min_gap, dynamic_gap)
             buy_offset = max(min_offset, buy_offset)
             sell_offset = max(min_offset, sell_offset)
