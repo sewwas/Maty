@@ -1357,44 +1357,39 @@ class BreakoutGridBot:
                     if trailing_level > 0 and float_pnl <= trailing_level and float_pnl >= friction_floor:
                         trailing_stop_hit = True
                     
+            # Universal Dynamic Volume-Scaled Minimum Net Cash Profit Floor (Minimum +$1.00 net profit, scaling up with volume)
+            min_net_cash_profit = max(1.00, 1.00 * volume_scale_mult)
+            volume_friction_target = friction_floor + min_net_cash_profit
+
             # 4. SMART EARLY RANGE EXIT (On 3+ Level Fills during Range Chop)
-            # When 3 or more grid levels fill and price recovers back to 50% Target Profit (+$5.00+),
-            # exit with solid positive profit instead of wasting the trade cycle!
             early_range_hit = False
             if len(self.broker.open_positions) >= 3 and not self.in_runner_mode:
-                target_floor = max(self.target_profit * 0.50, friction_floor + 2.00)
+                target_floor = max(self.target_profit * 0.50, volume_friction_target)
                 if float_pnl >= target_floor:
                     early_range_hit = True
 
             # 5. HEDGE-LOCK UN-LOCK CHECK (When positions exist in BOTH directions)
-            # Dual-side hedge baskets MUST ONLY be unlocked when net floating PnL is positive in cash (>= friction_floor + $1.00)!
-            # NEVER force-exit a dual-side hedge basket at a loss!
             hedge_lock_hit = False
             buy_positions = [p for p in self.broker.open_positions.values() if p.type == "BUY"]
             sell_positions = [p for p in self.broker.open_positions.values() if p.type == "SELL"]
             if buy_positions and sell_positions:
-                if float_pnl >= friction_floor + 1.00:
+                if float_pnl >= volume_friction_target:
                     hedge_lock_hit = True
+
             # 6. MICRO-VELOCITY MOMENTUM SCALP EXIT (True Trend Reversal Guard)
-            # Only exit on true price reversal (is_reversing and floating PnL dropping >15% from peak).
-            # DO NOT exit on temporary 5-second tick pauses during a strong trend move — allow Smart Runner Mode to ride the full trend!
             momentum_scalp_hit = False
-            if len(self.broker.open_positions) > 0 and float_pnl >= friction_floor + 1.00:
+            if len(self.broker.open_positions) > 0 and float_pnl >= volume_friction_target:
                 if len(self.price_history_ticks) >= 5 and is_reversing and float_pnl < getattr(self, "max_floating_pnl", float_pnl) * 0.85:
                     momentum_scalp_hit = True
 
             # 7. VOLUME WEIGHTED AVERAGE COST RECOVERY EXIT (WVAP Exit on 2+ Fills)
-            # On 2 or more grid level fills, as soon as price recovers to WVAP_entry + friction + $2.00,
-            # exit the multi-position basket in net cash profit on a 5% micro-pullback!
             wvap_exit_hit = False
             if len(self.broker.open_positions) >= 2 and not self.in_runner_mode:
-                wvap_target = max(2.00, friction_floor)
+                wvap_target = max(volume_friction_target, friction_floor + 1.00)
                 if float_pnl >= wvap_target:
                     wvap_exit_hit = True
 
             # 8. SINGLE-FILL QUICK PERCENT SCALP EXIT (Equalized for Crypto & Gold)
-            # When exactly 1 position is open and price moves >= trap_offset (min 0.08%) in profit direction,
-            # exit immediately as a 1-fill quick scalp winner without waiting for high fixed dollar TP!
             single_fill_scalp_hit = False
             if len(self.broker.open_positions) == 1 and not self.in_runner_mode:
                 open_pos = list(self.broker.open_positions.values())[0]
@@ -1405,7 +1400,7 @@ class BreakoutGridBot:
                     move_pct = (entry_px - current_price) / entry_px * 100.0
                 
                 target_move_threshold = max(0.08, getattr(self, "trap_offset", 0.08) * 0.90)
-                if move_pct >= target_move_threshold and float_pnl >= friction_floor + 0.50 and not is_positive_trend:
+                if move_pct >= target_move_threshold and float_pnl >= volume_friction_target and not is_positive_trend:
                     single_fill_scalp_hit = True
 
         if target_hit or runner_hit or trailing_stop_hit or stop_loss_hit or timeout_hit or breakeven_hit or early_range_hit or prop_guard_hit or hedge_lock_hit or velocity_shield_hit or momentum_scalp_hit or wvap_exit_hit or single_fill_scalp_hit:
