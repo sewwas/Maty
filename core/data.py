@@ -454,7 +454,7 @@ def calculate_technical_indicators(df_or_symbol) -> dict:
     avg_loss = np.mean(losses[-14:]) if len(losses) >= 14 else (np.mean(losses) if len(losses) > 0 else 0.0)
     
     if avg_loss == 0:
-        rsi = 100.0
+        rsi = 50.0 if avg_gain == 0 else 100.0
     else:
         rs = avg_gain / avg_loss
         rsi = 100.0 - (100.0 / (1.0 + rs))

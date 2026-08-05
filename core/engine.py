@@ -763,7 +763,8 @@ class BreakoutGridBot:
         # Weekend Shutdown Guard: Pause grid deployment within 2 hours of Friday market close (20:00 GMT)
         if getattr(self, "use_weekend_shutdown", True):
             import datetime
-            dt_gmt = datetime.datetime.fromtimestamp(timestamp, datetime.timezone.utc)
+            ts_sec = (timestamp / 1000.0) if timestamp > 1e11 else timestamp
+            dt_gmt = datetime.datetime.fromtimestamp(ts_sec, datetime.timezone.utc)
             if dt_gmt.weekday() == 4 and dt_gmt.hour >= 20:
                 print(f"[{getattr(self.broker, 'symbol', 'BOT')}] Friday Weekend Shutdown Guard ACTIVE (GMT {dt_gmt.hour:02d}:{dt_gmt.minute:02d}). Deployment halted to avoid weekend gap risk.")
                 return
