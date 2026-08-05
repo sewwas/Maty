@@ -904,6 +904,10 @@ class SimulatedBroker:
         self.closed_trades: List[dict] = []
         self.realized_pnl = 0.0
 
+    @property
+    def account_equity(self) -> float:
+        return self._balance + self.realized_pnl
+
         # Stub attributes to satisfy any attribute-access checks identical to MT5Broker
         self.login = 0
         self.server = ""

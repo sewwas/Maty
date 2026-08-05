@@ -1286,8 +1286,14 @@ class BreakoutGridBot:
                 if float_pnl <= -daily_limit:
                     prop_guard_hit = True
 
-            # 0. STOP LOSS CHECK
-            if self.stop_loss > 0 and float_pnl <= -self.stop_loss:
+            # 0. DYNAMIC RISK-SCALED STOP LOSS ENGINE
+            # Dynamically scales Stop Loss based on account balance/equity (default 10% max equity risk)
+            account_eq = getattr(self.broker, "account_equity", getattr(self.broker, "initial_balance", 1000.0))
+            max_eq_risk_pct = getattr(self, "stop_loss_pct", 10.0)
+            dynamic_sl_dollar = max(50.0, account_eq * (max_eq_risk_pct / 100.0))
+            effective_stop_loss = max(self.stop_loss, dynamic_sl_dollar) if self.stop_loss > 0 else dynamic_sl_dollar
+
+            if float_pnl <= -effective_stop_loss:
                 stop_loss_hit = True
 
             # Update max PnL
