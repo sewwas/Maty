@@ -1300,8 +1300,8 @@ class BreakoutGridBot:
                 if float_pnl <= runner_floor:
                     runner_hit = True
             else:
-                # Standard Target Profit (if Smart Runner Mode is disabled)
-                if float_pnl >= self.target_profit:
+                # Standard Target Profit (strictly net positive cash profit after spread & commission)
+                if float_pnl >= max(self.target_profit, friction_floor + 1.00):
                     target_hit = True
 
             # 2. MULTI-STAGE RATCHETED BREAKEVEN PROTECTION
@@ -1357,7 +1357,7 @@ class BreakoutGridBot:
             # Only exit on positive delta (avg_delta > 0) when momentum hesitates at high floating profit.
             # NEVER exit early on negative delta (avg_delta < 0) — allow grid traps to lower entry average for full recovery!
             momentum_scalp_hit = False
-            if len(self.broker.open_positions) > 0 and float_pnl >= max(3.00, self.target_profit * 0.50):
+            if len(self.broker.open_positions) > 0 and float_pnl >= friction_floor + 1.00:
                 if len(self.price_history_ticks) >= 5 and avg_delta > 0 and abs(avg_delta_pct) < 0.05:
                     momentum_scalp_hit = True
 
