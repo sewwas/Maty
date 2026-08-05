@@ -182,10 +182,49 @@ graph LR
 
 ---
 
-## 💻 5. Running the Bot
+## 💻 5. Running the Bot & VPS Setup
 
-To start the Streamlit trading dashboard:
+### 🖥️ 5.1 Local Execution
+To start the Streamlit trading dashboard locally:
 
 ```bash
 .venv\Scripts\python.exe -m streamlit run app.py
 ```
+
+### 🚀 5.2 One-Command VPS Deployment (Linux / Ubuntu 24/7)
+
+Run this single command on a fresh Linux VPS to automatically update packages, install dependencies, set up the virtual environment, install requirements, and run the bot in the background:
+
+```bash
+sudo apt update -y && sudo apt install -y python3-pip python3-venv git tmux && git clone https://github.com/sewwas/Maty.git maty_bot && cd maty_bot && python3 -m venv .venv && source .venv/bin/activate && pip install --upgrade pip && pip install -r requirements.txt && nohup streamlit run app.py --server.port 8501 --server.address 0.0.0.0 > bot.log 2>&1 &
+```
+
+#### 🔄 Systemd 24/7 Auto-Restart Service Setup (One-Command)
+To ensure the bot runs 24/7 and automatically restarts if the VPS reboots:
+
+```bash
+sudo bash -c 'cat <<EOF > /etc/systemd/system/matybot.service
+[Unit]
+Description=Profity AI Trading Bot Streamlit Service
+After=network.target
+
+[Service]
+User=$USER
+WorkingDirectory=$(pwd)
+ExecStart=$(pwd)/.venv/bin/streamlit run app.py --server.port 8501 --server.address 0.0.0.0
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+systemctl daemon-reload && systemctl enable matybot && systemctl start matybot'
+```
+
+### 🪟 5.3 One-Command Windows VPS Setup (PowerShell)
+
+Run this single command in PowerShell on a Windows VPS to set up environment and start the bot:
+
+```powershell
+git clone https://github.com/sewwas/Maty.git maty_bot; cd maty_bot; python -m venv .venv; .\.venv\Scripts\Activate.ps1; pip install --upgrade pip; pip install -r requirements.txt; python -m streamlit run app.py --server.port 8501 --server.address 0.0.0.0
+```
