@@ -437,8 +437,9 @@ class AutoReadingEngine:
             except Exception:
                 pass
 
-        # ---- 11. ADAPTIVE LOT SIZE (by confidence) ----
-        conf_scale = 0.7 + 0.6 * (confidence / 100.0)  # 0.70x at confidence=0, 1.30x at confidence=100
+        # ---- 11. ADAPTIVE AUTO-COMPOUNDING LOT SIZE (by confidence & account equity) ----
+        equity_scale = max(0.5, account_equity / 1000.0)
+        conf_scale = (0.7 + 0.6 * (confidence / 100.0)) * equity_scale  # 0.70x at confidence=0, 1.30x at confidence=100
         adj_size = round(base_size * conf_scale * size_session_mult, 6)
 
         # ---- 12. UPDATE STATE FOR REDEPLOYMENT THROTTLE ----
