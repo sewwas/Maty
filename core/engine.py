@@ -1306,7 +1306,19 @@ class BreakoutGridBot:
                     runner_hit = True
             else:
                 # Dynamic Volume-Scaled Target Profit (strictly net positive cash profit after spread & commission)
-                if float_pnl >= effective_target_profit:
+                # Price Directional Sanity Guard: BUY position strictly requires current_price > average entry price!
+                buy_pos_list = [p for p in self.broker.open_positions.values() if p.type == "BUY"]
+                sell_pos_list = [p for p in self.broker.open_positions.values() if p.type == "SELL"]
+                
+                is_price_in_profit_direction = True
+                if buy_pos_list and not sell_pos_list:
+                    avg_buy_px = sum(getattr(p, 'open_price', getattr(p, 'price', current_price)) * p.size for p in buy_pos_list) / sum(p.size for p in buy_pos_list)
+                    is_price_in_profit_direction = (current_price > avg_buy_px)
+                elif sell_pos_list and not buy_pos_list:
+                    avg_sell_px = sum(getattr(p, 'open_price', getattr(p, 'price', current_price)) * p.size for p in sell_pos_list) / sum(p.size for p in sell_pos_list)
+                    is_price_in_profit_direction = (current_price < avg_sell_px)
+
+                if float_pnl >= effective_target_profit and is_price_in_profit_direction:
                     target_hit = True
 
             # 2. MULTI-STAGE RATCHETED BREAKEVEN PROTECTION
