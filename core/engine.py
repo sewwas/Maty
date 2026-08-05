@@ -413,6 +413,14 @@ class AutoReadingEngine:
             lot_multiplier = min(1.25, lot_multiplier)
             base_target_profit = 2.00 if is_quiet_market else 2.50
 
+        # Live Broker Spread-Noise Filter: Scale trap_offset dynamically if live broker spread is high
+        live_spread = tech_indicators.get("live_spread", 0.0) if tech_indicators else 0.0
+        if live_spread > 0 and current_price > 0:
+            spread_pct = (live_spread / current_price) * 100.0
+            min_spread_offset = spread_pct * 2.5
+            buy_offset = max(buy_offset, min_spread_offset)
+            sell_offset = max(sell_offset, min_spread_offset)
+
         # ---- 10. DYNAMIC TARGET PROFIT (Orderbook S/R Anchored) ----
         # Scale target by ATR volatility + session activity
         vol_tp_scale = max(0.5, min(3.0, atr_pct / 0.30))  # 0.30% ATR = 1.0x
@@ -749,6 +757,14 @@ class BreakoutGridBot:
             if realized <= -self.max_daily_drawdown:
                 self.daily_circuit_breaker_tripped = True
                 print(f"[{getattr(self.broker, 'symbol', 'BOT')}] Daily Drawdown Circuit Breaker TRIPPED (-${abs(realized):.2f} <= -${self.max_daily_drawdown:.2f}). Deployment halted.")
+                return
+
+        # Weekend Shutdown Guard: Pause grid deployment within 2 hours of Friday market close (20:00 GMT)
+        if getattr(self, "use_weekend_shutdown", True):
+            import datetime
+            dt_gmt = datetime.datetime.fromtimestamp(timestamp, datetime.timezone.utc)
+            if dt_gmt.weekday() == 4 and dt_gmt.hour >= 20:
+                print(f"[{getattr(self.broker, 'symbol', 'BOT')}] Friday Weekend Shutdown Guard ACTIVE (GMT {dt_gmt.hour:02d}:{dt_gmt.minute:02d}). Deployment halted to avoid weekend gap risk.")
                 return
 
         # Existing Open Positions Guard:
