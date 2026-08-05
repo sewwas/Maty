@@ -1370,12 +1370,12 @@ class BreakoutGridBot:
             if buy_positions and sell_positions:
                 if float_pnl >= friction_floor + 1.00:
                     hedge_lock_hit = True
-            # 6. MICRO-VELOCITY MOMENTUM SCALP EXIT (Positive Momentum Lock)
-            # Only exit on positive delta (avg_delta > 0) when momentum hesitates at high floating profit.
-            # NEVER exit early on negative delta (avg_delta < 0) — allow grid traps to lower entry average for full recovery!
+            # 6. MICRO-VELOCITY MOMENTUM SCALP EXIT (True Trend Reversal Guard)
+            # Only exit on true price reversal (is_reversing and floating PnL dropping >15% from peak).
+            # DO NOT exit on temporary 5-second tick pauses during a strong trend move — allow Smart Runner Mode to ride the full trend!
             momentum_scalp_hit = False
             if len(self.broker.open_positions) > 0 and float_pnl >= friction_floor + 1.00:
-                if len(self.price_history_ticks) >= 5 and avg_delta > 0 and abs(avg_delta_pct) < 0.05:
+                if len(self.price_history_ticks) >= 5 and is_reversing and float_pnl < getattr(self, "max_floating_pnl", float_pnl) * 0.85:
                     momentum_scalp_hit = True
 
             # 7. VOLUME WEIGHTED AVERAGE COST RECOVERY EXIT (WVAP Exit on 2+ Fills)
