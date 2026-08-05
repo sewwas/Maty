@@ -2228,7 +2228,7 @@ with col_left:
             "Target Profit (USD)",
             min_value=1.0,
             max_value=10000.0,
-            value=float(st.session_state.strat_target_profit),
+            value=max(1.0, float(st.session_state.get("strat_target_profit", 50.0))),
             step=1.0,
             disabled=_is_auto_active,
             help=_auto_hlp,
@@ -2238,9 +2238,9 @@ with col_left:
 
         sl_val = st.number_input(
             "Stop Loss (USD)",
-            min_value=5.0,
+            min_value=0.0,
             max_value=100000.0,
-            value=float(st.session_state.get("strat_sl", 150.0)),
+            value=max(0.0, float(st.session_state.get("strat_sl", 150.0))),
             step=10.0,
             disabled=_is_auto_active,
             help=_auto_hlp,
@@ -2268,7 +2268,7 @@ with col_left:
 
         trailing_stop_val = st.toggle(
             "Enable Standard Trailing Stop",
-            value=st.session_state.strat_trailing,
+            value=st.session_state.get("strat_trailing", False),
             key=f"strat_trailing_input_{_sym_wk}"
         )
         st.session_state.strat_trailing = trailing_stop_val
@@ -2277,7 +2277,7 @@ with col_left:
             "Trailing Distance (USD)",
             min_value=0.1,
             max_value=1000.0,
-            value=float(st.session_state.strat_trailing_dist),
+            value=max(0.1, float(st.session_state.get("strat_trailing_dist", 10.0))),
             step=0.5,
             disabled=not trailing_stop_val,
             key=f"strat_trailing_dist_input_{_sym_wk}"
@@ -2296,7 +2296,7 @@ with col_left:
             "Breakeven Trigger (% Target)",
             min_value=10,
             max_value=90,
-            value=be_trigger_pct,
+            value=max(10, min(90, be_trigger_pct)),
             step=5,
             disabled=not breakeven_val,
             key=f"strat_breakeven_trigger_input_{_sym_wk}"
@@ -2322,26 +2322,28 @@ with col_left:
             st.session_state.bot.use_auto_reading = auto_reading_val
         
     with strat_col3:
+        _order_sz = float(st.session_state.get("strat_order_size", 0.01))
         order_size_val = st.number_input(
             "Base Order Size (Quantity)",
             min_value=0.00001,
             max_value=1000000.0,
-            value=float(st.session_state.strat_order_size),
-            step=0.0001 if st.session_state.strat_order_size < 0.1 else (0.01 if st.session_state.strat_order_size < 10.0 else 1.0),
-            format="%.5f" if st.session_state.strat_order_size < 1.0 else ("%.2f" if st.session_state.strat_order_size < 100.0 else "%.1f"),
+            value=max(0.00001, _order_sz),
+            step=0.0001 if _order_sz < 0.1 else (0.01 if _order_sz < 10.0 else 1.0),
+            format="%.5f" if _order_sz < 1.0 else ("%.2f" if _order_sz < 100.0 else "%.1f"),
             disabled=_is_auto_active,
             help=_auto_hlp,
             key=f"strat_order_size_input_{_sym_wk}"
         )
         st.session_state.strat_order_size = order_size_val
 
+        _sz_mult = float(st.session_state.get("strat_size_multiplier", 1.0))
         size_mult_val = st.number_input(
             "Size Multiplier (Martingale)",
             min_value=1.0,
             max_value=5.0,
-            value=float(st.session_state.strat_size_multiplier),
+            value=max(1.0, min(5.0, _sz_mult)),
             step=0.1,
-            format="%.2f" if st.session_state.strat_size_multiplier % 0.1 != 0 else "%.1f",
+            format="%.2f" if _sz_mult % 0.1 != 0 else "%.1f",
             disabled=_is_auto_active,
             help=_auto_hlp,
             key=f"strat_size_multiplier_input_{_sym_wk}"
