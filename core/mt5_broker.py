@@ -127,13 +127,13 @@ class MT5Broker:
                 if alt_info is not None:
                     return alt_candidate
 
-            # If the broker does not support XAUUSD, check if they use "GOLD" instead (e.g. some Exness/other broker setups)
-            if ui_symbol == "PAXGUSDT":
-                fallback_candidate = f"GOLD{self.symbol_suffix}"
-                mt5.symbol_select(fallback_candidate, True)
-                fallback_info = mt5.symbol_info(fallback_candidate)
-                if fallback_info is not None:
-                    return fallback_candidate
+            # If the broker does not support XAUUSD, check if they use "GOLD" or suffix variations
+            if ui_symbol.upper() in ("PAXGUSDT", "XAUUSD", "GOLD"):
+                for g_cand in ["GOLD", "XAUUSD", f"GOLD{self.symbol_suffix}", f"XAUUSD{self.symbol_suffix}"]:
+                    mt5.symbol_select(g_cand, True)
+                    fallback_info = mt5.symbol_info(g_cand)
+                    if fallback_info is not None:
+                        return g_cand
                         
         return candidate
 

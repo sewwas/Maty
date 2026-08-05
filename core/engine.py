@@ -222,6 +222,7 @@ class AutoReadingEngine:
         ob = orderbook_depth or {}
         news = macro_news or []
 
+        current_price = max(0.0001, current_price)
         # ---- 1. SIGNAL EXTRACTION & ATR VOLATILITY SMOOTHING ----
         ema_bias = float(tech.get("ema_trend_bias", 0.0))
         rsi = float(tech.get("rsi", 50.0))
