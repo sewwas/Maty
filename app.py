@@ -1446,7 +1446,7 @@ with col_left:
                 gen_tier = st.selectbox("Tier", ["PROP", "PRO", "FREE"], key=f"gen_tier_{_sym_wk}")
             with gen_col2:
                 gen_days = st.number_input("Validity (Days)", min_value=1, max_value=365, value=30, key=f"gen_days_{_sym_wk}")
-            if st.button("🔑 GENERATE KEY", use_container_width=True, key=f"gen_key_btn_{_sym_wk}"):
+            if st.button("🔑 GENERATE KEY", width="stretch", key=f"gen_key_btn_{_sym_wk}"):
                 new_k = lic_mgr.generate_key(gen_tier, str(getattr(st.session_state.get("broker"), "login", "")), int(gen_days))
                 st.code(new_k, language="text")
                 st.toast("Generated new license key!")
@@ -1591,7 +1591,7 @@ with col_left:
     with cmd_r1_c1:
         if not st.session_state.get("running", False):
             _start_lbl = "🔒 AUTO ACTIVE" if _is_auto_active else "▶ START BOT"
-            if st.button(_start_lbl, type="primary", disabled=_is_auto_active, help="Start manual bot (disabled when Auto Trading is ON)", use_container_width=True, key=f"mcd_start_bot_{_sym_wk}"):
+            if st.button(_start_lbl, type="primary", disabled=_is_auto_active, help="Start manual bot (disabled when Auto Trading is ON)", width="stretch", key=f"mcd_start_bot_{_sym_wk}"):
                 # Switching to Manual: ensure Auto is OFF first
                 if _curr_bot:
                     _curr_bot.use_auto_reading = False
@@ -1646,7 +1646,7 @@ with col_left:
                 st.rerun()
         else:
             _pause_lbl = "🔒 AUTO ACTIVE" if _is_auto_active else "⏸ PAUSE BOT"
-            if st.button(_pause_lbl, type="secondary", disabled=_is_auto_active, help="Pause manual bot (disabled when Auto Trading is ON)", use_container_width=True, key=f"mcd_pause_bot_{_sym_wk}"):
+            if st.button(_pause_lbl, type="secondary", disabled=_is_auto_active, help="Pause manual bot (disabled when Auto Trading is ON)", width="stretch", key=f"mcd_pause_bot_{_sym_wk}"):
                 st.session_state.running = False
                 if "markets" in st.session_state and st.session_state.live_symbol in st.session_state.markets:
                     st.session_state.markets[st.session_state.live_symbol]["running"] = False
@@ -1656,7 +1656,7 @@ with col_left:
 
     with cmd_r1_c2:
         _dep_btn_lbl = "🔒 AUTO-MANAGED" if _is_auto_active else "🎯 DEPLOY TRAPS"
-        if st.button(_dep_btn_lbl, type="secondary", disabled=_is_auto_active, help="Deploy grid traps manually (disabled when Auto Trading is ON)", use_container_width=True, key=f"mcd_deploy_traps_{_sym_wk}"):
+        if st.button(_dep_btn_lbl, type="secondary", disabled=_is_auto_active, help="Deploy grid traps manually (disabled when Auto Trading is ON)", width="stretch", key=f"mcd_deploy_traps_{_sym_wk}"):
             curr_m = st.session_state.markets.get(st.session_state.live_symbol)
             if curr_m:
                 bt = curr_m["bot"]
@@ -1673,7 +1673,7 @@ with col_left:
 
     with cmd_r1_c3:
         _rec_btn_lbl = "🔒 AUTO-MANAGED" if _is_auto_active else "🔄 RECENTER TRAPS"
-        if st.button(_rec_btn_lbl, type="secondary", disabled=_is_auto_active, help="Recenter grid traps manually (disabled when Auto Trading is ON)", use_container_width=True, key=f"mcd_recenter_traps_{_sym_wk}"):
+        if st.button(_rec_btn_lbl, type="secondary", disabled=_is_auto_active, help="Recenter grid traps manually (disabled when Auto Trading is ON)", width="stretch", key=f"mcd_recenter_traps_{_sym_wk}"):
             curr_m = st.session_state.markets.get(st.session_state.live_symbol)
             if curr_m:
                 bt = curr_m["bot"]
@@ -1692,7 +1692,7 @@ with col_left:
     cmd_r2_c1, cmd_r2_c2, cmd_r2_c3 = st.columns(3)
 
     with cmd_r2_c1:
-        if st.button("🔧 REPAIR GRID", type="secondary", help=f"Clean duplicates & restore missing trap levels for {_active_label}", use_container_width=True, key=f"mcd_repair_grid_{_sym_wk}"):
+        if st.button("🔧 REPAIR GRID", type="secondary", help=f"Clean duplicates & restore missing trap levels for {_active_label}", width="stretch", key=f"mcd_repair_grid_{_sym_wk}"):
             curr_m = st.session_state.markets.get(st.session_state.live_symbol)
             if curr_m:
                 bt = curr_m["bot"]
@@ -1715,7 +1715,7 @@ with col_left:
                 st.rerun()
 
     with cmd_r2_c2:
-        if st.button("🧹 CLEAN UP", type="secondary", help=f"Remove duplicate & orphan pending orders for {_active_label}", use_container_width=True, key=f"mcd_cleanup_grid_{_sym_wk}"):
+        if st.button("🧹 CLEAN UP", type="secondary", help=f"Remove duplicate & orphan pending orders for {_active_label}", width="stretch", key=f"mcd_cleanup_grid_{_sym_wk}"):
             curr_m = st.session_state.markets.get(st.session_state.live_symbol)
             if curr_m:
                 bt = curr_m["bot"]
@@ -1748,7 +1748,7 @@ with col_left:
         _mcd_auto_btn_lbl = "🔴 AUTO TRADING: OFF (CLICK TO START)"
     
     with cmd_r2_c3:
-        if st.button(_mcd_auto_btn_lbl, type="primary" if _is_auto_active else "secondary", disabled=_auto_btn_disabled, help="Toggle Auto Trading Mode ON/OFF. Disabled when Manual Bot is running — pause it first.", use_container_width=True, key=f"mcd_defaults_{_sym_wk}"):
+        if st.button(_mcd_auto_btn_lbl, type="primary" if _is_auto_active else "secondary", disabled=_auto_btn_disabled, help="Toggle Auto Trading Mode ON/OFF. Disabled when Manual Bot is running — pause it first.", width="stretch", key=f"mcd_defaults_{_sym_wk}"):
             _cur_sym = st.session_state.live_symbol
             _cur_price = float(st.session_state.get("last_price", 1000.0))
             
@@ -1814,7 +1814,7 @@ with col_left:
     cmd_r3_c1, cmd_r3_c2, cmd_r3_c3 = st.columns(3)
 
     with cmd_r3_c1:
-        if st.button(f"🚨 CLOSE {_active_label}", type="secondary", help=f"Emergency close trades & traps for {_active_label} only", use_container_width=True, key=f"mcd_close_pair_{_sym_wk}"):
+        if st.button(f"🚨 CLOSE {_active_label}", type="secondary", help=f"Emergency close trades & traps for {_active_label} only", width="stretch", key=f"mcd_close_pair_{_sym_wk}"):
             curr_m = st.session_state.markets.get(st.session_state.live_symbol)
             if curr_m:
                 brk = curr_m["broker"]
@@ -1842,7 +1842,7 @@ with col_left:
                 st.rerun()
 
     with cmd_r3_c2:
-        if st.button("⚡ PANIC ALL", type="secondary", help="Global emergency stop across all market pairs", use_container_width=True, key=f"mcd_panic_all_{_sym_wk}"):
+        if st.button("⚡ PANIC ALL", type="secondary", help="Global emergency stop across all market pairs", width="stretch", key=f"mcd_panic_all_{_sym_wk}"):
             total_closed_count = 0
             for sym, m_state in st.session_state.markets.items():
                 brk = m_state["broker"]
@@ -1871,7 +1871,7 @@ with col_left:
             st.rerun()
 
     with cmd_r3_c3:
-        if st.button("🔄 RESET", type="secondary", help="Reset simulated sandbox state", use_container_width=True, key=f"mcd_reset_sandbox_{_sym_wk}"):
+        if st.button("🔄 RESET", type="secondary", help="Reset simulated sandbox state", width="stretch", key=f"mcd_reset_sandbox_{_sym_wk}"):
             reset_realtime_sandbox()
             st.success("Environment reset complete.")
             st.rerun()
@@ -1934,7 +1934,7 @@ with col_left:
             
             conn_col1, conn_col2 = st.columns(2)
             with conn_col1:
-                if st.button("CONNECT MT5", type="primary", use_container_width=True):
+                if st.button("CONNECT MT5", type="primary", width="stretch"):
                     if mt5_login == 0 or not mt5_password or not mt5_server:
                         st.error("Please fill in Login, Password, and Server fields.")
                     else:
@@ -1944,7 +1944,7 @@ with col_left:
                             st.rerun()
             with conn_col2:
                 if is_live:
-                    if st.button("DISCONNECT (GO SANDBOX)", type="secondary", use_container_width=True):
+                    if st.button("DISCONNECT (GO SANDBOX)", type="secondary", width="stretch"):
                         init_simulated_broker()
                         st.success("Disconnected from MT5. Switched back to Simulated Sandbox.")
                         st.rerun()
@@ -1959,7 +1959,7 @@ with col_left:
         _is_auto_on = st.session_state.get("strat_use_auto_reading", True)
         _auto_tune_lbl = f"🟢 AUTO-TRADING (ACTIVE ON)" if _is_auto_on else f"⚡ AUTO-TUNE (AUTO)"
         with btn_c1:
-            if st.button(_auto_tune_lbl, type="primary" if _is_auto_on else "secondary", help=f"Dynamically calculate and apply Auto-Reading preset for {_strat_sym_label}", use_container_width=True, key=f"strat_auto_btn_{_sym_wk}"):
+            if st.button(_auto_tune_lbl, type="primary" if _is_auto_on else "secondary", help=f"Dynamically calculate and apply Auto-Reading preset for {_strat_sym_label}", width="stretch", key=f"strat_auto_btn_{_sym_wk}"):
                 _cur_sym = st.session_state.live_symbol
                 _cur_price = float(st.session_state.get("last_price", 1000.0))
                 _acc_bal = float(getattr(st.session_state.broker, "balance", 1000.0))
@@ -2007,7 +2007,7 @@ with col_left:
                 st.rerun()
 
         with btn_c2:
-            if st.button(f"⭐ GOLDEN (MANUAL)", type="secondary", help=f"Reset strategy parameters for {_strat_sym_label} to Golden Settings defaults for manual tuning", use_container_width=True, key=f"strat_defaults_btn_{_sym_wk}"):
+            if st.button(f"⭐ GOLDEN (MANUAL)", type="secondary", help=f"Reset strategy parameters for {_strat_sym_label} to Golden Settings defaults for manual tuning", width="stretch", key=f"strat_defaults_btn_{_sym_wk}"):
                 gs = get_coin_golden_settings(st.session_state.live_symbol)
                 st.session_state.strat_offset = gs["offset"]
                 st.session_state.strat_gap = gs["gap"]
@@ -3046,7 +3046,7 @@ with col_right:
             f'<div class="chart-subtitle">Live price, Bollinger Bands volatility cloud, volume histogram, grid trap levels and executed orders for <strong>{chart_coin_label}</strong> — 10 stops above &amp; 10 below</div>',
             unsafe_allow_html=True
         )
-        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+        st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
 
     # 11. TABLES
     col_tables1, col_tables2 = st.columns(2)
@@ -3323,7 +3323,7 @@ with col_right:
                 st.markdown(f"- **Grid Gap**: `{_rec_gap:.2f}%`")
                 st.markdown(f"- **Trap Offset**: `{_rec_off:.2f}%`")
             
-                if st.button(f"🎯 APPLY RECOMMENDED SPACING TO {chart_coin_label}", type="primary", use_container_width=True):
+                if st.button(f"🎯 APPLY RECOMMENDED SPACING TO {chart_coin_label}", type="primary", width="stretch"):
                     st.session_state.strat_gap = _rec_gap
                     st.session_state.strat_offset = _rec_off
                     st.session_state.strat_is_percent = True

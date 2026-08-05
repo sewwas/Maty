@@ -1,0 +1,42 @@
+{
+  "account_id": "INVESTOR-84920",
+  "deposited": 2500.0,
+  "net_value": 2948.5,
+  "pool_share": 1.97,
+  "daily_yield": 1.42,
+  "transactions": [
+    {
+      "type": "WITHDRAWAL",
+      "amount": 100.0,
+      "address": "TYu847x923kJns92837498237498234",
+      "time": "2026-08-05 19:19:23",
+      "status": "PROCESSING"
+    },
+    {
+      "type": "WITHDRAWAL",
+      "amount": 100.0,
+      "address": "TYu847x923kJns92837498237498234",
+      "time": "2026-08-05 19:01:32",
+      "status": "PROCESSING"
+    },
+    {
+      "type": "WITHDRAWAL",
+      "amount": 100.0,
+      "address": "TYu847x923kJns92837498237498234",
+      "time": "2026-08-05 18:59:42",
+      "status": "PROCESSING"
+    },
+    {
+      "type": "DEPOSIT",
+      "amount": 2500.0,
+      "time": "2026-07-15 10:30:00",
+      "status": "COMPLETED"
+    },
+    {
+      "type": "PROFIT_ALLOCATION",
+      "amount": 748.5,
+      "time": "2026-08-05 12:00:00",
+      "status": "CREDITED"
+    }
+  ]
+}

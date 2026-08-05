@@ -226,5 +226,57 @@ systemctl daemon-reload && systemctl enable matybot && systemctl start matybot'
 Run this single command in PowerShell on a Windows VPS to set up environment and start the bot:
 
 ```powershell
-git clone https://github.com/sewwas/Maty.git maty_bot; cd maty_bot; python -m venv .venv; .\.venv\Scripts\Activate.ps1; pip install --upgrade pip; pip install -r requirements.txt; python -m streamlit run app.py --server.port 8501 --server.address 0.0.0.0
-```
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+
+# 1. Auto-Install Python if missing
+if (-not (Get-Command python -ErrorAction SilentlyContinue)) {
+    Write-Host "📦 Python not found. Auto-installing Python 3.11..." -ForegroundColor Yellow
+    $pyUrl = "https://www.python.org/ftp/python/3.11.9/python-3.11.9-amd64.exe"
+    $pyPath = "$env:TEMP\python_setup.exe"
+    Invoke-WebRequest -Uri $pyUrl -OutFile $pyPath
+    Start-Process -FilePath $pyPath -ArgumentList "/quiet InstallAllUsers=1 PrependPath=1 Include_pip=1" -Wait
+    Remove-Item $pyPath -Force
+    $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
+}
+
+# 2. Auto-Install Git if missing
+if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
+    Write-Host "📦 Git not found. Auto-installing Git..." -ForegroundColor Yellow
+    $gitUrl = "https://github.com/git-for-windows/git/releases/download/v2.45.2.windows.1/Git-2.45.2-64-bit.exe"
+    $gitPath = "$env:TEMP\git_setup.exe"
+    Invoke-WebRequest -Uri $gitUrl -OutFile $gitPath
+    Start-Process -FilePath $gitPath -ArgumentList "/VERYSILENT /NORESTART /NOCANCEL /SP- /CLOSEAPPLICATIONS /RESTARTAPPLICATIONS" -Wait
+    Remove-Item $gitPath -Force
+    $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
+}
+
+# 3. Clone Repository & Navigate
+if (-not (Test-Path "maty_bot")) {
+    Write-Host "📥 Cloning Maty repository..." -ForegroundColor Cyan
+    git clone https://github.com/sewwas/Maty.git maty_bot
+}
+Set-Location maty_bot
+
+# 4. Create Virtual Environment & Install Dependencies
+if (-not (Test-Path ".venv")) {
+    Write-Host "⚙️ Creating Python virtual environment..." -ForegroundColor Green
+    python -m venv .venv
+}
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+
+# 5. Launch Streamlit Application
+Write-Host "🚀 Launching Maty Bot..." -ForegroundColor Green
+python -m streamlit run app.py --server.port 8501 --server.address 0.0.0.0
+```
+
+---
+
+## 🌐 6. Investor Portal & Exness IB Referral Integration
+
+The Profity AI Investor Portal allows clients to view live strategy stats, simulate compounding ROI, and join the Master PAMM pool.
+
+### 🔗 Official Referral Configuration
+- **Exness Partner IB Referral Link**: `https://one.exnessonelink.com/a/9w3c9k8v1j`
+- **Dynamic Portal Server**: `python portal_api.py` (Runs on `http://localhost:8080`)

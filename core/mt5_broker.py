@@ -392,11 +392,20 @@ class MT5Broker:
                 "order": ticket
             }
             result = mt5.order_send(request)
-            if result.retcode == mt5.TRADE_RETCODE_DONE:
+            if result and result.retcode == mt5.TRADE_RETCODE_DONE:
                 self.ticket_to_order_id.pop(ticket, None)
                 return self.pending_orders.pop(order_id, None)
             else:
-                print(f"Failed to cancel MT5 order {ticket}: {result.comment}")
+                comment = result.comment if result else "No result"
+                retcode = getattr(result, "retcode", 0) if result else 0
+                if comment == "Market closed" or retcode == getattr(mt5, "TRADE_RETCODE_MARKET_CLOSED", 10018):
+                    import time
+                    now = time.time()
+                    if now - getattr(self, "_last_mkt_closed_log", 0) > 10.0:
+                        print(f"Failed to cancel MT5 order {ticket}: {comment} (trading market is currently closed)")
+                        self._last_mkt_closed_log = now
+                else:
+                    print(f"Failed to cancel MT5 order {ticket}: {comment}")
         return None
 
     def cancel_all_orders(self, symbol: Optional[str] = None):
@@ -418,13 +427,21 @@ class MT5Broker:
             orders = mt5.orders_get()
         
         if orders:
+            market_closed_count = 0
             for mt5_order in orders:
                 if mt5_order.magic == self.magic_number:
                     request = {
                         "action": mt5.TRADE_ACTION_REMOVE,
                         "order": mt5_order.ticket
                     }
-                    mt5.order_send(request)
+                    res = mt5.order_send(request)
+                    if res and res.retcode != mt5.TRADE_RETCODE_DONE:
+                        if res.comment == "Market closed" or res.retcode == getattr(mt5, "TRADE_RETCODE_MARKET_CLOSED", 10018):
+                            market_closed_count += 1
+                        else:
+                            print(f"Failed to cancel MT5 order {mt5_order.ticket}: {res.comment}")
+            if market_closed_count > 0:
+                print(f"Failed to cancel {market_closed_count} MT5 order(s): Market closed")
                     
         # Wait up to 1.5 seconds for the broker to complete order cancellation to avoid duplicates on quick redeploy
         import time
