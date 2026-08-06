@@ -22,15 +22,12 @@ if "GLOBAL_RUNNERS" not in globals():
     global GLOBAL_RUNNERS
     GLOBAL_RUNNERS: dict = {}
 
-# Import core bot logic with module auto-reload support for Streamlit
-import importlib
+# Import core bot logic
 import core.data
 import core.engine
-importlib.reload(core.data)
-importlib.reload(core.engine)
 
 from core.mt5_broker import MT5Broker, SimulatedBroker, MT5_AVAILABLE, get_symbol_magic_number, TradeDisabledError
-from core.engine import BreakoutGridBot, get_pip_size, AutoReadingEngine
+from core.engine import BreakoutGridBot, get_pip_size, AutoReadingEngine, sanitize_order_size
 from core.license import LicenseManager, LicenseTier
 from core.signals import send_telegram_alert, dispatch_trade_exit_signal
 from core.data import get_live_price, get_historical_klines, interpolate_ticks, get_fear_and_greed_index, get_24h_market_stats, get_crypto_news, calculate_technical_indicators, get_order_book_depth, get_economic_calendar
@@ -811,7 +808,8 @@ def serialize_market_state(m_state):
         "bot_deploy_price": bot.deploy_price,
         "bot_last_deploy_time": getattr(bot, "last_deploy_time", 0.0),
         "bot_current_cycle_id": bot.current_cycle_id,
-        "bot_cycle_start_time": bot.cycle_start_time,
+        "bot_cycle_start_time": bot.cycle_start_time if getattr(bot, "cycle_start_time", 0.0) > 0 else time.time(),
+        "bot_last_trigger_time": getattr(bot, "_last_trigger_time", time.time()),
         "bot_cycle_history": bot.cycle_history,
         "bot_max_floating_pnl": getattr(bot, "max_floating_pnl", -float("inf")),
         "bot_breakeven_activated": getattr(bot, "breakeven_activated", False),
@@ -899,12 +897,14 @@ def deserialize_market_state(ser, symbol):
     if not saved_spacing_mode:
         saved_spacing_mode = "Percentage (%)" if ser.get("strat_is_percent", True) else "USD Points ($)"
 
+    safe_order_sz = sanitize_order_size(symbol, ser.get("strat_order_size", gs["order_size"]))
+
     bot = BreakoutGridBot(
         broker,
         grid_levels=10,
         grid_gap=ser.get("strat_gap", gs["gap"]),
         trap_offset=ser.get("strat_offset", gs["offset"]),
-        order_size=ser.get("strat_order_size", gs["order_size"]),
+        order_size=safe_order_sz,
         order_size_multiplier=ser.get("strat_size_multiplier", gs["multiplier"]),
         target_profit=ser.get("strat_target_profit", gs["target_profit"]),
         auto_restart=True,
@@ -918,14 +918,20 @@ def deserialize_market_state(ser, symbol):
         use_breakeven=ser.get("strat_breakeven", False),
         breakeven_trigger=ser.get("strat_breakeven_trigger", 0.5),
         use_smart_trailing=ser.get("strat_smart_trailing", True),
-        profit_lock_pct=ser.get("strat_profit_lock_pct", 0.80)
+        profit_lock_pct=ser.get("strat_profit_lock_pct", 0.80),
+        use_auto_reading=ser.get("strat_use_auto_reading", False)
     )
     
     bot.deployed = ser.get("bot_deployed", False)
     bot.deploy_price = ser.get("bot_deploy_price", 0.0)
     bot.last_deploy_time = ser.get("bot_last_deploy_time", 0.0)
     bot.current_cycle_id = ser.get("bot_current_cycle_id", 1)
-    bot.cycle_start_time = ser.get("bot_cycle_start_time", 0.0)
+    bot.cycle_start_time = ser.get("bot_cycle_start_time", time.time())
+    if bot.cycle_start_time <= 0.0:
+        bot.cycle_start_time = time.time()
+    bot._last_trigger_time = ser.get("bot_last_trigger_time", time.time())
+    if bot._last_trigger_time <= 0.0:
+        bot._last_trigger_time = time.time()
     bot.cycle_history = ser.get("bot_cycle_history", [])
     bot.max_floating_pnl = ser.get("bot_max_floating_pnl", -float("inf"))
     bot.breakeven_activated = ser.get("bot_breakeven_activated", False)
@@ -942,7 +948,7 @@ def deserialize_market_state(ser, symbol):
         "strat_gap": ser.get("strat_gap", gs["gap"]),
         "strat_spacing_mode": saved_spacing_mode,
         "strat_is_percent": (saved_spacing_mode == "Percentage (%)"),
-        "strat_order_size": ser.get("strat_order_size", gs["order_size"]),
+        "strat_order_size": safe_order_sz,
         "strat_size_multiplier": ser.get("strat_size_multiplier", gs["multiplier"]),
         "strat_target_profit": ser.get("strat_target_profit", gs["target_profit"]),
         "strat_sl": ser.get("strat_sl", gs["stop_loss"]),
@@ -952,7 +958,8 @@ def deserialize_market_state(ser, symbol):
         "strat_breakeven_trigger": ser.get("strat_breakeven_trigger", 0.5),
         "strat_smart_trailing": ser.get("strat_smart_trailing", True),
         "strat_profit_lock_pct": ser.get("strat_profit_lock_pct", 0.80),
-        "strat_use_adaptive_gap": ser.get("strat_use_adaptive_gap", False)
+        "strat_use_adaptive_gap": ser.get("strat_use_adaptive_gap", False),
+        "strat_use_auto_reading": ser.get("strat_use_auto_reading", False)
     }
     return m_state
 
@@ -1279,15 +1286,6 @@ bot.use_bb_filter = False
 sync_active_market_primitives()
 save_bot_state()
 
-# If settings that affect grid placement/sizing changed, redeploy traps immediately
-# provided that no positions are currently open.
-if settings_changed and bot.deployed and len(broker.open_positions) == 0:
-    try:
-        bot.deploy_traps(st.session_state.last_price, time.time())
-        st.session_state.error_message = None
-    except Exception as e:
-        st.session_state.error_message = f"Grid deployment failed: {e}"
-
 # Helper to reset real-time dashboard data
 def reset_realtime_sandbox():
     clear_bot_state()
@@ -1336,9 +1334,6 @@ def init_mt5_broker(login, password, server, suffix):
             if st.session_state.price_history:
                 st.session_state.price_history[-1] = (time.time(), current_price)
                 
-        # Avoid placing live orders on account link. Mark bot as not deployed so it places them when START BOT is clicked.
-        st.session_state.bot.deployed = False
-            
         st.session_state.mt5_startup_error = None
         save_bot_state()
         return True
@@ -1363,14 +1358,15 @@ def init_simulated_broker():
     st.session_state.broker = active_market["broker"]
     st.session_state.bot = active_market["bot"]
     
-    # Deploy simulated traps for ALL configured symbols at their current prices
+    # Deploy simulated traps for configured symbols at their current prices if not already deployed
     for sym in list(st.session_state.markets.keys()):
         sym_bot = st.session_state.markets[sym]["bot"]
         sym_price = st.session_state.markets[sym].get("last_price") or get_default_price(sym)
-        try:
-            sym_bot.deploy_traps(sym_price, time.time())
-        except Exception as e:
-            print(f"Failed to deploy traps for {sym} on sandbox init: {e}")
+        if not getattr(sym_bot, "deployed", False):
+            try:
+                sym_bot.deploy_traps(sym_price, time.time())
+            except Exception as e:
+                print(f"Failed to deploy traps for {sym} on sandbox init: {e}")
     st.session_state.mt5_startup_error = None
     save_bot_state()
 
@@ -1451,8 +1447,8 @@ with col_left:
                 st.code(new_k, language="text")
                 st.toast("Generated new license key!")
     
-    # --- SECTION A: MARKET SELECTORS (3 COLUMNS) ---
-    sel_col1, sel_col2, sel_col3 = st.columns([4, 4, 4])
+    # --- SECTION A: MARKET SELECTORS & VPS REFRESH CONTROL (4 COLUMNS) ---
+    sel_col1, sel_col2, sel_col3, sel_col4 = st.columns([3, 3, 3, 3])
     
     with sel_col1:
         base_market_map = {
@@ -1486,12 +1482,14 @@ with col_left:
         current_sym = st.session_state.get("live_symbol", "BTCUSDT")
         current_disp_label = market_reverse_map.get(current_sym, "BTCUSDT (Bitcoin)")
         opt_keys = list(market_options.keys())
-        default_idx = opt_keys.index(current_disp_label) if current_disp_label in opt_keys else 0
+        if "symbol_select_dropdown" not in st.session_state:
+            st.session_state["symbol_select_dropdown"] = current_disp_label
+        elif st.session_state["symbol_select_dropdown"] not in opt_keys:
+            st.session_state["symbol_select_dropdown"] = current_disp_label
                 
         selected_label = st.selectbox(
             "Market / Symbol",
             opt_keys,
-            index=default_idx,
             key="symbol_select_dropdown"
         )
         symbol = market_options[selected_label]
@@ -1569,6 +1567,25 @@ with col_left:
         if "markets" in st.session_state and st.session_state.live_symbol in st.session_state.markets:
             st.session_state.markets[st.session_state.live_symbol]["price_source"] = price_source
 
+    with sel_col4:
+        curr_ref = st.session_state.get("refresh_interval", 3.0)
+        ref_idx = 0 if curr_ref == 3.0 else (1 if curr_ref == 5.0 else (2 if curr_ref == 1.0 else 3))
+        vps_refresh_choice = st.selectbox(
+            "⚡ VPS Refresh Throttle",
+            ["3s Balanced (Recommended)", "5s VPS Low-CPU", "1s High-Frequency", "0s Manual Refresh"],
+            index=ref_idx,
+            help="Sets the auto-refresh rate when auto trading is active. 3s or 5s prevents 4GB RAM VPS freeze/high CPU.",
+            key="vps_refresh_throttle_select"
+        )
+        if "3s" in vps_refresh_choice:
+            st.session_state.refresh_interval = 3.0
+        elif "5s" in vps_refresh_choice:
+            st.session_state.refresh_interval = 5.0
+        elif "1s" in vps_refresh_choice:
+            st.session_state.refresh_interval = 1.0
+        else:
+            st.session_state.refresh_interval = 0.0
+
     st.markdown("<div style='margin-top: 10px;'></div>", unsafe_allow_html=True)
     _sym_wk = st.session_state.live_symbol
     _active_label = _sym_short.get(st.session_state.live_symbol, st.session_state.live_symbol)
@@ -1580,19 +1597,19 @@ with col_left:
 
     # --- SECTION B: CONSOLIDATED MASTER CONTROL DESK (3 ROWS x 3 COLUMNS) ---
     st.markdown('<div class="control-title" style="margin-top: 10px;">🎛️ MASTER CONTROL DESK</div>', unsafe_allow_html=True)
+    # --- SECTION B: CONSOLIDATED MASTER CONTROL DESK (3 ROWS x 3 COLUMNS) ---
+    st.markdown('<div class="control-title" style="margin-top: 10px;">🎛️ MASTER CONTROL DESK</div>', unsafe_allow_html=True)
     if _is_auto_active:
-        st.markdown('<div style="background:rgba(34,197,94,0.08);border:1px solid rgba(34,197,94,0.3);border-radius:8px;padding:6px 12px;font-size:0.74rem;color:#22c55e;margin-bottom:6px;">🤖 <strong>AUTO TRADING IS ON</strong> — Manual controls are locked. Click AUTO TRADING button to switch to Manual Mode.</div>', unsafe_allow_html=True)
+        st.markdown('<div style="background:rgba(34,197,94,0.08);border:1px solid rgba(34,197,94,0.3);border-radius:8px;padding:6px 12px;font-size:0.74rem;color:#22c55e;margin-bottom:6px;">🤖 <strong>AUTO ENGINE ACTIVE</strong> — Market regime parameters are dynamically calibrated. Manual overrides are always active.</div>', unsafe_allow_html=True)
     elif _is_manual_running:
-        st.markdown('<div style="background:rgba(59,130,246,0.08);border:1px solid rgba(59,130,246,0.3);border-radius:8px;padding:6px 12px;font-size:0.74rem;color:#3b82f6;margin-bottom:6px;">▶ <strong>MANUAL BOT RUNNING</strong> — Auto Trading is locked. Pause the bot first to switch to Auto Mode.</div>', unsafe_allow_html=True)
+        st.markdown('<div style="background:rgba(59,130,246,0.08);border:1px solid rgba(59,130,246,0.3);border-radius:8px;padding:6px 12px;font-size:0.74rem;color:#3b82f6;margin-bottom:6px;">▶ <strong>BOT RUNNING</strong> — Active grid is running.</div>', unsafe_allow_html=True)
 
     # ROW 1: PRIMARY EXECUTION & TRAP DEPLOYMENT
     cmd_r1_c1, cmd_r1_c2, cmd_r1_c3 = st.columns(3)
     
     with cmd_r1_c1:
         if not st.session_state.get("running", False):
-            _start_lbl = "🔒 AUTO ACTIVE" if _is_auto_active else "▶ START BOT"
-            if st.button(_start_lbl, type="primary", disabled=_is_auto_active, help="Start manual bot (disabled when Auto Trading is ON)", width="stretch", key=f"mcd_start_bot_{_sym_wk}"):
-                # Switching to Manual: ensure Auto is OFF first
+            if st.button("▶ START BOT", type="primary", help="Start trading bot for active symbol", width="stretch", key=f"mcd_start_bot_{_sym_wk}"):
                 if _curr_bot:
                     _curr_bot.use_auto_reading = False
                 st.session_state.strat_use_auto_reading = False
@@ -1645,8 +1662,7 @@ with col_left:
                 save_bot_state()
                 st.rerun()
         else:
-            _pause_lbl = "🔒 AUTO ACTIVE" if _is_auto_active else "⏸ PAUSE BOT"
-            if st.button(_pause_lbl, type="secondary", disabled=_is_auto_active, help="Pause manual bot (disabled when Auto Trading is ON)", width="stretch", key=f"mcd_pause_bot_{_sym_wk}"):
+            if st.button("⏸ PAUSE BOT", type="secondary", help="Pause trading bot for active symbol", width="stretch", key=f"mcd_pause_bot_{_sym_wk}"):
                 st.session_state.running = False
                 if "markets" in st.session_state and st.session_state.live_symbol in st.session_state.markets:
                     st.session_state.markets[st.session_state.live_symbol]["running"] = False
@@ -1655,8 +1671,7 @@ with col_left:
                 st.rerun()
 
     with cmd_r1_c2:
-        _dep_btn_lbl = "🔒 AUTO-MANAGED" if _is_auto_active else "🎯 DEPLOY TRAPS"
-        if st.button(_dep_btn_lbl, type="secondary", disabled=_is_auto_active, help="Deploy grid traps manually (disabled when Auto Trading is ON)", width="stretch", key=f"mcd_deploy_traps_{_sym_wk}"):
+        if st.button("🎯 DEPLOY TRAPS", type="secondary", help="Deploy grid traps manually", width="stretch", key=f"mcd_deploy_traps_{_sym_wk}"):
             curr_m = st.session_state.markets.get(st.session_state.live_symbol)
             if curr_m:
                 bt = curr_m["bot"]
@@ -1672,8 +1687,7 @@ with col_left:
                 st.rerun()
 
     with cmd_r1_c3:
-        _rec_btn_lbl = "🔒 AUTO-MANAGED" if _is_auto_active else "🔄 RECENTER TRAPS"
-        if st.button(_rec_btn_lbl, type="secondary", disabled=_is_auto_active, help="Recenter grid traps manually (disabled when Auto Trading is ON)", width="stretch", key=f"mcd_recenter_traps_{_sym_wk}"):
+        if st.button("🔄 RECENTER TRAPS", type="secondary", help="Recenter grid traps manually around current price", width="stretch", key=f"mcd_recenter_traps_{_sym_wk}"):
             curr_m = st.session_state.markets.get(st.session_state.live_symbol)
             if curr_m:
                 bt = curr_m["bot"]
@@ -1738,17 +1752,13 @@ with col_left:
     _is_auto_active = getattr(_curr_bot, "use_auto_reading", False) and st.session_state.get("strat_use_auto_reading", False)
     _is_manual_running = st.session_state.get("running", False) and not _is_auto_active
     
-    # Auto button is locked if manual bot is actively running
-    _auto_btn_disabled = _is_manual_running
     if _is_auto_active:
-        _mcd_auto_btn_lbl = "🟢 AUTO TRADING: ON (CLICK TO STOP)"
-    elif _is_manual_running:
-        _mcd_auto_btn_lbl = "🔒 MANUAL BOT RUNNING"
+        _mcd_auto_btn_lbl = "🟢 AUTO TRADING: ON"
     else:
-        _mcd_auto_btn_lbl = "🔴 AUTO TRADING: OFF (CLICK TO START)"
+        _mcd_auto_btn_lbl = "🔴 AUTO TRADING: OFF"
     
     with cmd_r2_c3:
-        if st.button(_mcd_auto_btn_lbl, type="primary" if _is_auto_active else "secondary", disabled=_auto_btn_disabled, help="Toggle Auto Trading Mode ON/OFF. Disabled when Manual Bot is running — pause it first.", width="stretch", key=f"mcd_defaults_{_sym_wk}"):
+        if st.button(_mcd_auto_btn_lbl, type="primary" if _is_auto_active else "secondary", disabled=False, help="Toggle Auto Trading Mode ON/OFF.", width="stretch", key=f"mcd_defaults_{_sym_wk}"):
             _cur_sym = st.session_state.live_symbol
             _cur_price = float(st.session_state.get("last_price", 1000.0))
             
@@ -2322,19 +2332,21 @@ with col_left:
             st.session_state.bot.use_auto_reading = auto_reading_val
         
     with strat_col3:
-        _order_sz = float(st.session_state.get("strat_order_size", 0.01))
+        _order_sz = sanitize_order_size(_sym_wk, float(st.session_state.get("strat_order_size", 0.01)))
+        st.session_state.strat_order_size = _order_sz
+        _max_order_sz = 0.03 if any(x in _sym_wk.upper() for x in ["PAXG", "XAU", "GOLD"]) else (0.05 if "BTC" in _sym_wk.upper() else (0.50 if "ETH" in _sym_wk.upper() else 1000.0))
         order_size_val = st.number_input(
             "Base Order Size (Quantity)",
             min_value=0.00001,
-            max_value=1000000.0,
-            value=max(0.00001, _order_sz),
+            max_value=_max_order_sz,
+            value=_order_sz,
             step=0.0001 if _order_sz < 0.1 else (0.01 if _order_sz < 10.0 else 1.0),
             format="%.5f" if _order_sz < 1.0 else ("%.2f" if _order_sz < 100.0 else "%.1f"),
             disabled=_is_auto_active,
             help=_auto_hlp,
             key=f"strat_order_size_input_{_sym_wk}"
         )
-        st.session_state.strat_order_size = order_size_val
+        st.session_state.strat_order_size = sanitize_order_size(_sym_wk, order_size_val)
 
         _sz_mult = float(st.session_state.get("strat_size_multiplier", 1.0))
         size_mult_val = st.number_input(
@@ -2569,9 +2581,9 @@ if any_running:
             m_state["price_history"].append((now, latest_price))
             m_state["last_price"] = latest_price
             
-            # Keep history to last 3000 points for charting performance (slicing is O(1) vs pop(0) O(n))
-            if len(m_state["price_history"]) > 3000:
-                m_state["price_history"] = m_state["price_history"][-3000:]
+            # Keep history to last 500 points for RAM performance on 4GB VPS
+            if len(m_state["price_history"]) > 500:
+                m_state["price_history"] = m_state["price_history"][-500:]
                 
             # Update references if this is the active symbol
             _cur_live_sym = st.session_state.get("live_symbol", "BTCUSDT")
@@ -3581,8 +3593,10 @@ with tab_all_trades:
 
 
 
-# 13. RUNNER LOOP
+# 13. RUNNER LOOP — VPS-Optimized Throttle
 any_running = any(m.get("running", False) for m in st.session_state.markets.values())
 if any_running:
-    time.sleep(1.0)
-    st.rerun()
+    refresh_sec = st.session_state.get("refresh_interval", 3.0)
+    if refresh_sec > 0:
+        time.sleep(refresh_sec)
+        st.rerun()

@@ -279,4 +279,5 @@ The Profity AI Investor Portal allows clients to view live strategy stats, simul
 
 ### 🔗 Official Referral Configuration
 - **Exness Partner IB Referral Link**: `https://one.exnessonelink.com/a/9w3c9k8v1j`
-- **Dynamic Portal Server**: `python portal_api.py` (Runs on `http://localhost:8080`)
+- **Dynamic Portal Server**: `python portal_api.py` (Runs on `http://localhost:8080`)
+- **Mathematical Blueprint Document**: [04_MATHEMATICAL_PARAMETER_BLUEPRINT_AND_RISK_PROOF.md](file:///c:/Users/User/Desktop/Maty/docs/investors/04_MATHEMATICAL_PARAMETER_BLUEPRINT_AND_RISK_PROOF.md)

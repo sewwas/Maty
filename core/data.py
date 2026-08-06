@@ -246,8 +246,8 @@ def get_fear_and_greed_index() -> dict:
                     "classification": classification,
                     "timestamp": int(item.get("timestamp", time.time()))
                 }
-    except Exception as e:
-        print(f"Fear & Greed fetch failed: {e}")
+    except Exception:
+        pass
     return {"value": 55, "classification": "Neutral", "timestamp": int(time.time())}
 
 
