@@ -64,6 +64,19 @@ def get_live_price(symbol: str = "BTCUSDT") -> Optional[float]:
         if now - cached_t < 1.0:
             return cached_p
 
+    # 0. Try MT5 Live Tick FIRST (Instant 0.0001s in-memory MT5 lookup)
+    try:
+        import MetaTrader5 as mt5
+        if mt5.terminal_info() is not None:
+            exness_sym = "XAUUSD" if sym in ("PAXGUSDT", "XAUUSD", "GOLD") else sym.replace("USDT", "USD")
+            tick = mt5.symbol_info_tick(exness_sym)
+            if tick and tick.ask and tick.bid and tick.ask > 0:
+                p = float((tick.ask + tick.bid) / 2.0)
+                _LIVE_PRICE_CACHE[sym] = (p, now)
+                return p
+    except Exception:
+        pass
+
     # 1. Try Binance API (0.3s timeout)
     try:
         url = "https://api.binance.com/api/v3/ticker/price"
