@@ -233,7 +233,7 @@ class MT5Broker:
                 # placed too close. Empirically measured per instrument:
                 sym_upper = exness_symbol.upper()
                 if any(x in sym_upper for x in ["XAU", "GOLD", "PAXG"]):
-                    abs_min_dist = max(0.30, point * 30)  # Gold: min 30 pts / $0.30
+                    abs_min_dist = max(1.00, point * 100)  # Gold: min 100 pts / $1.00
                 elif any(x in sym_upper for x in ["BTC"]):
                     abs_min_dist = max(10.0, point * 30)  # BTC: min $10
                 elif any(x in sym_upper for x in ["ETH"]):
@@ -291,15 +291,25 @@ class MT5Broker:
         }
 
         result = mt5.order_send(request)
-        success_codes = [mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_PLACED]
+        success_codes = [10008, 10009, 10010, getattr(mt5, "TRADE_RETCODE_DONE", 10009), getattr(mt5, "TRADE_RETCODE_PLACED", 10008)]
         
-        if result is None or result.retcode not in success_codes:
+        is_success = (
+            result is not None and 
+            (result.retcode in success_codes or str(getattr(result, 'comment', '')).lower() in ['ok', 'done', 'placed'])
+        )
+        
+        if not is_success:
             err = mt5.last_error() if result is None else result.comment
             print(f"MT5 Order placement failed: {err} (Retcode: {getattr(result, 'retcode', 'N/A')})")
-            # Fallback to try ORDER_FILLING_IOC if broker restricts filling mode
-            if result and result.retcode in [mt5.TRADE_RETCODE_INVALID_FILL, 10014]:
-                request["type_filling"] = mt5.ORDER_FILLING_IOC
-                result = mt5.order_send(request)
+            # Fallback to try alternative filling modes (IOC / FOK / RETURN) if broker restricts filling mode
+            if result and (result.retcode in [10030, 10014, getattr(mt5, "TRADE_RETCODE_INVALID_FILL", 10030)] or "fill" in str(getattr(result, "comment", "")).lower()):
+                for fill_mode in [mt5.ORDER_FILLING_IOC, mt5.ORDER_FILLING_FOK, mt5.ORDER_FILLING_RETURN]:
+                    request["type_filling"] = fill_mode
+                    retry_res = mt5.order_send(request)
+                    if retry_res and (retry_res.retcode in success_codes or str(getattr(retry_res, 'comment', '')).lower() in ['ok', 'done', 'placed']):
+                        result = retry_res
+                        is_success = True
+                        break
                 
             # Retry handler for invalid price / invalid stops / requote errors
             if result and result.retcode in [10015, 10016, 10004, 10011, 10013]:
@@ -324,18 +334,20 @@ class MT5Broker:
                 # MT5 retcode 10017 = TRADE_RETCODE_TRADE_DISABLED:
                 # Broker/account does not permit trading on this symbol.
                 if retcode == 10033 or (comment and "orders limit reached" in str(comment).lower()):
-                    print(f"Notice: MT5 pending orders limit reached for {exness_symbol}. Purging stale pending orders on symbol...")
+                    print(f"Notice: MT5 pending orders limit reached for {exness_symbol}. Forcefully purging all account pending orders to free up order slots...")
                     try:
-                        self.cancel_all_orders()
+                        purged_cnt = self.purge_all_account_pending_orders()
+                        print(f"Purged {purged_cnt} stale pending orders from MT5 account.")
+                        time.sleep(0.5)
                         # Retry placement once
                         result = mt5.order_send(request)
-                        if result is not None and result.retcode in success_codes:
+                        if result is not None and (result.retcode in success_codes or str(getattr(result, 'comment', '')).lower() in ['ok', 'done', 'placed']):
                             comment = result.comment
                         else:
                             raise RuntimeError(
                                 f"MT5 Pending Orders Limit Reached for {exness_symbol}. "
                                 f"Your MT5 account has reached the maximum pending orders allowed by Exness. "
-                                f"Please click 🧹 CLEAN UP in the dashboard or delete old pending orders in MT5."
+                                f"Purged {purged_cnt} orders. Please click 🧹 CLEAN UP in the dashboard or close pending orders manually in MT5."
                             )
                     except Exception as purge_err:
                         raise RuntimeError(
@@ -392,9 +404,16 @@ class MT5Broker:
                 "order": ticket
             }
             result = mt5.order_send(request)
-            if result and result.retcode == mt5.TRADE_RETCODE_DONE:
+            if result and result.retcode in [mt5.TRADE_RETCODE_DONE,
+                                              getattr(mt5, "TRADE_RETCODE_PLACED", 10008)]:
                 self.ticket_to_order_id.pop(ticket, None)
                 return self.pending_orders.pop(order_id, None)
+            elif result and result.retcode in [4756, 4753, 10018,   # INVALID_ORDER / already deleted
+                                                getattr(mt5, "TRADE_RETCODE_INVALID_ORDER", 4756)]:
+                # Order no longer exists on the broker — treat as successfully cancelled
+                self.ticket_to_order_id.pop(ticket, None)
+                self.pending_orders.pop(order_id, None)
+                return order
             else:
                 comment = result.comment if result else "No result"
                 retcode = getattr(result, "retcode", 0) if result else 0
@@ -413,9 +432,9 @@ class MT5Broker:
         Cancels all pending orders placed by this bot magic number.
         """
         if not self.ensure_connected():
+            # Offline: do NOT blindly wipe local state — keep tracking what we know
+            # Only clear after explicit reconnect so repair_grid doesn't see phantom 0 orders
             print("MT5 connection is offline. Cannot cancel all orders.")
-            self.pending_orders.clear()
-            self.ticket_to_order_id.clear()
             return
 
         if symbol is None:
@@ -444,7 +463,6 @@ class MT5Broker:
                 print(f"Failed to cancel {market_closed_count} MT5 order(s): Market closed")
                     
         # Wait up to 1.5 seconds for the broker to complete order cancellation to avoid duplicates on quick redeploy
-        import time
         for _ in range(15):
             orders_still_active = False
             active_orders = mt5.orders_get(symbol=exness_symbol) if exness_symbol else None
@@ -459,8 +477,38 @@ class MT5Broker:
                 break
             time.sleep(0.1)
 
+        # Synchronize local pending_orders memory with actual active orders on MT5 server
+        try:
+            self.sync()
+        except Exception:
+            self.pending_orders.clear()
+            self.ticket_to_order_id.clear()
+
+
+    def purge_all_account_pending_orders(self) -> int:
+        """
+        Forcefully removes ALL pending stop/limit orders across ALL symbols and magic numbers on this MT5 account
+        to resolve MT5 Retcode 10033 (Orders Limit Reached).
+        """
+        if not self.ensure_connected():
+            return 0
+        cancelled = 0
+        all_orders = mt5.orders_get()
+        if not all_orders:
+            return 0
+        for o in all_orders:
+            req = {
+                "action": mt5.TRADE_ACTION_REMOVE,
+                "order": o.ticket
+            }
+            res = mt5.order_send(req)
+            if res and res.retcode in [mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_PLACED]:
+                cancelled += 1
+        if cancelled > 0:
+            time.sleep(0.5)  # Wait 500ms for MT5 server to update free order slots
         self.pending_orders.clear()
         self.ticket_to_order_id.clear()
+        return cancelled
 
     def close_position(self, position_id: str, exit_price: float, timestamp: float) -> Optional[dict]:
         """
@@ -651,7 +699,7 @@ class MT5Broker:
         mt5_order_tickets = set()
         if mt5_orders:
             for o in mt5_orders:
-                if o.magic == self.magic_number:
+                if o.magic in [self.magic_number, 0] or not o.magic:
                     mt5_order_tickets.add(o.ticket)
                     if o.ticket not in self.ticket_to_order_id:
                         # Auto-sync existing MT5 pending orders into local memory so they render on live charts & tables
@@ -696,7 +744,6 @@ class MT5Broker:
                 
                 self.ticket_to_position_id[p_ticket] = new_pos.position_id
                 self.open_positions[new_pos.position_id] = new_pos
-                triggered_positions.append(new_pos)
 
         # 5. Clean up any open positions that were closed directly in MT5 by the user or broker
         for ticket, pos_id in list(self.ticket_to_position_id.items()):
@@ -777,6 +824,9 @@ class MT5Broker:
         mt5_orders = mt5.orders_get(symbol=exness_symbol) if exness_symbol else None
         if not mt5_orders:
             mt5_orders = mt5.orders_get()
+        # SAFETY GUARD: Only replace local state when MT5 returns a real (non-None) response.
+        # An empty tuple () is valid and means 0 orders — clear and repopulate.
+        # None means API failure/blip — preserve existing local state to prevent ghost wipe.
         if mt5_orders is not None:
             self.pending_orders.clear()
             self.ticket_to_order_id.clear()
@@ -793,6 +843,7 @@ class MT5Broker:
         mt5_positions = mt5.positions_get(symbol=exness_symbol) if exness_symbol else None
         if not mt5_positions:
             mt5_positions = mt5.positions_get()
+        # SAFETY GUARD: Same as above — only clear+repopulate on valid (non-None) response.
         if mt5_positions is not None:
             self.open_positions.clear()
             self.ticket_to_position_id.clear()

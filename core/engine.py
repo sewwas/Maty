@@ -326,10 +326,12 @@ class AutoReadingEngine:
             stop_loss = max(50.0, account_equity * (getattr(self, "stop_loss_pct", 10.0) / 100.0))
         else:
             capital_tier = "$10,000 Pro"
-            scale = min(10.0, max(2.5, account_equity / 1000.0))
+            scale = min(3.0, max(1.0, account_equity / 10000.0))
             base_size = default_sizes.get(clean_sym, 0.01) * scale
+            if any(x in clean_sym for x in ["XAU", "GOLD", "PAXG"]):
+                base_size = min(0.02, base_size)
             lot_multiplier = 1.25
-            max_levels = 8
+            max_levels = 5 if any(x in clean_sym for x in ["XAU", "GOLD", "PAXG", "BTC"]) else 8
             base_target_profit = 25.0
             stop_loss = max(50.0, account_equity * (getattr(self, "stop_loss_pct", 10.0) / 100.0))
 
@@ -446,10 +448,23 @@ class AutoReadingEngine:
             except Exception:
                 pass
 
-        # ---- 11. ADAPTIVE AUTO-COMPOUNDING LOT SIZE (by confidence & account equity) ----
-        equity_scale = max(0.5, account_equity / 1000.0)
-        conf_scale = (0.7 + 0.6 * (confidence / 100.0)) * equity_scale  # 0.70x at confidence=0, 1.30x at confidence=100
+        # ---- 11. ADAPTIVE MONEY MANAGEMENT & CONFIDENCE SIZE SCALING ----
+        # Base size is already scaled by account tier. Do NOT multiply equity_scale a second time!
+        conf_scale = (0.85 + 0.30 * (confidence / 100.0))  # 0.85x at confidence=0, 1.15x at confidence=100
         adj_size = round(base_size * conf_scale * size_session_mult, 6)
+
+        # MANDATORY HARD SAFE LOT CAPS BY SYMBOL CATEGORY
+        # Protects accounts against dangerous over-leveraging on Gold, BTC, ETH, etc.
+        if any(x in clean_sym for x in ["PAXG", "XAU", "GOLD"]):
+            adj_size = min(0.03, max(0.01, round(adj_size, 2)))  # Gold base lot STRICTLY capped between 0.01 and 0.03 lots max!
+        elif any(x in clean_sym for x in ["BTC"]):
+            adj_size = min(0.05, max(0.001, round(adj_size, 4))) # Max 0.05 BTC base
+        elif any(x in clean_sym for x in ["ETH"]):
+            adj_size = min(0.50, max(0.05, round(adj_size, 3)))  # Max 0.50 ETH base
+        elif any(x in clean_sym for x in ["SOL"]):
+            adj_size = min(3.0, max(0.5, round(adj_size, 2)))    # Max 3.0 SOL base
+        elif any(x in clean_sym for x in ["BNB"]):
+            adj_size = min(0.50, max(0.05, round(adj_size, 3)))  # Max 0.50 BNB base
 
         # ---- 12. UPDATE STATE FOR REDEPLOYMENT THROTTLE ----
         self._last_eval_bias = combined_bias
@@ -484,6 +499,27 @@ class AutoReadingEngine:
         }
 
 
+def sanitize_order_size(symbol: str, size: float) -> float:
+    sym_u = (symbol or "").upper()
+    try:
+        val = float(size)
+    except Exception:
+        val = 0.01
+
+    if any(x in sym_u for x in ["PAXG", "XAU", "GOLD"]):
+        return min(0.03, max(0.01, round(val, 2)))  # Gold strictly capped between 0.01 and 0.03 lots max
+    elif any(x in sym_u for x in ["BTC"]):
+        return min(0.05, max(0.001, round(val, 4))) # BTC max 0.05 BTC
+    elif any(x in sym_u for x in ["ETH"]):
+        return min(0.50, max(0.05, round(val, 3)))  # ETH max 0.50 ETH
+    elif any(x in sym_u for x in ["SOL"]):
+        return min(3.0, max(0.5, round(val, 2)))    # SOL max 3.0 SOL
+    elif any(x in sym_u for x in ["BNB"]):
+        return min(0.50, max(0.05, round(val, 3)))  # BNB max 0.50 BNB
+    else:
+        return min(5.0, max(0.001, round(val, 4)))
+
+
 class BreakoutGridBot:
     def __init__(
         self,
@@ -512,7 +548,7 @@ class BreakoutGridBot:
         base_bb_width: float = 0.005,
         adaptive_gap_min_mult: float = 0.5,
         adaptive_gap_max_mult: float = 2.5,
-        use_auto_reading: bool = True
+        use_auto_reading: bool = False
     ):
         self.broker = broker
         self.grid_levels = grid_levels
@@ -547,6 +583,16 @@ class BreakoutGridBot:
         self.use_auto_reading = use_auto_reading
         self.auto_reading_engine = AutoReadingEngine()
 
+    @property
+    def order_size(self) -> float:
+        sym_str = getattr(self.broker, "symbol", getattr(self, "symbol", ""))
+        return sanitize_order_size(sym_str, getattr(self, "_order_size", 0.01))
+
+    @order_size.setter
+    def order_size(self, val: float):
+        sym_str = getattr(self.broker, "symbol", getattr(self, "symbol", ""))
+        self._order_size = sanitize_order_size(sym_str, val)
+
         # Risk Control Circuit Breaker & Macro News Shield
         self.max_daily_drawdown: float = 0.0  # 0.0 disabled; e.g. 250.0 = max -$250 loss cap
         self.daily_circuit_breaker_tripped: bool = False
@@ -564,7 +610,7 @@ class BreakoutGridBot:
 
         # Grid Maintenance Engine Toggles (Disabled by default for Strict Single-Basket Cycle Isolation)
         self.use_grid_repair: bool = False
-        self.use_auto_cleanup: bool = True
+        self.use_auto_cleanup: bool = False
 
         self.deployed = False
         self.deploy_price = 0.0
@@ -673,8 +719,20 @@ class BreakoutGridBot:
             if size <= prev_size:
                 size = prev_size + 0.01
 
-            # Clamp to safe max order size cap if set (default 1.0 lots)
-            max_cap = getattr(self, "max_order_size", 1.0)
+            # Clamp to safe max order size cap per symbol category
+            sym_str = getattr(self.broker, "symbol", getattr(self, "symbol", "")).upper()
+            if any(x in sym_str for x in ["XAU", "GOLD", "PAXG"]):
+                default_max_cap = 0.05  # Gold strict safety limit: max 0.05 lots per order
+            elif any(x in sym_str for x in ["BTC"]):
+                default_max_cap = 0.10  # BTC max 0.10 BTC per order
+            elif any(x in sym_str for x in ["ETH"]):
+                default_max_cap = 1.00  # ETH max 1.00 ETH per order
+            elif any(x in sym_str for x in ["SOL"]):
+                default_max_cap = 5.00  # SOL max 5.00 SOL per order
+            else:
+                default_max_cap = 1.0
+
+            max_cap = getattr(self, "max_order_size", default_max_cap)
             if max_cap > 0 and size > max_cap:
                 size = max_cap
         else:
@@ -703,9 +761,9 @@ class BreakoutGridBot:
         if not hasattr(self, "prop_firm_guard_enabled"):
             self.prop_firm_guard_enabled = False
         if not hasattr(self, "use_grid_repair"):
-            self.use_grid_repair = True
+            self.use_grid_repair = False
         if not hasattr(self, "use_auto_cleanup"):
-            self.use_auto_cleanup = True
+            self.use_auto_cleanup = False
         if not hasattr(self, "cycle_history"):
             self.cycle_history = []
         if not hasattr(self, "breakeven_activated"):
@@ -728,6 +786,10 @@ class BreakoutGridBot:
             self.profit_lock_pct = 0.80
         if not hasattr(self, "use_adaptive_gap"):
             self.use_adaptive_gap = False
+        if not hasattr(self, "use_stagnant_redeploy"):
+            self.use_stagnant_redeploy = False
+        if not hasattr(self, "_last_trigger_time") or getattr(self, "_last_trigger_time", 0.0) <= 0.0:
+            self._last_trigger_time = time.time()
         if not hasattr(self, "grid_levels"):
             self.grid_levels = 10
         if not hasattr(self, "grid_gap"):
@@ -747,7 +809,7 @@ class BreakoutGridBot:
         if not hasattr(self, "auto_restart"):
             self.auto_restart = True
         if not hasattr(self, "use_auto_reading"):
-            self.use_auto_reading = True
+            self.use_auto_reading = False
         if not hasattr(self, "auto_reading_engine"):
             self.auto_reading_engine = AutoReadingEngine()
 
@@ -757,6 +819,8 @@ class BreakoutGridBot:
         If use_bb_filter is True, deployment will be skipped if bb_width is missing or > threshold.
         """
         self.ensure_attributes_initialized()
+        if getattr(self, "in_runner_mode", False):
+            return
         if getattr(self, "use_bb_filter", False):
             if bb_width is None or bb_width > getattr(self, "bb_squeeze_threshold", 0.02):
                 return
@@ -769,13 +833,14 @@ class BreakoutGridBot:
                 print(f"[{getattr(self.broker, 'symbol', 'BOT')}] Daily Drawdown Circuit Breaker TRIPPED (-${abs(realized):.2f} <= -${self.max_daily_drawdown:.2f}). Deployment halted.")
                 return
 
-        # Weekend Shutdown Guard: Pause grid deployment within 2 hours of Friday market close (20:00 GMT)
+        # Weekend Shutdown Guard: Pause grid deployment during Friday evening and weekend market close
         if getattr(self, "use_weekend_shutdown", True):
             import datetime
             ts_sec = (timestamp / 1000.0) if timestamp > 1e11 else timestamp
             dt_gmt = datetime.datetime.fromtimestamp(ts_sec, datetime.timezone.utc)
-            if dt_gmt.weekday() == 4 and dt_gmt.hour >= 20:
-                print(f"[{getattr(self.broker, 'symbol', 'BOT')}] Friday Weekend Shutdown Guard ACTIVE (GMT {dt_gmt.hour:02d}:{dt_gmt.minute:02d}). Deployment halted to avoid weekend gap risk.")
+            is_weekend_pause = (dt_gmt.weekday() == 4 and dt_gmt.hour >= getattr(self, "weekend_shutdown_utc_hour", 20)) or (dt_gmt.weekday() == 5) or (dt_gmt.weekday() == 6 and dt_gmt.hour < 22)
+            if is_weekend_pause:
+                self._last_deploy_error_time = timestamp
                 return
 
         # Existing Open Positions Guard:
@@ -787,9 +852,11 @@ class BreakoutGridBot:
 
         effective_gap = self.get_effective_gap(current_price, bb_width)
 
-        self.broker.cancel_all_orders()
+        # FIX 1: Do NOT cancel traps yet — wait until after Auto-Reading succeeds.
+        # Cancelling here and then failing Auto-Reading would leave grid uncovered with zero traps.
         self.deploy_price = current_price
         self.cycle_start_time = timestamp
+        self._last_trigger_time = timestamp
         self.in_runner_mode = False
         self.breakeven_activated = False
         self.ratchet_floor = 0.0
@@ -858,9 +925,19 @@ class BreakoutGridBot:
         self.deploy_grid_gap = gap_val
         self.deploy_trap_offset = buy_offset_val
 
+        placed_count = 0
+        cancel_success = False
         try:
+            # FIX 1: Cancel ONLY right before placing fresh traps (after Auto-Reading succeeds).
+            # This guarantees traps are never wiped unless we are ready to immediately replace them.
+            try:
+                self.broker.cancel_all_orders()
+                cancel_success = True
+            except Exception as pre_cancel_err:
+                print(f"Pre-deploy cancel notice: {pre_cancel_err}")
+
             unidirectional_mode = "DUAL"
-            if getattr(self, "use_auto_reading", True) and hasattr(self, "last_auto_eval"):
+            if getattr(self, "use_auto_reading", False) and hasattr(self, "last_auto_eval"):
                 unidirectional_mode = self.last_auto_eval.get("unidirectional_mode", "DUAL")
 
             # Orderbook Pressure Imbalance Filter: Pause trap deployment into heavy institutional sell/buy walls
@@ -873,27 +950,42 @@ class BreakoutGridBot:
             # Place Buy Stop orders above current_price (suppressed if SELL_ONLY)
             if unidirectional_mode != "SELL_ONLY":
                 for i in range(self.grid_levels):
-                    trigger_price = current_price + buy_offset_val + (i * gap_val)
-                    level_size = self.calculate_level_size(self.order_size, self.order_size_multiplier, i)
-                    self.broker.place_order("BUY_STOP", trigger_price, level_size, timestamp)
+                    try:
+                        trigger_price = current_price + buy_offset_val + (i * gap_val)
+                        level_size = self.calculate_level_size(self.order_size, self.order_size_multiplier, i)
+                        self.broker.place_order("BUY_STOP", trigger_price, level_size, timestamp)
+                        placed_count += 1
+                    except Exception as err:
+                        print(f"Buy trap level {i+1} placement notice: {err}")
+                        break
 
             # Place Sell Stop orders below current_price (suppressed if BUY_ONLY)
             if unidirectional_mode != "BUY_ONLY":
                 for i in range(self.grid_levels):
-                    trigger_price = current_price - sell_offset_val - (i * gap_val)
-                    level_size = self.calculate_level_size(self.order_size, self.order_size_multiplier, i)
-                    self.broker.place_order("SELL_STOP", trigger_price, level_size, timestamp)
+                    try:
+                        trigger_price = current_price - sell_offset_val - (i * gap_val)
+                        level_size = self.calculate_level_size(self.order_size, self.order_size_multiplier, i)
+                        self.broker.place_order("SELL_STOP", trigger_price, level_size, timestamp)
+                        placed_count += 1
+                    except Exception as err:
+                        print(f"Sell trap level {i+1} placement notice: {err}")
+                        break
 
-            self.deployed = True
+            # FIX: Use ONLY placed_count to determine deployed state.
+            # Do NOT use len(pending_orders) — after cancel+sync, MT5 residual orders can
+            # make pending_orders appear non-empty even if zero NEW traps were placed.
+            if placed_count > 0:
+                self.deployed = True
+            else:
+                self.deployed = False
+                self._last_deploy_error_time = timestamp
         except Exception as e:
-            # Rollback: Clean up any pending orders placed during this failed deployment to avoid orphans
-            print(f"Failed to deploy grid traps. Rolling back: {e}")
-            try:
-                self.broker.cancel_all_orders()
-            except Exception as rollback_err:
-                print(f"Deployment rollback cleanup failed: {rollback_err}")
-            self.deployed = False
-            raise e
+            if placed_count > 0:
+                self.deployed = True
+            else:
+                self.deployed = False
+                self._last_deploy_error_time = timestamp
+                print(f"Notice: Grid trap deployment paused: {e}")
 
     def repair_grid(self, current_price: float, timestamp: float) -> int:
         """
@@ -918,10 +1010,13 @@ class BreakoutGridBot:
 
         base_size = getattr(self, "deploy_order_size", self.order_size)
         mult = getattr(self, "deploy_order_size_multiplier", self.order_size_multiplier)
-        gap_config = getattr(self, "deploy_grid_gap", self.grid_gap)
-        offset_config = getattr(self, "deploy_trap_offset", self.trap_offset)
 
-        if getattr(self, "use_auto_reading", True):
+        # Always use active deployment geometry if available to guarantee exact match with deployed traps
+        if getattr(self, "deploy_grid_gap", None) and getattr(self, "deploy_trap_offset", None):
+            gap_val = self.deploy_grid_gap
+            buy_offset_val = self.deploy_trap_offset
+            sell_offset_val = buy_offset_val
+        elif getattr(self, "use_auto_reading", False):
             try:
                 from core.data import get_historical_klines, calculate_technical_indicators, get_order_book_depth, get_economic_calendar
                 sym_str = getattr(self.broker, "symbol", "BTCUSDT")
@@ -943,9 +1038,13 @@ class BreakoutGridBot:
                 sell_offset_val = center_price * (eval_res["sell_offset_pct"] / 100.0)
                 gap_val = center_price * (eval_res["dynamic_gap_pct"] / 100.0)
             except Exception:
+                gap_config = getattr(self, "deploy_grid_gap", self.grid_gap)
+                offset_config = getattr(self, "deploy_trap_offset", self.trap_offset)
                 buy_offset_val, gap_val = self.calculate_offset_and_gap(center_price, gap_config, offset_config)
                 sell_offset_val = buy_offset_val
         else:
+            gap_config = getattr(self, "deploy_grid_gap", self.grid_gap)
+            offset_config = getattr(self, "deploy_trap_offset", self.trap_offset)
             buy_offset_val, gap_val = self.calculate_offset_and_gap(center_price, gap_config, offset_config)
             sell_offset_val = buy_offset_val
 
@@ -956,16 +1055,21 @@ class BreakoutGridBot:
         sell_open = [p for p in self.broker.open_positions.values() if p.type == "SELL"]
 
         # ---- Idle Grid Dynamic Compression (Post-Spike Gap Compression) ----
-        # If 0 positions are open and pending orders exist from a prior ATR spike:
-        # Check if live gap_val has decayed significantly below the existing pending orders' gap.
-        # If live gap_val < pending_gap * 0.70 and grid has been idle for >180s, auto-recenter & compress!
+        # FIX 2: Only auto-recenter if a fresh deploy can actually proceed.
+        # Guard all blocking conditions first before wiping existing traps.
         if len(self.broker.open_positions) == 0 and len(buy_pending) >= 2:
             buy_prices = sorted([o.trigger_price for o in buy_pending])
             existing_gap = buy_prices[1] - buy_prices[0]
             grid_age = timestamp - getattr(self, "last_deploy_time", 0.0)
             if existing_gap > 0 and gap_val < (existing_gap * 0.70) and grid_age >= 180:
-                self.broker.cancel_all_orders()
-                self.deploy_traps(center_price, timestamp)
+                # Pre-check: ensure deploy_traps is not blocked by weekend/circuit-breaker/runner guards
+                _in_runner = getattr(self, "in_runner_mode", False)
+                _cb_tripped = getattr(self, "daily_circuit_breaker_tripped", False)
+                _in_weekend = getattr(self, "weekend_shutdown_triggered", False)
+                _past_cooldown = timestamp >= getattr(self, "_runner_exit_cooldown_until", 0.0)
+                if not _in_runner and not _cb_tripped and not _in_weekend and _past_cooldown:
+                    self.broker.cancel_all_orders()
+                    self.deploy_traps(center_price, timestamp)
                 return 0
 
         existing_buy_levels = [o.trigger_price for o in buy_pending] + [p.entry_price for p in buy_open]
@@ -976,11 +1080,30 @@ class BreakoutGridBot:
         cancel_opp = getattr(self, "cancel_opposite_on_trigger", True)
         allow_buy_repair = True
         allow_sell_repair = True
+
+        buy_pos_in_market = [p for p in self.broker.open_positions.values() if p.type == "BUY"]
+        sell_pos_in_market = [p for p in self.broker.open_positions.values() if p.type == "SELL"]
+
         if cancel_opp:
-            if len(sell_open) > 0 and len(buy_open) == 0:
-                allow_buy_repair = False  # Active SELL positions -> suppress BUY traps
-            elif len(buy_open) > 0 and len(sell_open) == 0:
-                allow_sell_repair = False # Active BUY positions -> suppress SELL traps
+            if buy_pos_in_market and not sell_pos_in_market:
+                # BUY positions open — OCO intentionally wiped SELL_STOPs; do NOT restore them
+                allow_sell_repair = False
+            elif sell_pos_in_market and not buy_pos_in_market:
+                # SELL positions open — OCO intentionally wiped BUY_STOPs; do NOT restore them
+                allow_buy_repair = False
+            elif not buy_pos_in_market and not sell_pos_in_market:
+                # No positions at all — full repair allowed on both sides
+                allow_buy_repair = True
+                allow_sell_repair = True
+            else:
+                # Both sides open (hedge lock) — allow repair on both sides
+                allow_buy_repair = True
+                allow_sell_repair = True
+
+        # Short-circuit: if nothing to repair on either side, return immediately
+        if not allow_buy_repair and not allow_sell_repair:
+            return 0
+
 
         placed_count = 0
         try:
@@ -1042,7 +1165,12 @@ class BreakoutGridBot:
 
         center_price = self.deploy_price if self.deploy_price > 0 else current_price
 
-        if getattr(self, "use_auto_reading", True):
+        # Always use active deployment geometry if available to guarantee exact match with deployed traps
+        if getattr(self, "deploy_grid_gap", None) and getattr(self, "deploy_trap_offset", None):
+            gap_val = self.deploy_grid_gap
+            buy_offset_val = self.deploy_trap_offset
+            sell_offset_val = buy_offset_val
+        elif getattr(self, "use_auto_reading", False):
             try:
                 from core.data import get_historical_klines, calculate_technical_indicators, get_order_book_depth, get_economic_calendar
                 sym_str = getattr(self.broker, "symbol", "BTCUSDT")
@@ -1144,9 +1272,9 @@ class BreakoutGridBot:
             now_utc = datetime.datetime.fromtimestamp(timestamp, datetime.timezone.utc)
             weekday = now_utc.weekday()  # 0=Mon, 4=Fri, 5=Sat, 6=Sun
             shutdown_hour = getattr(self, "weekend_shutdown_utc_hour", 20)
+            is_weekend_pause = (weekday == 4 and now_utc.hour >= shutdown_hour) or (weekday == 5) or (weekday == 6 and now_utc.hour < 22)
 
-            # Friday evening shutdown (Friday hour >= shutdown_hour)
-            if weekday == 4 and now_utc.hour >= shutdown_hour:
+            if is_weekend_pause:
                 if not getattr(self, "weekend_shutdown_triggered", False):
                     self.weekend_shutdown_triggered = True
                     self.deployed = False
@@ -1164,24 +1292,25 @@ class BreakoutGridBot:
                             print(f"[WEEKEND SHUTDOWN] Holding open positions (${float_pnl:.2f}) through weekend to avoid forced loss realization.")
                     except Exception as e:
                         print(f"Notice: Weekend shutdown cleanup error: {e}")
-                    print(f"[WEEKEND SHUTDOWN] Friday Market Protection triggered @ {now_utc.strftime('%H:%M UTC')}. Pausing grid execution until Monday.")
-                return None
-
-            # Saturday or Sunday before 22:00 UTC -> Hold weekend pause
-            if weekday == 5 or (weekday == 6 and now_utc.hour < 22):
-                self.weekend_shutdown_triggered = True
-                self.deployed = False
+                    print(f"[WEEKEND SHUTDOWN] Weekend Market Protection triggered @ {now_utc.strftime('%H:%M UTC')}. Pausing grid execution until Monday.")
                 return None
 
             # Monday / Sunday late reopen -> Clear pause & auto-resume
             if getattr(self, "weekend_shutdown_triggered", False):
                 self.weekend_shutdown_triggered = False
+                # FIX 3: Clear the deploy error cooldown on reopen so deploy_traps fires immediately
+                self._last_deploy_error_time = 0.0
                 print(f"[WEEKEND REOPEN] Monday Market Reopen detected @ {now_utc.strftime('%Y-%m-%d %H:%M UTC')}. Auto-resuming grid execution.")
                 if self.auto_restart:
                     self.deploy_traps(current_price, timestamp, bb_width)
         # ─────────────────────────────────────────────────────────────────────────
         if not self.deployed and self.auto_restart:
-            self.deploy_traps(current_price, timestamp, bb_width)
+            if timestamp >= getattr(self, "_last_deploy_error_time", 0.0) + 30.0:
+                try:
+                    self.deploy_traps(current_price, timestamp, bb_width)
+                except Exception as dep_err:
+                    self._last_deploy_error_time = timestamp
+                    print(f"Notice: Grid deployment on pause (30s cooldown): {dep_err}")
 
         if not self.deployed:
             return None
@@ -1220,17 +1349,25 @@ class BreakoutGridBot:
         # Calculate floating profit/loss
         float_pnl = self.broker.get_floating_pnl(current_price)
 
-        # Automatic Autonomous Grid Repair: Instantly auto-restore missing trap levels on ticks without manual intervention
-        if not getattr(self, "in_runner_mode", False) and getattr(self, "use_grid_repair", True):
-            target_traps = self.grid_levels if getattr(self, "cancel_opposite_on_trigger", False) else (self.grid_levels * 2)
-            if len(self.broker.pending_orders) < target_traps:
+        # Automatic Autonomous Grid Repair (Disabled by default — manual override via 🔧 REPAIR GRID button)
+        if not getattr(self, "in_runner_mode", False) and getattr(self, "use_grid_repair", False):
+            buy_pending = [o for o in self.broker.pending_orders.values() if o.type == "BUY_STOP"]
+            buy_open = [p for p in self.broker.open_positions.values() if p.type == "BUY"]
+            sell_pending = [o for o in self.broker.pending_orders.values() if o.type == "SELL_STOP"]
+            sell_open = [p for p in self.broker.open_positions.values() if p.type == "SELL"]
+
+            cancel_opp = getattr(self, "cancel_opposite_on_trigger", False)
+            need_buy_repair = (len(buy_pending) + len(buy_open) < self.grid_levels) and not (cancel_opp and len(sell_open) > 0)
+            need_sell_repair = (len(sell_pending) + len(sell_open) < self.grid_levels) and not (cancel_opp and len(buy_open) > 0)
+
+            if need_buy_repair or need_sell_repair:
                 try:
                     self.repair_grid(current_price, timestamp)
                 except Exception as repair_err:
                     print(f"Auto-repair notice: {repair_err}")
 
-        # Automatic Pending Trap Cleanup: Purge orphan or duplicate pending stop orders
-        if getattr(self, "use_auto_cleanup", True) and len(self.broker.pending_orders) > 0:
+        # Automatic Pending Trap Cleanup (Disabled by default — manual override via 🧹 CLEAN UP button)
+        if getattr(self, "use_auto_cleanup", False) and len(self.broker.pending_orders) > 0:
             try:
                 self.cleanup_grid(current_price)
             except Exception:
@@ -1274,11 +1411,15 @@ class BreakoutGridBot:
         # the market has moved far from the deploy price. Snap the grid to current price.
         _stagnant_redeploy_interval = 3600.0 if (self.max_cycle_duration > 86400.0 or self.max_cycle_duration <= 0) else (self.max_cycle_duration * 0.5)
         _no_positions = len(self.broker.open_positions) == 0
-        _last_trig = getattr(self, '_last_trigger_time', self.cycle_start_time)
+        _last_trig = getattr(self, '_last_trigger_time', 0.0)
+        if _last_trig <= 0.0:
+            _last_trig = self.cycle_start_time if self.cycle_start_time > 0.0 else timestamp
+            self._last_trigger_time = _last_trig
         _stagnant = (timestamp - _last_trig) >= _stagnant_redeploy_interval
         _past_cooldown = timestamp >= getattr(self, '_runner_exit_cooldown_until', 0.0)
-        if _no_positions and _stagnant and self.deployed and self.auto_restart and _past_cooldown:
+        if _no_positions and _stagnant and self.deployed and getattr(self, "use_stagnant_redeploy", False) and _past_cooldown:
             # Price has drifted — silently redeploy at current price with no cycle record
+            self._last_trigger_time = timestamp
             self.deploy_traps(current_price, timestamp, bb_width)
             return None  # No cycle exit, just a silent recenter
         # ─────────────────────────────────────────────────────────────────────────
@@ -1336,13 +1477,11 @@ class BreakoutGridBot:
             volume_scale_mult = max(1.0, total_basket_lots / base_size)
             effective_target_profit = max(self.target_profit * volume_scale_mult, friction_floor + 1.00)
 
-            is_multi_fill_profit = (num_fills >= 2 and float_pnl >= friction_floor + 2.00)
-            is_positive_trend = (avg_delta > 0 and float_pnl >= friction_floor + 0.50)
-            
-            if self.use_smart_trailing and (float_pnl >= effective_target_profit or is_multi_fill_profit or is_positive_trend):
+            if self.use_smart_trailing and float_pnl >= effective_target_profit:
                 if not self.in_runner_mode:
                     self.in_runner_mode = True
-                    # Immediately cancel all pending traps to prevent opposite triggers during pullback!
+                    self.max_floating_pnl = float_pnl
+                    # Immediately cancel pending traps on Target Profit reach to lock in runner gains
                     try:
                         self.broker.cancel_all_orders()
                     except Exception as err:
@@ -1537,6 +1676,10 @@ class BreakoutGridBot:
                     print(f"Notice: Telegram alert dispatch error: {tg_err}")
 
             self.current_cycle_id += 1
+
+            # FIX 4: Clear runner mode BEFORE calling deploy_traps so the runner guard
+            # inside deploy_traps doesn't block the fresh grid after a cycle exit.
+            self.in_runner_mode = False
 
             if self.auto_restart:
                 # Instantly deploy new traps at the new current price
