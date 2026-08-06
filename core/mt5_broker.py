@@ -631,11 +631,8 @@ class MT5Broker:
         if symbol is None:
             symbol = self.symbol
         exness_symbol = self.get_exness_symbol(symbol) if symbol else None
-        # Pre-exit order cleanup: cancel pending orders FIRST to eliminate execution race conditions
-        try:
-            self.cancel_all_orders()
-        except Exception as cancel_err:
-            print(f"Notice: Pre-close order cancellation: {cancel_err}")
+        # NOTE: Pending order cancellation is the CALLER'S responsibility before calling close_all_positions().
+        # engine.py already calls cancel_all_orders() before this to avoid the double-wipe race condition.
 
         positions = mt5.positions_get(symbol=exness_symbol) if exness_symbol else None
         if not positions:
