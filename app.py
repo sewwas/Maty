@@ -409,12 +409,10 @@ with tab_desk:
                 _m_item["running"] = True
                 _m_item["bot"].use_auto_reading = True
                 _m_item["bot"].auto_restart = True   # Auto bots self-redeploy on tick
-                _m_item["bot"].deployed = False
                 try:
                     _m_item["bot"].deploy_traps(_m_item.get("last_price", 0), time.time(), force=True)
-                    _m_item["bot"].deployed = True
                 except Exception:
-                    _m_item["bot"].deployed = True
+                    pass
             st.toast("Started all 6 pairs in Auto Mode!")
             st.rerun()
     with tb_c2:
@@ -545,13 +543,11 @@ with tab_desk:
                         if new_auto != is_auto:
                             bot.use_auto_reading = new_auto
                             bot.auto_restart    = new_auto
-                            bot.deployed        = False
                             if is_run:
                                 try:
                                     bot.deploy_traps(sym_p, time.time(), force=True)
-                                    bot.deployed = True
                                 except Exception:
-                                    bot.deployed = True
+                                    pass
                             st.toast(f"{sym_code} → {'AUTO 🤖' if new_auto else 'MANUAL 🖐️'}")
                             st.rerun()
 
@@ -561,12 +557,10 @@ with tab_desk:
                             if st.button("▶ START", key=f"btn_start_{sym_code}", type="primary", use_container_width=True):
                                 m_data["running"]  = True
                                 bot.auto_restart   = is_auto
-                                bot.deployed       = False
                                 try:
                                     bot.deploy_traps(sym_p, time.time(), force=True)
-                                    bot.deployed = True
                                 except Exception:
-                                    bot.deployed = True
+                                    pass
                                 st.rerun()
                         else:
                             if st.button("⏹️ STOP", key=f"btn_stop_{sym_code}", use_container_width=True):

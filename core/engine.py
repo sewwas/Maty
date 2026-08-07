@@ -840,6 +840,11 @@ class BreakoutGridBot:
             return
         self._is_deploying = True
 
+        # Rapid Re-Deploy Cooldown Guard: Prevent deploy_traps from running multiple times within 3 seconds
+        if not force and timestamp < (getattr(self, "last_deploy_time", 0.0) + 3.0):
+            self._is_deploying = False
+            return
+
         # Active Grid Lock Guard: Lock active traps in place until triggered or forced.
         # Prevents tick updates or Auto-Reading re-evaluations from churning active pending orders.
         if not force and self.deployed and len(self.broker.pending_orders) > 0 and len(self.broker.open_positions) == 0:
@@ -1384,7 +1389,7 @@ class BreakoutGridBot:
                     self.deploy_traps(current_price, timestamp, bb_width)
         # ─────────────────────────────────────────────────────────────────────────
         if not self.deployed and self.auto_restart:
-            if timestamp >= getattr(self, "_last_deploy_error_time", 0.0) + 60.0:
+            if (timestamp - getattr(self, "last_deploy_time", 0.0)) >= 5.0 and timestamp >= getattr(self, "_last_deploy_error_time", 0.0) + 60.0:
                 try:
                     self.deploy_traps(current_price, timestamp, bb_width)
                 except Exception as dep_err:
