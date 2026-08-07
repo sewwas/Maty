@@ -1619,6 +1619,18 @@ class BreakoutGridBot:
             friction_floor_adjusted = (friction_floor * 100.0) if is_cent else friction_floor
             effective_target_profit = max(base_tp * volume_scale_mult, friction_floor_adjusted + (100.0 if is_cent else 1.00))
 
+            buy_pos_list = [p for p in self.broker.open_positions.values() if p.type == "BUY"]
+            sell_pos_list = [p for p in self.broker.open_positions.values() if p.type == "SELL"]
+
+            # Strong Trend Directional Confluence: Allow extra breathing room & boost profit targets on strong trend continuations
+            is_strong_buy_trend = bool(buy_pos_list and not sell_pos_list and avg_delta > 0)
+            is_strong_sell_trend = bool(sell_pos_list and not buy_pos_list and avg_delta < 0)
+            is_strong_trend = is_strong_buy_trend or is_strong_sell_trend
+
+            # High-Confidence Trend Target Profit Booster: 2.5x expansion when trend momentum is confirmed!
+            if is_strong_trend:
+                effective_target_profit *= 2.5
+
             if self.use_smart_trailing and float_pnl >= effective_target_profit:
                 if not self.in_runner_mode:
                     self.in_runner_mode = True
@@ -1629,29 +1641,21 @@ class BreakoutGridBot:
                     except Exception as err:
                         print(f"Failed to cancel pending orders on Runner Mode entry: {err}")
 
-            buy_pos_list = [p for p in self.broker.open_positions.values() if p.type == "BUY"]
-            sell_pos_list = [p for p in self.broker.open_positions.values() if p.type == "SELL"]
-
-            # Strong Trend Directional Confluence: Allow extra breathing room on strong trend continuations
-            is_strong_buy_trend = bool(buy_pos_list and not sell_pos_list and avg_delta > 0)
-            is_strong_sell_trend = bool(sell_pos_list and not buy_pos_list and avg_delta < 0)
-            is_strong_trend = is_strong_buy_trend or is_strong_sell_trend
-
             if self.in_runner_mode:
-                # Strong active trend: allow wider trailing room (0.70) for maximum trend profit expansion
-                # Confirmed reversal: tighten instantly (0.90) to lock in 90% of peak profits before drop
+                # Strong active trend: 85% peak profit lock for massive trend expansion
+                # Confirmed reversal: tighten instantly (92%) to lock in top-of-candle peak profits before drop
                 if is_reversing:
-                    lock_pct = 0.90
+                    lock_pct = 0.92
                 elif is_strong_trend:
-                    lock_pct = getattr(self, 'trend_runner_lock_pct', 0.70)
+                    lock_pct = 0.85
                 else:
                     lock_pct = getattr(self, 'profit_lock_pct', 0.80)
 
                 # 100% Unbreakable Net-Positive Floor: strictly >= 50% TP or friction_floor + $1.00 (Guarantees ZERO loss)
-                unbreakable_net_floor = max(friction_floor + 1.00, effective_target_profit * 0.50)
+                unbreakable_net_floor = max(friction_floor_adjusted + (100.0 if is_cent else 1.00), effective_target_profit * 0.50)
                 trailing_peak_floor = self.max_floating_pnl * lock_pct
                 runner_floor = max(unbreakable_net_floor, trailing_peak_floor)
-                if float_pnl <= runner_floor and float_pnl >= friction_floor + 1.00:
+                if float_pnl <= runner_floor and float_pnl >= friction_floor_adjusted + (100.0 if is_cent else 1.00):
                     runner_hit = True
             else:
                 # Dynamic Volume-Scaled Target Profit (strictly net positive cash profit after spread & commission)
