@@ -376,15 +376,27 @@ class AutoReadingEngine:
         else:  # REVERSAL
             regime_gap_mult = 1.20    # Protect against false breakouts at extremes
 
+        # Profile-specific geometry scaling (PRO_SCALPING / BALANCED / INSTITUTIONAL)
+        profile_mode = getattr(self, "auto_profile", "BALANCED").upper()
+        if "SCALPING" in profile_mode:
+            profile_offset_mult = 0.85
+            profile_gap_mult = 0.85
+        elif "INSTITUTIONAL" in profile_mode:
+            profile_offset_mult = 1.40
+            profile_gap_mult = 1.40
+        else:  # BALANCED
+            profile_offset_mult = 1.00
+            profile_gap_mult = 1.00
+
         # Symmetric offsets: 100% equal spacing on both BUY and SELL sides
-        symmetric_offset = round(base_offset * news_risk_mult, 3)
-        buy_offset = max(0.04, min(0.10, symmetric_offset))
+        symmetric_offset = round(base_offset * news_risk_mult * profile_offset_mult, 3)
+        buy_offset = max(0.04, min(0.12, symmetric_offset))
         sell_offset = buy_offset
 
         # Final dynamic gap with session + regime + BB width
         bb_scale = max(0.5, min(2.0, bb_width_pct / 2.0))
-        dynamic_gap = max(0.04, min(0.12, round(
-            base_gap * bb_scale * regime_gap_mult * gap_session_mult,
+        dynamic_gap = max(0.04, min(0.15, round(
+            base_gap * bb_scale * regime_gap_mult * gap_session_mult * profile_gap_mult,
             3
         )))
 
@@ -393,10 +405,10 @@ class AutoReadingEngine:
         
         if any(x in sym_u for x in ["PAXG", "XAU", "GOLD"]):
             # Gold Symmetric Precision (0.05% Gap & Offset)
-            min_gap = 0.05 if is_quiet_market else 0.06
-            min_offset = 0.05 if is_quiet_market else 0.06
-            dynamic_gap = min(0.10, max(min_gap, dynamic_gap))
-            buy_offset = min(0.10, max(min_offset, buy_offset))
+            min_gap = (0.05 if is_quiet_market else 0.06) * profile_gap_mult
+            min_offset = (0.05 if is_quiet_market else 0.06) * profile_offset_mult
+            dynamic_gap = min(0.12, max(min_gap, dynamic_gap))
+            buy_offset = min(0.12, max(min_offset, buy_offset))
             sell_offset = buy_offset
             lot_multiplier = min(1.25, lot_multiplier)
             base_target_profit = 2.50
