@@ -1060,12 +1060,27 @@ class BreakoutGridBot:
             except Exception as pre_cancel_err:
                 print(f"Pre-deploy cancel notice: {pre_cancel_err}")
 
+            # Symbol-Adaptive Hardware Broker Take-Profit (TP) Floor
+            sym_name = str(getattr(self.broker, "symbol", "")).upper()
+            if "BTC" in sym_name:
+                min_tp_dist = max(gap_val * 1.0, 50.00)
+            elif any(x in sym_name for x in ["XAU", "GOLD", "PAXG"]):
+                min_tp_dist = max(gap_val * 1.0, 3.00)
+            elif "ETH" in sym_name:
+                min_tp_dist = max(gap_val * 1.0, 3.00)
+            elif "SOL" in sym_name:
+                min_tp_dist = max(gap_val * 1.0, 0.50)
+            elif "BNB" in sym_name:
+                min_tp_dist = max(gap_val * 1.0, 1.00)
+            else:
+                min_tp_dist = max(gap_val * 1.0, current_price * 0.001)
+
             # Place Buy Stop orders above Ask price (suppressed if SELL_ONLY)
             if unidirectional_mode != "SELL_ONLY":
                 for i in range(self.grid_levels):
                     trigger_price = ask_ref + buy_offset_val + (i * gap_val)
                     level_size = self.calculate_level_size(self.order_size, self.order_size_multiplier, i)
-                    buy_tp_px = trigger_price + max(gap_val * 1.0, 3.00 if ("XAU" in str(getattr(self.broker, "symbol", "")).upper() or "GOLD" in str(getattr(self.broker, "symbol", "")).upper()) else 0.05)
+                    buy_tp_px = trigger_price + min_tp_dist
                     for attempt in range(2):
                         try:
                             self.broker.place_order("BUY_STOP", trigger_price, level_size, timestamp, tp=buy_tp_px)
@@ -1082,7 +1097,7 @@ class BreakoutGridBot:
                 for i in range(self.grid_levels):
                     trigger_price = bid_ref - sell_offset_val - (i * gap_val)
                     level_size = self.calculate_level_size(self.order_size, self.order_size_multiplier, i)
-                    sell_tp_px = trigger_price - max(gap_val * 1.0, 3.00 if ("XAU" in str(getattr(self.broker, "symbol", "")).upper() or "GOLD" in str(getattr(self.broker, "symbol", "")).upper()) else 0.05)
+                    sell_tp_px = trigger_price - min_tp_dist
                     for attempt in range(2):
                         try:
                             self.broker.place_order("SELL_STOP", trigger_price, level_size, timestamp, tp=sell_tp_px)
