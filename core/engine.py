@@ -1883,11 +1883,11 @@ class BreakoutGridBot:
                     momentum_scalp_hit = True
 
             # 7. VOLUME WEIGHTED AVERAGE COST RECOVERY EXIT (WVAP Exit on 2+ Fills)
-            # Ultra-Fast Pullback Recovery: On 2+ position pullbacks, exit the entire basket in GREEN PROFIT (+ $1.00 USD) on the very first micro-bounce!
+            # Ultra-Fast Pullback Recovery: On 2+ position pullbacks, exit the entire basket in GREEN PROFIT (+ $0.50 USD / +50 Cents) on the very first micro-bounce!
             wvap_exit_hit = False
             if len(self.broker.open_positions) >= 2 and not self.in_runner_mode:
-                fast_bounce_target = (100.0 if is_cent else 1.00)  # Strictly net positive profit (+ $1.00 USD / +100 Cents)
-                standard_wvap_target = max(volume_friction_target, friction_floor + 1.00)
+                fast_bounce_target = (50.0 if is_cent else 0.50)  # Ultra-fast net profit floor (+ $0.50 USD / +50 Cents)
+                standard_wvap_target = max(volume_friction_target, friction_floor + 0.50)
                 if float_pnl >= fast_bounce_target or float_pnl >= standard_wvap_target:
                     wvap_exit_hit = True
 
@@ -1902,6 +1902,12 @@ class BreakoutGridBot:
                 else:
                     move_pct = (entry_px - current_price) / entry_px * 100.0
                     is_pos_trend = (avg_delta < 0)
+                
+                # Single-fill ultra-fast exit at +$0.50 USD cash profit or 0.04% move
+                fast_single_target = (50.0 if is_cent else 0.50)
+                target_move_threshold = max(0.04, getattr(self, "trap_offset", 0.08) * 0.50)
+                if (move_pct >= target_move_threshold or float_pnl >= fast_single_target) and float_pnl > 0:
+                    single_fill_scalp_hit = True
                 
                 target_move_threshold = max(0.08, getattr(self, "trap_offset", 0.08) * 0.90)
                 if move_pct >= target_move_threshold and float_pnl >= volume_friction_target and not is_pos_trend:
