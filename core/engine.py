@@ -320,23 +320,31 @@ class AutoReadingEngine:
         elif account_equity < 2500.0:
             capital_tier = "$1,000 Golden"
             base_size = default_sizes.get(clean_sym, 0.01)
-            # Gold strict lot lock: Base size MUST be 0.01 lots on $1,000 account
             if any(x in clean_sym for x in ["XAU", "GOLD", "PAXG"]):
                 base_size = 0.01
-            lot_multiplier = 1.25   # Conservative 1.25x for fast recovery & low drawdown
+            lot_multiplier = 1.25
             max_levels = 5
-            base_target_profit = 4.50   # Quick Scalp Target Profit for fast exits
+            base_target_profit = 4.50
             stop_loss = max(50.0, account_equity * (getattr(self, "stop_loss_pct", 10.0) / 100.0))
-        else:
-            capital_tier = "$10,000 Pro"
-            scale = min(3.0, max(1.0, account_equity / 10000.0))
-            base_size = default_sizes.get(clean_sym, 0.01) * scale
+        elif account_equity < 10000.0:
+            capital_tier = "$2,500 Pro"
+            base_size = default_sizes.get(clean_sym, 0.02)
             if any(x in clean_sym for x in ["XAU", "GOLD", "PAXG"]):
-                base_size = min(0.02, base_size)
+                base_size = 0.02  # Starts at 0.02 lots for $2,500 - $10,000 accounts
+            lot_multiplier = 1.25
+            max_levels = 5
+            base_target_profit = 12.50
+            stop_loss = max(100.0, account_equity * (getattr(self, "stop_loss_pct", 10.0) / 100.0))
+        else:
+            capital_tier = "$10,000 VIP"
+            scale = min(5.0, max(1.0, account_equity / 10000.0))
+            base_size = default_sizes.get(clean_sym, 0.05) * scale
+            if any(x in clean_sym for x in ["XAU", "GOLD", "PAXG"]):
+                base_size = min(0.20, max(0.05, round(0.05 * scale, 2)))
             lot_multiplier = 1.25
             max_levels = 5 if any(x in clean_sym for x in ["XAU", "GOLD", "PAXG", "BTC"]) else 8
-            base_target_profit = 25.0
-            stop_loss = max(50.0, account_equity * (getattr(self, "stop_loss_pct", 10.0) / 100.0))
+            base_target_profit = max(25.0, account_equity * 0.005)
+            stop_loss = max(200.0, account_equity * (getattr(self, "stop_loss_pct", 10.0) / 100.0))
 
         # ---- 8b. SYMBOL VOLATILITY LEVEL CAP ----
         max_levels = min(20, getattr(self, "grid_levels", 5))
