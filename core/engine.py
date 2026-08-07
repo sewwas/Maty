@@ -1707,25 +1707,28 @@ class BreakoutGridBot:
 
             # 2. MULTI-STAGE RATCHETED BREAKEVEN PROTECTION
             if self.use_breakeven:
-                # Stage 1: 50% Target Profit hit -> Lock floor at friction_floor to guarantee net positive profit after fees
-                if float_pnl >= self.target_profit * getattr(self, "breakeven_trigger", 0.5):
+                tp_scaled = (self.target_profit * 100.0) if is_cent else self.target_profit
+                ff_scaled = (friction_floor * 100.0) if is_cent else friction_floor
+                # Stage 1: 50% Target Profit hit -> Lock floor at friction_floor + $1.00 to guarantee net positive profit after fees
+                if float_pnl >= tp_scaled * getattr(self, "breakeven_trigger", 0.5):
                     self.breakeven_activated = True
-                    stage1_target = max(friction_floor, min(float_pnl - 1.00, self.target_profit * 0.40))
+                    stage1_target = max(ff_scaled + (100.0 if is_cent else 1.00), min(float_pnl - (100.0 if is_cent else 1.00), tp_scaled * 0.40))
                     self.ratchet_floor = max(getattr(self, "ratchet_floor", 0.0), stage1_target)
                 
-                # Stage 2: 75% Target Profit hit -> Ratchet floor up to 50% TP
-                if float_pnl >= self.target_profit * 0.75:
-                    stage2_target = max(friction_floor + 2.00, min(float_pnl - 1.00, self.target_profit * 0.55))
+                # Stage 2: 75% Target Profit hit -> Ratchet floor up to 55% TP
+                if float_pnl >= tp_scaled * 0.75:
+                    stage2_target = max(ff_scaled + (200.0 if is_cent else 2.00), min(float_pnl - (100.0 if is_cent else 1.00), tp_scaled * 0.55))
                     self.ratchet_floor = max(getattr(self, "ratchet_floor", 0.0), stage2_target)
 
                 # Stage 3: 90% Target Profit hit -> Ratchet floor up to 75% TP
-                if float_pnl >= self.target_profit * 0.90:
-                    stage3_target = max(friction_floor + 4.00, min(float_pnl - 1.00, self.target_profit * 0.75))
+                if float_pnl >= tp_scaled * 0.90:
+                    stage3_target = max(ff_scaled + (400.0 if is_cent else 4.00), min(float_pnl - (100.0 if is_cent else 1.00), tp_scaled * 0.75))
                     self.ratchet_floor = max(getattr(self, "ratchet_floor", 0.0), stage3_target)
 
             if self.use_breakeven and self.breakeven_activated and not self.in_runner_mode:
                 active_ratchet = getattr(self, "ratchet_floor", 0.0)
-                if active_ratchet > 0 and float_pnl <= active_ratchet:
+                ff_scaled = (friction_floor * 100.0) if is_cent else friction_floor
+                if active_ratchet > 0 and float_pnl <= active_ratchet and float_pnl >= ff_scaled + (50.0 if is_cent else 0.50):
                     breakeven_hit = True
 
             # 3. TRAILING STOP (when not in runner mode)
