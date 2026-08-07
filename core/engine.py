@@ -1753,6 +1753,26 @@ class BreakoutGridBot:
             if buy_positions and sell_positions:
                 if float_pnl >= volume_friction_target:
                     hedge_lock_hit = True
+                else:
+                    # Partial Profitable Side Harvesting Shield:
+                    # If BUY side or SELL side individually reaches Target Profit in a dual hedge lock,
+                    # automatically close the profitable side to bank cash gains into account balance!
+                    buy_pnl = sum(getattr(p, 'profit', 0.0) for p in buy_positions)
+                    sell_pnl = sum(getattr(p, 'profit', 0.0) for p in sell_positions)
+                    tp_target = (effective_target_profit * 0.50)
+
+                    if buy_pnl >= tp_target:
+                        for p in buy_positions:
+                            pid = getattr(p, 'id', getattr(p, 'ticket', None))
+                            if pid:
+                                try: self.broker.close_position(str(pid), current_price, timestamp)
+                                except Exception: pass
+                    elif sell_pnl >= tp_target:
+                        for p in sell_positions:
+                            pid = getattr(p, 'id', getattr(p, 'ticket', None))
+                            if pid:
+                                try: self.broker.close_position(str(pid), current_price, timestamp)
+                                except Exception: pass
 
             # 5b. DYNAMIC COUNTER-HEDGE REVERSAL LOCK (Converts single-side trend drawdown into market-neutral dual basket)
             # If a single-side basket enters floating drawdown >= 35% of effective_stop_loss during a strong move,
