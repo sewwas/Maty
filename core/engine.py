@@ -1853,8 +1853,17 @@ class BreakoutGridBot:
                         hedge_dist_pct = getattr(self, "trap_offset", 0.07) * 0.50
                         hedge_px = round(current_price * (1.0 - hedge_dist_pct / 100.0) if hedge_side == "SELL_STOP" else current_price * (1.0 + hedge_dist_pct / 100.0), 2)
                         hedge_size = max(0.01, round(total_basket_lots * 0.75, 4))
+                        
+                        sym_n = str(getattr(self.broker, "symbol", "")).upper()
+                        if "BTC" in sym_n: h_tp_dist = 50.0
+                        elif any(x in sym_n for x in ["XAU", "GOLD", "PAXG"]): h_tp_dist = 3.00
+                        elif "ETH" in sym_n: h_tp_dist = 3.00
+                        elif "SOL" in sym_n: h_tp_dist = 0.50
+                        else: h_tp_dist = current_price * 0.001
+                        
+                        hedge_tp_px = round(hedge_px - h_tp_dist if hedge_side == "SELL_STOP" else hedge_px + h_tp_dist, 2)
                         try:
-                            self.broker.place_order(hedge_side, hedge_px, hedge_size, timestamp)
+                            self.broker.place_order(hedge_side, hedge_px, hedge_size, timestamp, tp=hedge_tp_px)
                         except Exception:
                             pass
 
