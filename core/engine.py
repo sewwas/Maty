@@ -996,24 +996,34 @@ class BreakoutGridBot:
             # Place Buy Stop orders above current_price (suppressed if SELL_ONLY)
             if unidirectional_mode != "SELL_ONLY":
                 for i in range(self.grid_levels):
-                    try:
-                        trigger_price = current_price + buy_offset_val + (i * gap_val)
-                        level_size = self.calculate_level_size(self.order_size, self.order_size_multiplier, i)
-                        self.broker.place_order("BUY_STOP", trigger_price, level_size, timestamp)
-                        placed_count += 1
-                    except Exception as err:
-                        print(f"Buy trap level {i+1} placement notice: {err}")
+                    trigger_price = current_price + buy_offset_val + (i * gap_val)
+                    level_size = self.calculate_level_size(self.order_size, self.order_size_multiplier, i)
+                    for attempt in range(2):
+                        try:
+                            self.broker.place_order("BUY_STOP", trigger_price, level_size, timestamp)
+                            placed_count += 1
+                            break
+                        except Exception as err:
+                            if attempt == 1:
+                                print(f"Buy trap level {i+1} placement notice: {err}")
+                            else:
+                                time.sleep(0.05)
 
             # Place Sell Stop orders below current_price (suppressed if BUY_ONLY)
             if unidirectional_mode != "BUY_ONLY":
                 for i in range(self.grid_levels):
-                    try:
-                        trigger_price = current_price - sell_offset_val - (i * gap_val)
-                        level_size = self.calculate_level_size(self.order_size, self.order_size_multiplier, i)
-                        self.broker.place_order("SELL_STOP", trigger_price, level_size, timestamp)
-                        placed_count += 1
-                    except Exception as err:
-                        print(f"Sell trap level {i+1} placement notice: {err}")
+                    trigger_price = current_price - sell_offset_val - (i * gap_val)
+                    level_size = self.calculate_level_size(self.order_size, self.order_size_multiplier, i)
+                    for attempt in range(2):
+                        try:
+                            self.broker.place_order("SELL_STOP", trigger_price, level_size, timestamp)
+                            placed_count += 1
+                            break
+                        except Exception as err:
+                            if attempt == 1:
+                                print(f"Sell trap level {i+1} placement notice: {err}")
+                            else:
+                                time.sleep(0.05)
 
             # Always mark deployed = True after deployment attempt so background tick loops NEVER re-trigger wiping
             self.deployed = True
@@ -1149,9 +1159,10 @@ class BreakoutGridBot:
                     # Only place if level doesn't exist near existing BUY levels
                     if target_price > current_price and not any(abs(target_price - ex) < (gap_val * 0.35) for ex in existing_buy_levels):
                         level_size = self.calculate_level_size(base_size, mult, i)
-                        self.broker.place_order("BUY_STOP", target_price, level_size, timestamp)
+                        ord_res = self.broker.place_order("BUY_STOP", target_price, level_size, timestamp)
                         buy_placed += 1
-                        existing_buy_levels.append(target_price)
+                        actual_px = getattr(ord_res, "trigger_price", target_price) if ord_res else target_price
+                        existing_buy_levels.append(actual_px)
 
             # Check and place missing SELL_STOP levels ONLY if allow_sell_repair is True
             if allow_sell_repair and (len(sell_pending) + len(sell_open) < self.grid_levels):
@@ -1165,9 +1176,25 @@ class BreakoutGridBot:
                     # Only place if level doesn't exist near existing SELL levels
                     if target_price < current_price and not any(abs(target_price - ex) < (gap_val * 0.35) for ex in existing_sell_levels):
                         level_size = self.calculate_level_size(base_size, mult, i)
-                        self.broker.place_order("SELL_STOP", target_price, level_size, timestamp)
+                        ord_res = self.broker.place_order("SELL_STOP", target_price, level_size, timestamp)
                         sell_placed += 1
-                        existing_sell_levels.append(target_price)
+                        actual_px = getattr(ord_res, "trigger_price", target_price) if ord_res else target_price
+                        existing_sell_levels.append(actual_px)
+
+            # Active Duplicate Level Purge Guard:
+            # Instantly purge any duplicate pending orders on MT5 that landed at the exact same level
+            active_buys = [o for o in self.broker.pending_orders.values() if o.type == "BUY_STOP"]
+            active_sells = [o for o in self.broker.pending_orders.values() if o.type == "SELL_STOP"]
+            for o_group in [active_buys, active_sells]:
+                seen_prices = []
+                for o in sorted(o_group, key=lambda x: x.trigger_price):
+                    if any(abs(o.trigger_price - sp) < (gap_val * 0.35) for sp in seen_prices):
+                        try:
+                            self.broker.cancel_order(o.order_id)
+                        except Exception:
+                            pass
+                    else:
+                        seen_prices.append(o.trigger_price)
 
             placed_count = buy_placed + sell_placed
         except Exception as e:

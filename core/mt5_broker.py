@@ -183,6 +183,24 @@ class MT5Broker:
         digits = symbol_info.digits
         trigger_price = round(trigger_price, digits)
 
+        # Anti-Overlap Level Collision Shield:
+        # Prevents adjacent grid levels from collapsing onto the exact same price due to broker stops_level clamping
+        existing_type_prices = [
+            o.trigger_price for o in self.pending_orders.values()
+            if o.type == order_type
+        ]
+        collision_dist = max(min_stop_dist * 0.40, point * 10.0)
+        shift_step = max(min_stop_dist, point * 50.0)
+
+        # Shift trigger_price outward if it collides with an existing pending order of the same type
+        shift_attempts = 0
+        while any(abs(trigger_price - ex_p) < collision_dist for ex_p in existing_type_prices) and shift_attempts < 10:
+            if order_type == "BUY_STOP":
+                trigger_price = round(trigger_price + shift_step, digits)
+            else:
+                trigger_price = round(trigger_price - shift_step, digits)
+            shift_attempts += 1
+
         # Volume calculation & alignment with Exness symbol volume limits & steps
         vol_min = symbol_info.volume_min if hasattr(symbol_info, "volume_min") and symbol_info.volume_min else 0.01
         vol_max = symbol_info.volume_max if hasattr(symbol_info, "volume_max") and symbol_info.volume_max else 100.0
