@@ -326,12 +326,21 @@ class AutoReadingEngine:
             max_levels = 5
             base_target_profit = 4.50
             stop_loss = max(50.0, account_equity * (getattr(self, "stop_loss_pct", 10.0) / 100.0))
-        elif account_equity < 10000.0:
+        elif account_equity < 5000.0:
             capital_tier = "$2,500 Pro"
+            base_size = default_sizes.get(clean_sym, 0.01)
+            if any(x in clean_sym for x in ["XAU", "GOLD", "PAXG"]):
+                base_size = 0.01  # Ultra-conservative 0.01 base lot for accounts under $5,000
+            lot_multiplier = 1.20
+            max_levels = 5
+            base_target_profit = 6.50
+            stop_loss = max(75.0, account_equity * (getattr(self, "stop_loss_pct", 10.0) / 100.0))
+        elif account_equity < 10000.0:
+            capital_tier = "$5,000 Pro"
             base_size = default_sizes.get(clean_sym, 0.02)
             if any(x in clean_sym for x in ["XAU", "GOLD", "PAXG"]):
-                base_size = 0.02  # Starts at 0.02 lots for $2,500 - $10,000 accounts
-            lot_multiplier = 1.25
+                base_size = 0.02  # Starts at 0.02 lots for $5,000 - $10,000 accounts
+            lot_multiplier = 1.20
             max_levels = 5
             base_target_profit = 12.50
             stop_loss = max(100.0, account_equity * (getattr(self, "stop_loss_pct", 10.0) / 100.0))
