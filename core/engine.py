@@ -340,79 +340,77 @@ class AutoReadingEngine:
         max_levels = min(20, getattr(self, "grid_levels", 5))
 
 
-        # ---- 9. GRID GEOMETRY ----
-        base_gap = max(0.05, round(atr_pct * 0.35, 2))
-        base_offset = max(0.08, round(atr_pct * 0.50, 2))
+        # ---- 9. GRID GEOMETRY (Tight Sniper Precision) ----
+        base_gap = max(0.04, round(atr_pct * 0.25, 3))
+        base_offset = max(0.05, round(atr_pct * 0.30, 3))
 
         # Regime-specific gap scaling
         if regime == "RANGING":
-            regime_gap_mult = 0.70    # Tighter for range-fill micro-profits
+            regime_gap_mult = 0.65    # Tighter for range-fill micro-profits
         elif regime == "TRENDING":
-            regime_gap_mult = 1.00
+            regime_gap_mult = 0.90
         else:  # REVERSAL
-            regime_gap_mult = 1.40    # Wider — protect against false breakouts at extremes
+            regime_gap_mult = 1.20    # Protect against false breakouts at extremes
 
         # Asymmetric offsets: tighter toward trend side, wider counter
-        buy_offset = round(base_offset * (1.0 - 0.35 * combined_bias) * news_risk_mult, 3)
-        sell_offset = round(base_offset * (1.0 + 0.35 * combined_bias) * news_risk_mult, 3)
-        buy_offset = max(0.02, buy_offset)
-        sell_offset = max(0.02, sell_offset)
+        buy_offset = round(base_offset * (1.0 - 0.30 * combined_bias) * news_risk_mult, 3)
+        sell_offset = round(base_offset * (1.0 + 0.30 * combined_bias) * news_risk_mult, 3)
+        buy_offset = max(0.03, min(0.12, buy_offset))
+        sell_offset = max(0.03, min(0.12, sell_offset))
 
         # Final dynamic gap with session + regime + BB width
-        bb_scale = max(0.5, min(2.5, bb_width_pct / 2.0))
-        dynamic_gap = max(0.03, round(
+        bb_scale = max(0.5, min(2.0, bb_width_pct / 2.0))
+        dynamic_gap = max(0.03, min(0.15, round(
             base_gap * bb_scale * regime_gap_mult * gap_session_mult,
             3
-        ))
+        )))
 
         # ---- Symbol-Specific Dynamic Volatility-Adaptive Architecture ----
-        # Quiet / Ranging markets: shrink offset & gap down to Ultra-Sniper floors for fast 30-sec micro-profits!
-        # High Volatility / Trending markets: expand offset & gap up for maximum trend expansion safety!
         is_quiet_market = (regime == "RANGING" or atr_pct < 0.25)
         
         if any(x in sym_u for x in ["PAXG", "XAU", "GOLD"]):
-            # Gold Precision Scalper (0.07% Offset = $2.835 USD, 0.07% Gap = $2.835 USD)
-            min_gap = 0.07 if is_quiet_market else 0.12
-            min_offset = 0.07 if is_quiet_market else 0.10
-            dynamic_gap = max(min_gap, dynamic_gap)
-            buy_offset = max(min_offset, buy_offset)
-            sell_offset = max(min_offset, sell_offset)
+            # Gold Ultra-Sniper (0.04% Quiet / 0.07% Standard)
+            min_gap = 0.05 if is_quiet_market else 0.08
+            min_offset = 0.04 if is_quiet_market else 0.07
+            dynamic_gap = min(0.12, max(min_gap, dynamic_gap))
+            buy_offset = min(0.10, max(min_offset, buy_offset))
+            sell_offset = min(0.10, max(min_offset, sell_offset))
             lot_multiplier = min(1.25, lot_multiplier)
             base_target_profit = 2.50
         elif any(x in sym_u for x in ["BTC"]):
-            # BTC Quiet Gap 0.09% (-0.01% reduction)
-            min_gap = 0.09 if is_quiet_market else 0.20
-            min_offset = 0.09 if is_quiet_market else 0.22
-            dynamic_gap = max(min_gap, dynamic_gap)
-            buy_offset = max(min_offset, buy_offset)
-            sell_offset = max(min_offset, sell_offset)
+            # BTC Tight Precision (0.05% Quiet / 0.08% Standard)
+            min_gap = 0.06 if is_quiet_market else 0.10
+            min_offset = 0.05 if is_quiet_market else 0.08
+            dynamic_gap = min(0.15, max(min_gap, dynamic_gap))
+            buy_offset = min(0.12, max(min_offset, buy_offset))
+            sell_offset = min(0.12, max(min_offset, sell_offset))
             lot_multiplier = min(1.25, lot_multiplier)
             base_target_profit = 2.50 if is_quiet_market else 3.50
         elif any(x in sym_u for x in ["ETH"]):
-            # ETH Quiet Gap 0.09% (-0.01% reduction)
-            min_gap = 0.09 if is_quiet_market else 0.18
-            min_offset = 0.09 if is_quiet_market else 0.20
-            dynamic_gap = max(min_gap, dynamic_gap)
-            buy_offset = max(min_offset, buy_offset)
-            sell_offset = max(min_offset, sell_offset)
+            # ETH Tight Precision (0.05% Quiet / 0.08% Standard)
+            min_gap = 0.06 if is_quiet_market else 0.10
+            min_offset = 0.05 if is_quiet_market else 0.08
+            dynamic_gap = min(0.15, max(min_gap, dynamic_gap))
+            buy_offset = min(0.12, max(min_offset, buy_offset))
+            sell_offset = min(0.12, max(min_offset, sell_offset))
             lot_multiplier = min(1.25, lot_multiplier)
             base_target_profit = 2.50 if is_quiet_market else 3.50
         elif any(x in sym_u for x in ["SOL", "BNB"]):
-            # SOL/BNB Quiet Gap 0.07% (-0.01% reduction)
-            min_gap = 0.07 if is_quiet_market else 0.15
-            min_offset = 0.07 if is_quiet_market else 0.18
-            dynamic_gap = max(min_gap, dynamic_gap)
-            buy_offset = max(min_offset, buy_offset)
-            sell_offset = max(min_offset, sell_offset)
+            # SOL/BNB Tight Precision (0.05% Quiet / 0.08% Standard)
+            min_gap = 0.05 if is_quiet_market else 0.09
+            min_offset = 0.05 if is_quiet_market else 0.08
+            dynamic_gap = min(0.12, max(min_gap, dynamic_gap))
+            buy_offset = min(0.10, max(min_offset, buy_offset))
+            sell_offset = min(0.10, max(min_offset, sell_offset))
             lot_multiplier = min(1.25, lot_multiplier)
             base_target_profit = 2.50 if is_quiet_market else 3.00
         elif any(x in sym_u for x in ["DOGE", "XRP"]):
-            # DOGE/XRP Quiet Gap 0.05% (-0.01% reduction)
-            min_gap = 0.05 if is_quiet_market else 0.12
-            min_offset = 0.06 if is_quiet_market else 0.15
-            dynamic_gap = max(min_gap, dynamic_gap)
-            buy_offset = max(min_offset, buy_offset)
-            sell_offset = max(min_offset, sell_offset)
+            # DOGE/XRP Ultra-Sniper (0.04% Quiet / 0.07% Standard)
+            min_gap = 0.04 if is_quiet_market else 0.07
+            min_offset = 0.04 if is_quiet_market else 0.07
+            dynamic_gap = min(0.10, max(min_gap, dynamic_gap))
+            buy_offset = min(0.08, max(min_offset, buy_offset))
+            sell_offset = min(0.08, max(min_offset, sell_offset))
             lot_multiplier = min(1.25, lot_multiplier)
             base_target_profit = 2.00 if is_quiet_market else 2.50
 
@@ -420,7 +418,7 @@ class AutoReadingEngine:
         live_spread = tech_indicators.get("live_spread", 0.0) if tech_indicators else 0.0
         if live_spread > 0 and current_price > 0:
             spread_pct = (live_spread / current_price) * 100.0
-            min_spread_offset = spread_pct * 2.5
+            min_spread_offset = spread_pct * 1.8
             buy_offset = max(buy_offset, min_spread_offset)
             sell_offset = max(sell_offset, min_spread_offset)
 
