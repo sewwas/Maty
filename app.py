@@ -452,7 +452,10 @@ with tab_desk:
                     m["bot"].trap_offset = 0.20
                     m["bot"].auto_profile = "CONSERVATIVE"
                     if m.get("running"):
-                        m["bot"].deploy_traps(m.get("last_price", 0), time.time(), force=True)
+                        try:
+                            m["bot"].deploy_traps(m.get("last_price", 0), time.time(), force=True)
+                        except Exception:
+                            pass
                 st.toast("Applied Conservative Preset across all pairs!")
                 st.rerun()
         with p_c2:
@@ -462,7 +465,10 @@ with tab_desk:
                     m["bot"].trap_offset = 0.15
                     m["bot"].auto_profile = "BALANCED"
                     if m.get("running"):
-                        m["bot"].deploy_traps(m.get("last_price", 0), time.time(), force=True)
+                        try:
+                            m["bot"].deploy_traps(m.get("last_price", 0), time.time(), force=True)
+                        except Exception:
+                            pass
                 st.toast("Applied AI Balanced Preset across all pairs!")
                 st.rerun()
         with p_c3:
@@ -472,7 +478,10 @@ with tab_desk:
                     m["bot"].trap_offset = 0.08
                     m["bot"].auto_profile = "AGGRESSIVE"
                     if m.get("running"):
-                        m["bot"].deploy_traps(m.get("last_price", 0), time.time(), force=True)
+                        try:
+                            m["bot"].deploy_traps(m.get("last_price", 0), time.time(), force=True)
+                        except Exception:
+                            pass
                 st.toast("Applied Aggressive Scalper Preset across all pairs!")
                 st.rerun()
         with p_c4:
