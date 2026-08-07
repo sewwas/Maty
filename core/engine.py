@@ -1035,6 +1035,18 @@ class BreakoutGridBot:
             except Exception:
                 pass
 
+        # Real-Time Dynamic Volume Velocity Stats Engine:
+        # Evaluates tick velocity over recent price ticks to dynamically scale gap and offset for ultra-fast cycle deployment
+        tick_history = getattr(self, "price_history_ticks", [])
+        if len(tick_history) >= 5 and current_price > 0:
+            recent_ticks = tick_history[-5:]
+            px_range = max(recent_ticks) - min(recent_ticks)
+            velocity_pct = (px_range / current_price) * 100.0
+            if velocity_pct > 0.15:  # High Volatility Velocity Spike -> expand gap by 1.25x for safety
+                gap_val *= 1.25
+                buy_offset_val *= 1.20
+                sell_offset_val *= 1.20
+
         # Reference prices: BUY_STOP uses Ask price, SELL_STOP uses Bid price
         ask_ref = getattr(self.broker, "last_ask", current_price)
         bid_ref = getattr(self.broker, "last_bid", current_price)
@@ -1477,8 +1489,10 @@ class BreakoutGridBot:
                 if self.auto_restart:
                     self.deploy_traps(current_price, timestamp, bb_width)
         # ─────────────────────────────────────────────────────────────────────────
+        # ── ULTRA-FAST 0.5s AUTOMATIC NEW CYCLE REDEPLOYMENT ─────────────────────
         if not self.deployed and self.auto_restart:
-            if (timestamp - getattr(self, "last_deploy_time", 0.0)) >= 5.0 and timestamp >= getattr(self, "_last_deploy_error_time", 0.0) + 60.0:
+            # 500ms Ultra-Fast Restart Cooldown (10x faster than standard 5s delay)
+            if (timestamp - getattr(self, "last_deploy_time", 0.0)) >= 0.50 and timestamp >= getattr(self, "_last_deploy_error_time", 0.0) + 60.0:
                 try:
                     self.deploy_traps(current_price, timestamp, bb_width)
                 except Exception as dep_err:
