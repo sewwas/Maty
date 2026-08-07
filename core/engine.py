@@ -1883,12 +1883,14 @@ class BreakoutGridBot:
                     momentum_scalp_hit = True
 
             # 7. VOLUME WEIGHTED AVERAGE COST RECOVERY EXIT (WVAP Exit on 2+ Fills)
-            # Ultra-Fast Pullback Recovery: On 2+ position pullbacks, exit the entire basket in GREEN PROFIT (+ $1.00 USD / +100 Cents) on the very first micro-bounce!
+            # Instant Dual-Hedge Micro-Profit Trap: If both BUY and SELL positions exist (dual hedge), exit INSTANTLY on any positive micro-tick profit (> $0.00)!
             wvap_exit_hit = False
             if len(self.broker.open_positions) >= 2 and not self.in_runner_mode:
+                has_dual_hedge = (len(buy_positions) > 0 and len(sell_positions) > 0)
                 fast_bounce_target = (100.0 if is_cent else 1.00)  # Strictly net positive profit floor (+ $1.00 USD / +100 Cents)
                 standard_wvap_target = max(volume_friction_target, friction_floor + 1.00)
-                if float_pnl >= fast_bounce_target or float_pnl >= standard_wvap_target:
+                
+                if (has_dual_hedge and float_pnl > 0.0) or float_pnl >= fast_bounce_target or float_pnl >= standard_wvap_target:
                     wvap_exit_hit = True
 
             # 8. SINGLE-FILL QUICK PERCENT SCALP EXIT (Equalized for Crypto & Gold)
