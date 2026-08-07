@@ -1842,17 +1842,18 @@ class BreakoutGridBot:
             # If a single-side basket enters floating drawdown >= 35% of effective_stop_loss during a strong move,
             # automatically deploy a counter-hedge order to lock floating drawdown and allow market-neutral recovery!
             if len(self.broker.open_positions) >= 2 and not hedge_lock_hit:
-                buy_pos_count = len(buy_positions)
-                sell_pos_count = len(sell_positions)
-                
-                # Single-side basket experiencing trend drawdown -> Trigger early counter-hedge at 20% drawdown threshold
-                if (buy_pos_count > 0 and sell_pos_count == 0) or (sell_pos_count > 0 and buy_pos_count == 0):
+                total_buy_lots = sum(p.size for p in buy_positions)
+                total_sell_lots = sum(p.size for p in sell_positions)
+                net_vol = total_buy_lots - total_sell_lots
+
+                # Net Volume Imbalance Counter-Hedge: If BUY lot is larger and price drops (or vice versa), deploy counter-order to flip volume dominance
+                if abs(net_vol) > 0.0001:
                     hedge_threshold = effective_stop_loss * 0.20
                     if float_pnl <= -hedge_threshold and len(self.broker.pending_orders) < 2:
-                        hedge_side = "SELL_STOP" if buy_pos_count > 0 else "BUY_STOP"
+                        hedge_side = "SELL_STOP" if net_vol > 0 else "BUY_STOP"
                         hedge_dist_pct = getattr(self, "trap_offset", 0.07) * 0.50
                         hedge_px = round(current_price * (1.0 - hedge_dist_pct / 100.0) if hedge_side == "SELL_STOP" else current_price * (1.0 + hedge_dist_pct / 100.0), 2)
-                        hedge_size = max(0.01, round(total_basket_lots * 0.75, 4))
+                        hedge_size = max(0.01, round(abs(net_vol) * 1.50, 4))
                         
                         sym_n = str(getattr(self.broker, "symbol", "")).upper()
                         if "BTC" in sym_n: h_tp_dist = 50.0
