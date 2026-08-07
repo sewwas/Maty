@@ -1092,41 +1092,29 @@ class BreakoutGridBot:
             # Dual-hedge orders: Attached at WIDE NEWS SPIKE TP distance (3x wider: + $9.00 Gold / + $150 BTC) on Exness server to harvest massive news hype spikes!
             has_active_trades = (len(self.broker.open_positions) > 0)
 
-            # Place Buy Stop orders above Ask price (suppressed if SELL_ONLY)
-            if unidirectional_mode != "SELL_ONLY":
-                for i in range(self.grid_levels):
-                    trigger_price = ask_ref + buy_offset_val + (i * gap_val)
-                    level_size = self.calculate_level_size(self.order_size, self.order_size_multiplier, i)
-                    buy_tp_dist = (min_tp_dist * 3.0) if has_active_trades else min_tp_dist
-                    buy_tp_px = round(trigger_price + buy_tp_dist, 2)
-                    for attempt in range(2):
-                        try:
-                            self.broker.place_order("BUY_STOP", trigger_price, level_size, timestamp, tp=buy_tp_px)
-                            placed_count += 1
-                            break
-                        except Exception as err:
-                            if attempt == 1:
-                                print(f"Buy trap level {i+1} placement notice: {err}")
-                            else:
-                                time.sleep(0.05)
+            # Place Buy Stop orders above Ask price
+            for i in range(self.grid_levels):
+                trigger_price = ask_ref + buy_offset_val + (i * gap_val)
+                level_size = self.calculate_level_size(self.order_size, self.order_size_multiplier, i)
+                buy_tp_dist = (min_tp_dist * 3.0) if has_active_trades else min_tp_dist
+                buy_tp_px = round(trigger_price + buy_tp_dist, 2)
+                try:
+                    self.broker.place_order("BUY_STOP", trigger_price, level_size, timestamp, tp=buy_tp_px)
+                    placed_count += 1
+                except Exception as err:
+                    print(f"Buy trap level {i+1} notice: {err}")
 
-            # Place Sell Stop orders below Bid price (suppressed if BUY_ONLY)
-            if unidirectional_mode != "BUY_ONLY":
-                for i in range(self.grid_levels):
-                    trigger_price = bid_ref - sell_offset_val - (i * gap_val)
-                    level_size = self.calculate_level_size(self.order_size, self.order_size_multiplier, i)
-                    sell_tp_dist = (min_tp_dist * 3.0) if has_active_trades else min_tp_dist
-                    sell_tp_px = round(trigger_price - sell_tp_dist, 2)
-                    for attempt in range(2):
-                        try:
-                            self.broker.place_order("SELL_STOP", trigger_price, level_size, timestamp, tp=sell_tp_px)
-                            placed_count += 1
-                            break
-                        except Exception as err:
-                            if attempt == 1:
-                                print(f"Sell trap level {i+1} placement notice: {err}")
-                            else:
-                                time.sleep(0.05)
+            # Place Sell Stop orders below Bid price
+            for i in range(self.grid_levels):
+                trigger_price = bid_ref - sell_offset_val - (i * gap_val)
+                level_size = self.calculate_level_size(self.order_size, self.order_size_multiplier, i)
+                sell_tp_dist = (min_tp_dist * 3.0) if has_active_trades else min_tp_dist
+                sell_tp_px = round(trigger_price - sell_tp_dist, 2)
+                try:
+                    self.broker.place_order("SELL_STOP", trigger_price, level_size, timestamp, tp=sell_tp_px)
+                    placed_count += 1
+                except Exception as err:
+                    print(f"Sell trap level {i+1} notice: {err}")
 
             # Always mark deployed = True after deployment attempt so background tick loops NEVER re-trigger wiping
             self.deployed = True
