@@ -309,12 +309,24 @@ class AutoReadingEngine:
         # Note: account_equity here is the TOTAL account equity, not per-symbol.
         # This ensures ETH and Gold on the same $1,000 account BOTH get the same tier level.
         if account_equity < 250.0:
-            capital_tier = "$100 Micro"
-            base_size = default_sizes.get(clean_sym, 0.001) * 0.5
-            lot_multiplier = 1.20
-            max_levels = 3
-            base_target_profit = 2.00
-            stop_loss = max(50.0, account_equity * (getattr(self, "stop_loss_pct", 10.0) / 100.0))
+            if account_equity < 25.0:
+                capital_tier = "$3.50 Micro-Cent"
+                base_size = default_sizes.get(clean_sym, 0.01)
+                if any(x in clean_sym for x in ["XAU", "GOLD", "PAXG"]):
+                    base_size = 0.01  # Minimum 0.01 cent lot on Exness
+                lot_multiplier = 1.15
+                max_levels = 3
+                base_target_profit = max(0.25, round(account_equity * 0.10, 2))  # $0.35 USD (35 Cents) on 350 USC account
+                stop_loss = max(1.00, account_equity * (getattr(self, "stop_loss_pct", 20.0) / 100.0))
+            else:
+                capital_tier = "$100 Micro"
+                base_size = default_sizes.get(clean_sym, 0.01)
+                if any(x in clean_sym for x in ["XAU", "GOLD", "PAXG"]):
+                    base_size = 0.01
+                lot_multiplier = 1.20
+                max_levels = 3
+                base_target_profit = 2.00
+                stop_loss = max(10.0, account_equity * (getattr(self, "stop_loss_pct", 15.0) / 100.0))
         elif account_equity < 2500.0:
             capital_tier = "$1,000 Golden"
             base_size = default_sizes.get(clean_sym, 0.01)
