@@ -1003,17 +1003,23 @@ class BreakoutGridBot:
             sell_offset_val = buy_offset_val
 
         # Broker Minimum Stop Level Protection Shield:
-        # Guarantees that buy_offset_val and sell_offset_val exceed MT5's trade_stops_level by 15%,
+        # Guarantees that buy_offset_val and sell_offset_val exceed MT5's trade_stops_level by 25%,
         # making price clamping collisions mathematically impossible on Exness Cent / Standard accounts!
         if hasattr(self.broker, "get_min_stop_distance"):
             try:
                 min_stop = float(self.broker.get_min_stop_distance())
                 if min_stop > 0:
-                    safety_buffer = min_stop * 1.15
+                    safety_buffer = min_stop * 1.25
                     buy_offset_val = max(buy_offset_val, safety_buffer)
                     sell_offset_val = max(sell_offset_val, safety_buffer)
             except Exception:
                 pass
+
+        # Reference prices: BUY_STOP uses Ask price, SELL_STOP uses Bid price
+        ask_ref = getattr(self.broker, "last_ask", current_price)
+        bid_ref = getattr(self.broker, "last_bid", current_price)
+        if not ask_ref or ask_ref <= 0: ask_ref = current_price
+        if not bid_ref or bid_ref <= 0: bid_ref = current_price
 
         self.deploy_order_size = self.order_size
         self.deploy_order_size_multiplier = self.order_size_multiplier
@@ -1042,10 +1048,10 @@ class BreakoutGridBot:
             except Exception as pre_cancel_err:
                 print(f"Pre-deploy cancel notice: {pre_cancel_err}")
 
-            # Place Buy Stop orders above current_price (suppressed if SELL_ONLY)
+            # Place Buy Stop orders above Ask price (suppressed if SELL_ONLY)
             if unidirectional_mode != "SELL_ONLY":
                 for i in range(self.grid_levels):
-                    trigger_price = current_price + buy_offset_val + (i * gap_val)
+                    trigger_price = ask_ref + buy_offset_val + (i * gap_val)
                     level_size = self.calculate_level_size(self.order_size, self.order_size_multiplier, i)
                     for attempt in range(2):
                         try:
@@ -1058,10 +1064,10 @@ class BreakoutGridBot:
                             else:
                                 time.sleep(0.05)
 
-            # Place Sell Stop orders below current_price (suppressed if BUY_ONLY)
+            # Place Sell Stop orders below Bid price (suppressed if BUY_ONLY)
             if unidirectional_mode != "BUY_ONLY":
                 for i in range(self.grid_levels):
-                    trigger_price = current_price - sell_offset_val - (i * gap_val)
+                    trigger_price = bid_ref - sell_offset_val - (i * gap_val)
                     level_size = self.calculate_level_size(self.order_size, self.order_size_multiplier, i)
                     for attempt in range(2):
                         try:
@@ -1165,11 +1171,17 @@ class BreakoutGridBot:
             try:
                 min_stop = float(self.broker.get_min_stop_distance())
                 if min_stop > 0:
-                    safety_buffer = min_stop * 1.15
+                    safety_buffer = min_stop * 1.25
                     buy_offset_val = max(buy_offset_val, safety_buffer)
                     sell_offset_val = max(sell_offset_val, safety_buffer)
             except Exception:
                 pass
+
+        # Reference prices: BUY_STOP uses Ask price, SELL_STOP uses Bid price
+        ask_ref = getattr(self.broker, "last_ask", current_price)
+        bid_ref = getattr(self.broker, "last_bid", current_price)
+        if not ask_ref or ask_ref <= 0: ask_ref = current_price
+        if not bid_ref or bid_ref <= 0: bid_ref = current_price
 
         # Collect existing pending trigger prices AND open position entry prices to prevent duplication
         buy_pending = [o for o in self.broker.pending_orders.values() if o.type == "BUY_STOP"]
@@ -1219,12 +1231,12 @@ class BreakoutGridBot:
                 for i in range(self.grid_levels):
                     if len(buy_pending) + len(buy_open) + buy_placed >= self.grid_levels:
                         break
-                    target_price = center_price + buy_offset_val + (i * gap_val)
-                    if target_price <= current_price:
-                        target_price = current_price + (gap_val * 0.5) + (i * gap_val)
+                    target_price = ask_ref + buy_offset_val + (i * gap_val)
+                    if target_price <= ask_ref:
+                        target_price = ask_ref + (gap_val * 0.5) + (i * gap_val)
                     
                     # Only place if level doesn't exist near existing BUY levels
-                    if target_price > current_price and not any(abs(target_price - ex) < (gap_val * 0.35) for ex in existing_buy_levels):
+                    if target_price > ask_ref and not any(abs(target_price - ex) < (gap_val * 0.35) for ex in existing_buy_levels):
                         level_size = self.calculate_level_size(base_size, mult, i)
                         ord_res = self.broker.place_order("BUY_STOP", target_price, level_size, timestamp)
                         buy_placed += 1
@@ -1236,12 +1248,12 @@ class BreakoutGridBot:
                 for i in range(self.grid_levels):
                     if len(sell_pending) + len(sell_open) + sell_placed >= self.grid_levels:
                         break
-                    target_price = center_price - sell_offset_val - (i * gap_val)
-                    if target_price >= current_price:
-                        target_price = current_price - (gap_val * 0.5) - (i * gap_val)
+                    target_price = bid_ref - sell_offset_val - (i * gap_val)
+                    if target_price >= bid_ref:
+                        target_price = bid_ref - (gap_val * 0.5) - (i * gap_val)
 
                     # Only place if level doesn't exist near existing SELL levels
-                    if target_price < current_price and not any(abs(target_price - ex) < (gap_val * 0.35) for ex in existing_sell_levels):
+                    if target_price < bid_ref and not any(abs(target_price - ex) < (gap_val * 0.35) for ex in existing_sell_levels):
                         level_size = self.calculate_level_size(base_size, mult, i)
                         ord_res = self.broker.place_order("SELL_STOP", target_price, level_size, timestamp)
                         sell_placed += 1
