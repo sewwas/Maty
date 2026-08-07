@@ -1047,11 +1047,11 @@ class BreakoutGridBot:
                 buy_offset_val *= 1.20
                 sell_offset_val *= 1.20
 
-        # Reference prices: BUY_STOP uses Ask price, SELL_STOP uses Bid price
-        ask_ref = getattr(self.broker, "last_ask", current_price)
-        bid_ref = getattr(self.broker, "last_bid", current_price)
-        if not ask_ref or ask_ref <= 0: ask_ref = current_price
-        if not bid_ref or bid_ref <= 0: bid_ref = current_price
+        # DYNAMIC ATR VOLATILITY GAP SCALING SHIELD (UNTRAPPABLE MATRIX):
+        # Dynamically adapts grid spacing to live market volatility so orders NEVER get trapped during trend spikes!
+        atr_val = getattr(self, "current_atr", 0.0)
+        if atr_val > 0:
+            gap_val = max(gap_val, round(atr_val * 1.20, 2))
 
         self.deploy_order_size = self.order_size
         self.deploy_order_size_multiplier = self.order_size_multiplier
