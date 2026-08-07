@@ -1715,10 +1715,12 @@ class BreakoutGridBot:
 
             # 3. TRAILING STOP (when not in runner mode)
             if self.use_trailing_stop and not self.in_runner_mode:
-                if self.max_floating_pnl >= self.trailing_stop_distance:
-                    trail_dist = self.trailing_stop_distance * (1.5 if avg_delta > 0 else 1.0)
+                ts_dist = (self.trailing_stop_distance * 100.0) if is_cent else self.trailing_stop_distance
+                min_trail_activation = max(friction_floor_adjusted + (100.0 if is_cent else 1.00), effective_target_profit * 0.50)
+                if self.max_floating_pnl >= min_trail_activation:
+                    trail_dist = max(ts_dist, (effective_target_profit * 0.25))
                     trailing_level = self.max_floating_pnl - trail_dist
-                    if trailing_level > 0 and float_pnl <= trailing_level and float_pnl >= friction_floor:
+                    if trailing_level > 0 and float_pnl <= trailing_level and float_pnl >= friction_floor_adjusted:
                         trailing_stop_hit = True
                     
             # Universal Dynamic Volume-Scaled Minimum Net Cash Profit Floor (Minimum +$1.00 net profit, scaling up with volume)
