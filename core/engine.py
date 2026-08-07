@@ -1106,8 +1106,8 @@ class BreakoutGridBot:
         Preserves the exact order_size and multiplier parameters of the active cycle.
         Returns the number of missing orders placed.
         """
-        if getattr(self, "in_runner_mode", False):
-            # Runner Mode intentionally operates with wiped opposite traps to protect profits
+        if getattr(self, "in_runner_mode", False) or len(self.broker.open_positions) > 0:
+            # Active trade in progress — do NOT spawn new traps in front of moving price to prevent stacking
             return 0
 
         # Deploy & Repair Backoff Cooldown Guard: Skip repair if an order placement error occurred recently (within 60s)
@@ -1236,7 +1236,7 @@ class BreakoutGridBot:
                         target_price = ask_ref + (gap_val * 0.5) + (i * gap_val)
                     
                     # Only place if level doesn't exist near existing BUY levels
-                    if target_price > ask_ref and not any(abs(target_price - ex) < (gap_val * 0.35) for ex in existing_buy_levels):
+                    if target_price > ask_ref and not any(abs(target_price - ex) < (gap_val * 0.90) for ex in existing_buy_levels):
                         level_size = self.calculate_level_size(base_size, mult, i)
                         ord_res = self.broker.place_order("BUY_STOP", target_price, level_size, timestamp)
                         buy_placed += 1
@@ -1253,7 +1253,7 @@ class BreakoutGridBot:
                         target_price = bid_ref - (gap_val * 0.5) - (i * gap_val)
 
                     # Only place if level doesn't exist near existing SELL levels
-                    if target_price < bid_ref and not any(abs(target_price - ex) < (gap_val * 0.35) for ex in existing_sell_levels):
+                    if target_price < bid_ref and not any(abs(target_price - ex) < (gap_val * 0.90) for ex in existing_sell_levels):
                         level_size = self.calculate_level_size(base_size, mult, i)
                         ord_res = self.broker.place_order("SELL_STOP", target_price, level_size, timestamp)
                         sell_placed += 1
