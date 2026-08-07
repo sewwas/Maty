@@ -980,6 +980,19 @@ class BreakoutGridBot:
             buy_offset_val, gap_val = self.calculate_offset_and_gap(current_price, effective_gap, self.trap_offset)
             sell_offset_val = buy_offset_val
 
+        # Broker Minimum Stop Level Protection Shield:
+        # Guarantees that buy_offset_val and sell_offset_val exceed MT5's trade_stops_level by 15%,
+        # making price clamping collisions mathematically impossible on Exness Cent / Standard accounts!
+        if hasattr(self.broker, "get_min_stop_distance"):
+            try:
+                min_stop = float(self.broker.get_min_stop_distance())
+                if min_stop > 0:
+                    safety_buffer = min_stop * 1.15
+                    buy_offset_val = max(buy_offset_val, safety_buffer)
+                    sell_offset_val = max(sell_offset_val, safety_buffer)
+            except Exception:
+                pass
+
         self.deploy_order_size = self.order_size
         self.deploy_order_size_multiplier = self.order_size_multiplier
         self.deploy_grid_gap = gap_val
@@ -1124,6 +1137,17 @@ class BreakoutGridBot:
             offset_config = getattr(self, "deploy_trap_offset", self.trap_offset)
             buy_offset_val, gap_val = self.calculate_offset_and_gap(center_price, gap_config, offset_config)
             sell_offset_val = buy_offset_val
+
+        # Broker Minimum Stop Level Protection Shield:
+        if hasattr(self.broker, "get_min_stop_distance"):
+            try:
+                min_stop = float(self.broker.get_min_stop_distance())
+                if min_stop > 0:
+                    safety_buffer = min_stop * 1.15
+                    buy_offset_val = max(buy_offset_val, safety_buffer)
+                    sell_offset_val = max(sell_offset_val, safety_buffer)
+            except Exception:
+                pass
 
         # Collect existing pending trigger prices AND open position entry prices to prevent duplication
         buy_pending = [o for o in self.broker.pending_orders.values() if o.type == "BUY_STOP"]

@@ -171,6 +171,15 @@ class MT5Broker:
             return abs(info.ask - info.bid)
         return 0.0
 
+    def get_min_stop_distance(self) -> float:
+        exness_symbol = self.get_exness_symbol(self.symbol)
+        info = mt5.symbol_info(exness_symbol) if exness_symbol else None
+        if info:
+            point = info.point if hasattr(info, "point") and info.point else 0.0001
+            stops_level = getattr(info, "trade_stops_level", 0) or 0
+            return max(stops_level * point, point * 50.0)
+        return 0.005
+
     def place_order(self, order_type: str, price: float, size: float, timestamp: float) -> Order:
         if not self.ensure_connected():
             raise RuntimeError("MT5 connection offline.")
