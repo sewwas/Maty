@@ -88,23 +88,34 @@ class MT5Broker:
             "SOLUSDT": "SOLUSD",
             "BNBUSDT": "BNBUSD",
             "DOGEUSDT": "DOGEUSD",
+            "XRPUSDT": "XRPUSD",
             "PAXGUSDT": "XAUUSD"
         }
         base_sym = symbol_map.get(ui_symbol, ui_symbol)
-        candidate = f"{base_sym}{self.symbol_suffix}"
 
-        res = candidate
+        res = ui_symbol
         if MT5_AVAILABLE:
+            candidate = f"{base_sym}{self.symbol_suffix}"
             mt5.symbol_select(candidate, True)
             if mt5.symbol_info(candidate) is not None:
                 res = candidate
             else:
-                for suff in ["m", "c", "_i", ".a", ""]:
-                    alt = f"{base_sym}{suff}"
-                    mt5.symbol_select(alt, True)
-                    if mt5.symbol_info(alt) is not None:
-                        res = alt
-                        break
+                # Dynamic discovery across all broker MT5 symbols matching base_sym
+                all_symbols = mt5.symbols_get()
+                if all_symbols:
+                    matching = [s.name for s in all_symbols if s.name.upper().startswith(base_sym.upper())]
+                    if matching:
+                        matching.sort(key=lambda name: (len(name), name))
+                        selected = matching[0]
+                        mt5.symbol_select(selected, True)
+                        res = selected
+                if res == ui_symbol:
+                    for suff in ["m", "c", "_i", ".a", ""]:
+                        alt = f"{base_sym}{suff}"
+                        mt5.symbol_select(alt, True)
+                        if mt5.symbol_info(alt) is not None:
+                            res = alt
+                            break
         self._exness_symbol_cache[ui_symbol] = res
         return res
 
