@@ -177,8 +177,11 @@ class MT5Broker:
         if info:
             point = info.point if hasattr(info, "point") and info.point else 0.0001
             stops_level = getattr(info, "trade_stops_level", 0) or 0
-            return max(stops_level * point, point * 50.0)
-        return 0.005
+            min_dist = max(stops_level * point, point * 50.0)
+            if "XAU" in exness_symbol.upper() or "GOLD" in exness_symbol.upper():
+                return max(2.50, min_dist)
+            return min_dist
+        return 2.50 if "XAU" in self.symbol.upper() or "GOLD" in self.symbol.upper() else 0.005
 
     def place_order(self, order_type: str, price: float, size: float, timestamp: float) -> Order:
         if not self.ensure_connected():
@@ -209,6 +212,20 @@ class MT5Broker:
 
         digits = symbol_info.digits
         trigger_price = round(trigger_price, digits)
+
+        # Sequential Level Spacing Shield:
+        # Guarantees that every new BUY_STOP order is AT LEAST min_level_step above any existing BUY_STOP,
+        # and every SELL_STOP is AT LEAST min_level_step below any existing SELL_STOP.
+        min_level_step = max(min_stop_dist, 3.00 if ("XAU" in exness_symbol.upper() or "GOLD" in exness_symbol.upper()) else point * 100.0)
+        for o in self.pending_orders.values():
+            if o.type == order_type:
+                ex_p = float(o.trigger_price)
+                if order_type == "BUY_STOP":
+                    if trigger_price <= ex_p + min_level_step:
+                        trigger_price = round(ex_p + min_level_step, digits)
+                elif order_type == "SELL_STOP":
+                    if trigger_price >= ex_p - min_level_step:
+                        trigger_price = round(ex_p - min_level_step, digits)
 
         # Volume calculation & alignment with Exness symbol volume limits & steps
         vol_min = symbol_info.volume_min if hasattr(symbol_info, "volume_min") and symbol_info.volume_min else 0.01
