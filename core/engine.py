@@ -1050,16 +1050,8 @@ class BreakoutGridBot:
         cancel_success = False
         placement_failed = False
         try:
+            # Dual-Sided Grid Trap Architecture: ALWAYS deploy traps on BOTH sides (BUY_STOP above, SELL_STOP below)
             unidirectional_mode = "DUAL"
-            if getattr(self, "use_auto_reading", False) and hasattr(self, "last_auto_eval"):
-                unidirectional_mode = self.last_auto_eval.get("unidirectional_mode", "DUAL")
-
-            # Orderbook Pressure Imbalance Filter: Pause trap deployment into heavy institutional sell/buy walls
-            ob_ratio = self.last_auto_eval.get("ob_ratio", 1.0) if hasattr(self, "last_auto_eval") and self.last_auto_eval else 1.0
-            if ob_ratio > 3.0:     # Heavy Ask/Sell Pressure (>75% Asks) -> Suppress BUY_STOP traps into sell wall
-                unidirectional_mode = "SELL_ONLY" if unidirectional_mode == "DUAL" else unidirectional_mode
-            elif ob_ratio < 0.33:  # Heavy Bid/Buy Pressure (>75% Bids) -> Suppress SELL_STOP traps into buy wall
-                unidirectional_mode = "BUY_ONLY" if unidirectional_mode == "DUAL" else unidirectional_mode
 
             # Always cancel existing pending orders FIRST before placing new grid traps
             try:
