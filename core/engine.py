@@ -1087,12 +1087,18 @@ class BreakoutGridBot:
             else:
                 min_tp_dist = max(gap_val * 1.0, current_price * 0.001)
 
+            # UNIFIED BASKET LOCK PROTECTION:
+            # If active open positions already exist on the symbol (e.g. SELL is open),
+            # DO NOT attach individual TP to pending orders so Exness does NOT close BUY orders individually!
+            # Keep all BUY and SELL positions locked TOGETHER in a single unified basket until net basket profit triggers!
+            has_active_trades = (len(self.broker.open_positions) > 0)
+
             # Place Buy Stop orders above Ask price (suppressed if SELL_ONLY)
             if unidirectional_mode != "SELL_ONLY":
                 for i in range(self.grid_levels):
                     trigger_price = ask_ref + buy_offset_val + (i * gap_val)
                     level_size = self.calculate_level_size(self.order_size, self.order_size_multiplier, i)
-                    buy_tp_px = trigger_price + min_tp_dist
+                    buy_tp_px = 0.0 if has_active_trades else (trigger_price + min_tp_dist)
                     for attempt in range(2):
                         try:
                             self.broker.place_order("BUY_STOP", trigger_price, level_size, timestamp, tp=buy_tp_px)
@@ -1109,7 +1115,7 @@ class BreakoutGridBot:
                 for i in range(self.grid_levels):
                     trigger_price = bid_ref - sell_offset_val - (i * gap_val)
                     level_size = self.calculate_level_size(self.order_size, self.order_size_multiplier, i)
-                    sell_tp_px = trigger_price - min_tp_dist
+                    sell_tp_px = 0.0 if has_active_trades else (trigger_price - min_tp_dist)
                     for attempt in range(2):
                         try:
                             self.broker.place_order("SELL_STOP", trigger_price, level_size, timestamp, tp=sell_tp_px)
