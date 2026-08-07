@@ -376,15 +376,14 @@ class AutoReadingEngine:
         else:  # REVERSAL
             regime_gap_mult = 1.20    # Protect against false breakouts at extremes
 
-        # Asymmetric offsets: tighter toward trend side, wider counter
-        buy_offset = round(base_offset * (1.0 - 0.30 * combined_bias) * news_risk_mult, 3)
-        sell_offset = round(base_offset * (1.0 + 0.30 * combined_bias) * news_risk_mult, 3)
-        buy_offset = max(0.03, min(0.12, buy_offset))
-        sell_offset = max(0.03, min(0.12, sell_offset))
+        # Symmetric offsets: 100% equal spacing on both BUY and SELL sides
+        symmetric_offset = round(base_offset * news_risk_mult, 3)
+        buy_offset = max(0.04, min(0.10, symmetric_offset))
+        sell_offset = buy_offset
 
         # Final dynamic gap with session + regime + BB width
         bb_scale = max(0.5, min(2.0, bb_width_pct / 2.0))
-        dynamic_gap = max(0.03, min(0.15, round(
+        dynamic_gap = max(0.04, min(0.12, round(
             base_gap * bb_scale * regime_gap_mult * gap_session_mult,
             3
         )))
@@ -393,12 +392,12 @@ class AutoReadingEngine:
         is_quiet_market = (regime == "RANGING" or atr_pct < 0.25)
         
         if any(x in sym_u for x in ["PAXG", "XAU", "GOLD"]):
-            # Gold Ultra-Sniper (0.04% Quiet / 0.07% Standard)
-            min_gap = 0.05 if is_quiet_market else 0.08
-            min_offset = 0.04 if is_quiet_market else 0.07
-            dynamic_gap = min(0.12, max(min_gap, dynamic_gap))
+            # Gold Symmetric Precision (0.05% Gap & Offset)
+            min_gap = 0.05 if is_quiet_market else 0.06
+            min_offset = 0.05 if is_quiet_market else 0.06
+            dynamic_gap = min(0.10, max(min_gap, dynamic_gap))
             buy_offset = min(0.10, max(min_offset, buy_offset))
-            sell_offset = min(0.10, max(min_offset, sell_offset))
+            sell_offset = buy_offset
             lot_multiplier = min(1.25, lot_multiplier)
             base_target_profit = 2.50
         elif any(x in sym_u for x in ["BTC"]):
