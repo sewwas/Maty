@@ -336,14 +336,28 @@ class AutoReadingEngine:
             base_target_profit = 12.50
             stop_loss = max(100.0, account_equity * (getattr(self, "stop_loss_pct", 10.0) / 100.0))
         else:
-            capital_tier = "$10,000 VIP"
-            scale = min(5.0, max(1.0, account_equity / 10000.0))
-            base_size = default_sizes.get(clean_sym, 0.05) * scale
-            if any(x in clean_sym for x in ["XAU", "GOLD", "PAXG"]):
-                base_size = min(0.20, max(0.05, round(0.05 * scale, 2)))
+            if account_equity < 25000.0:
+                capital_tier = "$10,000 VIP"
+                base_size = 0.05
+                base_target_profit = 50.0
+            elif account_equity < 50000.0:
+                capital_tier = "$25,000 VIP"
+                base_size = 0.10
+                base_target_profit = 125.0
+            elif account_equity < 100000.0:
+                capital_tier = "$50,000 VIP"
+                base_size = 0.15
+                base_target_profit = 250.0
+            else:
+                capital_tier = "$100,000 Institutional"
+                base_size = 0.20
+                base_target_profit = 500.0
+
+            if not any(x in clean_sym for x in ["XAU", "GOLD", "PAXG"]):
+                base_size = default_sizes.get(clean_sym, 0.05) * max(1.0, account_equity / 10000.0)
+
             lot_multiplier = 1.25
-            max_levels = 5 if any(x in clean_sym for x in ["XAU", "GOLD", "PAXG", "BTC"]) else 8
-            base_target_profit = max(25.0, account_equity * 0.005)
+            max_levels = 5
             stop_loss = max(200.0, account_equity * (getattr(self, "stop_loss_pct", 10.0) / 100.0))
 
         # ---- 8b. SYMBOL VOLATILITY LEVEL CAP ----
