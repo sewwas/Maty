@@ -50,8 +50,8 @@ _NEWS_CACHE = None             # (news_list, timestamp)
 
 def get_live_price(symbol: str = "BTCUSDT") -> Optional[float]:
     """
-    Fetch current price from public REST APIs.
-    Uses ultra-fast RAM cache (1.0s TTL) and tight 0.3s timeouts.
+    Fetch current price from MT5 or public REST APIs.
+    Uses instant MT5 in-memory lookup first, fallback to ultra-fast RAM cache (1.0s TTL).
     Never hangs — falls back instantly to cached or default price.
     """
     sym = symbol.upper()
@@ -59,10 +59,6 @@ def get_live_price(symbol: str = "BTCUSDT") -> Optional[float]:
         sym = "PAXGUSDT"
 
     now = time.time()
-    if sym in _LIVE_PRICE_CACHE:
-        cached_p, cached_t = _LIVE_PRICE_CACHE[sym]
-        if now - cached_t < 1.0:
-            return cached_p
 
     # 0. Try MT5 Live Tick FIRST (Instant 0.0001s in-memory MT5 lookup)
     try:
@@ -76,6 +72,11 @@ def get_live_price(symbol: str = "BTCUSDT") -> Optional[float]:
                 return p
     except Exception:
         pass
+
+    if sym in _LIVE_PRICE_CACHE:
+        cached_p, cached_t = _LIVE_PRICE_CACHE[sym]
+        if now - cached_t < 1.0:
+            return cached_p
 
     # 1. Try Binance API (0.3s timeout)
     try:
@@ -336,14 +337,21 @@ def get_24h_market_stats(symbol: str = "BTCUSDT") -> dict:
 def get_crypto_news(symbol: str = "BTCUSDT", limit: int = 8) -> List[dict]:
     """
     Fetch breaking news stories relevant to cryptocurrency and macro markets.
-    Includes automated keyword sentiment analysis.
+    Includes 300s RAM cache and automated keyword sentiment analysis.
     """
+    global _NEWS_CACHE
+    now = time.time()
+    if _NEWS_CACHE is not None and isinstance(_NEWS_CACHE, tuple):
+        cached_n, cached_t = _NEWS_CACHE
+        if now - cached_t < 300.0:
+            return cached_n
+
     base = "BTC" if "BTC" in symbol else ("ETH" if "ETH" in symbol else ("SOL" if "SOL" in symbol else ("XAU" if "PAXG" in symbol or "XAU" in symbol else "CRYPTO")))
     news_items = []
-    
+
     try:
         url = "https://min-api.cryptocompare.com/data/v2/news/?lang=EN"
-        res = requests.get(url, timeout=3.0)
+        res = requests.get(url, timeout=1.0)
         if res.status_code == 200:
             data = res.json()
             if "Data" in data and isinstance(data["Data"], list):
@@ -423,6 +431,7 @@ def get_crypto_news(symbol: str = "BTCUSDT", limit: int = 8) -> List[dict]:
             }
         ]
         
+    _NEWS_CACHE = (news_items, now)
     return news_items
 
 
@@ -601,7 +610,7 @@ def get_order_book_depth(symbol: str = "BTCUSDT", limit: int = 20) -> dict:
     # 4. Try Gate.io Order Book API
     try:
         url = f"https://api.gateio.ws/api/v4/spot/order_book?currency_pair={base}_USDT&limit={limit}"
-        res = requests.get(url, timeout=2.0)
+        res = requests.get(url, timeout=0.3)
         if res.status_code == 200:
             data = res.json()
             bids = [[float(p), float(q)] for p, q in data.get("bids", [])]

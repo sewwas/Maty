@@ -77,6 +77,11 @@ class MT5Broker:
             print(f"Notice: MT5 init check: {init_err}")
 
     def get_exness_symbol(self, ui_symbol: str) -> str:
+        if not hasattr(self, "_exness_symbol_cache"):
+            self._exness_symbol_cache = {}
+        if ui_symbol in self._exness_symbol_cache:
+            return self._exness_symbol_cache[ui_symbol]
+
         symbol_map = {
             "BTCUSDT": "BTCUSD",
             "ETHUSDT": "ETHUSD",
@@ -88,27 +93,37 @@ class MT5Broker:
         base_sym = symbol_map.get(ui_symbol, ui_symbol)
         candidate = f"{base_sym}{self.symbol_suffix}"
 
+        res = candidate
         if MT5_AVAILABLE:
             mt5.symbol_select(candidate, True)
             if mt5.symbol_info(candidate) is not None:
-                return candidate
-            for suff in ["m", "c", "_i", ".a", ""]:
-                alt = f"{base_sym}{suff}"
-                mt5.symbol_select(alt, True)
-                if mt5.symbol_info(alt) is not None:
-                    return alt
-        return candidate
+                res = candidate
+            else:
+                for suff in ["m", "c", "_i", ".a", ""]:
+                    alt = f"{base_sym}{suff}"
+                    mt5.symbol_select(alt, True)
+                    if mt5.symbol_info(alt) is not None:
+                        res = alt
+                        break
+        self._exness_symbol_cache[ui_symbol] = res
+        return res
 
     def ensure_connected(self) -> bool:
         if not MT5_AVAILABLE:
             return False
+        now = time.time()
+        if hasattr(self, "_last_conn_ok") and (now - self._last_conn_ok < 3.0):
+            return True
         try:
             if mt5.terminal_info() is None:
                 mt5.initialize()
             if mt5.account_info() is None:
                 if self.password:
                     mt5.login(login=self.login, password=self.password, server=self.server)
-            return mt5.account_info() is not None
+            res = mt5.account_info() is not None
+            if res:
+                self._last_conn_ok = now
+            return res
         except Exception:
             return False
 
@@ -405,13 +420,19 @@ class MT5Broker:
                     total_pnl += p.profit
         return total_pnl
 
-    def sync_history_from_mt5(self, days: int = 30):
+    def sync_history_from_mt5(self, days: int = 30, force: bool = False):
         """
         Fetches closed deal history directly from MT5 terminal for this bot's magic number,
-        synchronizing closed_trades and realized_pnl.
+        synchronizing closed_trades and realized_pnl. Throttled to max once per 30s to prevent VPS lag.
         """
         if not self.ensure_connected():
             return
+
+        now = time.time()
+        if not force and hasattr(self, "_last_history_sync_time") and (now - self._last_history_sync_time < 30.0):
+            return
+        self._last_history_sync_time = now
+
         try:
             import datetime
             from_date = datetime.datetime.now() - datetime.timedelta(days=days)

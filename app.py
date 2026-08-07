@@ -14,21 +14,13 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 
-# Core Imports with Hot-Reloading
-import importlib
+# Core Imports
 import core.data
 import core.engine
 import core.mt5_broker
 import core.pamm
 import core.license
 import core.signals
-
-importlib.reload(core.data)
-importlib.reload(core.engine)
-importlib.reload(core.mt5_broker)
-importlib.reload(core.pamm)
-importlib.reload(core.license)
-importlib.reload(core.signals)
 
 from core.mt5_broker import MT5Broker, SimulatedBroker, MT5_AVAILABLE, get_symbol_magic_number
 from core.engine import BreakoutGridBot, get_pip_size, sanitize_order_size
@@ -289,18 +281,12 @@ st.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 
-# Sync MT5 History & Cycle Summaries across all brokers
+# Sync MT5 History across all brokers (throttled to 30s)
 for m_item in st.session_state.markets.values():
     brk = m_item.get("broker")
-    bot = m_item.get("bot")
     if brk and hasattr(brk, "sync_history_from_mt5"):
         try:
             brk.sync_history_from_mt5()
-        except Exception:
-            pass
-    if bot and hasattr(bot, "sync_cycle_history_from_trades"):
-        try:
-            bot.sync_cycle_history_from_trades()
         except Exception:
             pass
 
@@ -1368,7 +1354,22 @@ with tab_myfxbook:
     """, unsafe_allow_html=True)
 
 
-# VPS Refresh Loop
+# VPS High-Speed Real-Time Execution Engine (250ms Sub-Second Tick Loop)
 if any(m.get("running", False) for m in st.session_state.markets.values()):
-    time.sleep(3.0)
+    # Run 4 micro-tick passes (250ms interval) during the 1.0s UI refresh window
+    # Ensures instant profit taking, trailing stop lock, and order execution without VPS lag
+    for _ in range(4):
+        time.sleep(0.25)
+        for _sym, _m in list(st.session_state.markets.items()):
+            if _m.get("running", False):
+                try:
+                    _brk = _m["broker"]
+                    _bot = _m["bot"]
+                    _lp = get_live_price(_sym)
+                    if _lp and _lp > 0:
+                        _prev_p = _m.get("last_price", _lp)
+                        _m["last_price"] = _lp
+                        _bot.process_tick(_prev_p, _lp, time.time())
+                except Exception:
+                    pass
     st.rerun()
