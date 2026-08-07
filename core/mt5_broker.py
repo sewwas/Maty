@@ -210,34 +210,6 @@ class MT5Broker:
         digits = symbol_info.digits
         trigger_price = round(trigger_price, digits)
 
-        # Anti-Overlap Level Collision Shield:
-        # Queries BOTH local memory and live MT5 terminal orders to prevent adjacent grid levels from collapsing
-        mt5_live_orders = mt5.orders_get(symbol=exness_symbol) if exness_symbol else None
-        live_prices = []
-        if mt5_live_orders:
-            for o in mt5_live_orders:
-                if o.type in [mt5.ORDER_TYPE_BUY_STOP, 4] and order_type == "BUY_STOP":
-                    live_prices.append(float(o.price_open))
-                elif o.type in [mt5.ORDER_TYPE_SELL_STOP, 5] and order_type == "SELL_STOP":
-                    live_prices.append(float(o.price_open))
-
-        existing_type_prices = list(set([
-            o.trigger_price for o in self.pending_orders.values()
-            if o.type == order_type
-        ] + live_prices))
-
-        collision_dist = max(min_stop_dist * 0.30, point * 10.0, 0.05)
-        shift_step = max(min_stop_dist, point * 50.0, 0.50)
-
-        # Shift trigger_price outward if it collides with an existing pending order on MT5 or in local memory
-        shift_attempts = 0
-        while any(abs(trigger_price - ex_p) < collision_dist for ex_p in existing_type_prices) and shift_attempts < 10:
-            if order_type == "BUY_STOP":
-                trigger_price = round(trigger_price + shift_step, digits)
-            else:
-                trigger_price = round(trigger_price - shift_step, digits)
-            shift_attempts += 1
-
         # Volume calculation & alignment with Exness symbol volume limits & steps
         vol_min = symbol_info.volume_min if hasattr(symbol_info, "volume_min") and symbol_info.volume_min else 0.01
         vol_max = symbol_info.volume_max if hasattr(symbol_info, "volume_max") and symbol_info.volume_max else 100.0
@@ -370,13 +342,12 @@ class MT5Broker:
         orders = mt5.orders_get(symbol=exness_symbol) if exness_symbol else None
         if orders:
             for o in orders:
-                if o.magic == self.magic_number:
-                    req = {"action": mt5.TRADE_ACTION_REMOVE, "order": o.ticket}
-                    mt5.order_send(req)
+                req = {"action": mt5.TRADE_ACTION_REMOVE, "order": o.ticket}
+                mt5.order_send(req)
 
         # Synchronous verification: wait up to 250ms for MT5 server to confirm order removals
         for _ in range(5):
-            rem = [o for o in (mt5.orders_get(symbol=exness_symbol) or []) if o.magic == self.magic_number]
+            rem = mt5.orders_get(symbol=exness_symbol) if exness_symbol else None
             if not rem:
                 break
             time.sleep(0.05)
