@@ -1845,9 +1845,9 @@ class BreakoutGridBot:
                 buy_pos_count = len(buy_positions)
                 sell_pos_count = len(sell_positions)
                 
-                # Single-side basket experiencing trend drawdown
+                # Single-side basket experiencing trend drawdown -> Trigger early counter-hedge at 20% drawdown threshold
                 if (buy_pos_count > 0 and sell_pos_count == 0) or (sell_pos_count > 0 and buy_pos_count == 0):
-                    hedge_threshold = effective_stop_loss * 0.35
+                    hedge_threshold = effective_stop_loss * 0.20
                     if float_pnl <= -hedge_threshold and len(self.broker.pending_orders) < 2:
                         hedge_side = "SELL_STOP" if buy_pos_count > 0 else "BUY_STOP"
                         hedge_dist_pct = getattr(self, "trap_offset", 0.07) * 0.50
