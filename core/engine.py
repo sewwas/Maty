@@ -1890,12 +1890,12 @@ class BreakoutGridBot:
                     momentum_scalp_hit = True
 
             # 7. VOLUME WEIGHTED AVERAGE COST RECOVERY EXIT (WVAP Exit on 2+ Fills)
-            # Instant Dual-Hedge Micro-Profit Trap: If both BUY and SELL positions exist (dual hedge), exit INSTANTLY on any positive micro-tick profit (> $0.00)!
+            # Ultra-Fast Near-Price Profit Exit: Exit INSTANTLY on any positive micro profit (>= +$0.25 USD / 25 Cents) right near current price!
             wvap_exit_hit = False
             if len(self.broker.open_positions) >= 2 and not self.in_runner_mode:
                 has_dual_hedge = (len(buy_positions) > 0 and len(sell_positions) > 0)
-                fast_bounce_target = (100.0 if is_cent else 1.00)  # Strictly net positive profit floor (+ $1.00 USD / +100 Cents)
-                standard_wvap_target = max(volume_friction_target, friction_floor + 1.00)
+                fast_bounce_target = (25.0 if is_cent else 0.25)  # Ultra-fast micro profit target (+ $0.25 USD / +25 Cents)
+                standard_wvap_target = max(volume_friction_target, friction_floor + 0.25)
                 
                 if (has_dual_hedge and float_pnl > 0.0) or float_pnl >= fast_bounce_target or float_pnl >= standard_wvap_target:
                     wvap_exit_hit = True
