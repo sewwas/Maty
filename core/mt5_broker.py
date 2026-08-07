@@ -189,18 +189,18 @@ class MT5Broker:
         live_prices = []
         if mt5_live_orders:
             for o in mt5_live_orders:
-                if o.magic == self.magic_number:
-                    o_type = "BUY_STOP" if o.type in [mt5.ORDER_TYPE_BUY_STOP, 4] else "SELL_STOP"
-                    if o_type == order_type:
-                        live_prices.append(float(o.price_open))
+                if o.type in [mt5.ORDER_TYPE_BUY_STOP, 4] and order_type == "BUY_STOP":
+                    live_prices.append(float(o.price_open))
+                elif o.type in [mt5.ORDER_TYPE_SELL_STOP, 5] and order_type == "SELL_STOP":
+                    live_prices.append(float(o.price_open))
 
         existing_type_prices = list(set([
             o.trigger_price for o in self.pending_orders.values()
             if o.type == order_type
         ] + live_prices))
 
-        collision_dist = max(min_stop_dist * 0.45, point * 15.0)
-        shift_step = max(min_stop_dist, point * 50.0)
+        collision_dist = max(min_stop_dist * 0.45, point * 15.0, 0.50 if "XAU" in exness_symbol.upper() or "GOLD" in exness_symbol.upper() else 0.0001)
+        shift_step = max(min_stop_dist, point * 50.0, 0.50 if "XAU" in exness_symbol.upper() or "GOLD" in exness_symbol.upper() else 0.0001)
 
         # Shift trigger_price outward if it collides with an existing pending order on MT5 or in local memory
         shift_attempts = 0
@@ -266,7 +266,7 @@ class MT5Broker:
     def purge_duplicate_mt5_orders(self) -> int:
         """
         Direct MT5 Terminal Duplicate Purge:
-        Queries live pending orders directly from MT5 terminal for this bot's magic number,
+        Queries live pending orders directly from MT5 terminal for this bot's magic number or symbol,
         groups orders by price level, and immediately sends TRADE_ACTION_REMOVE to cancel any
         overlapping duplicate tickets at the exact same or close price on MT5 server.
         """
@@ -280,17 +280,17 @@ class MT5Broker:
 
         symbol_info = mt5.symbol_info(exness_symbol)
         point = symbol_info.point if symbol_info else 0.0001
-        tolerance = max(point * 35.0, 0.0001)
+        stops_level = getattr(symbol_info, "trade_stops_level", 0) or 0
+        tolerance = max(stops_level * point * 0.50, point * 50.0, 0.50 if "XAU" in exness_symbol.upper() or "GOLD" in exness_symbol.upper() else 0.0001)
 
         buy_orders = []
         sell_orders = []
         for o in orders:
-            if o.magic == self.magic_number:
-                o_type = "BUY_STOP" if o.type in [mt5.ORDER_TYPE_BUY_STOP, 4] else "SELL_STOP"
-                if o_type == "BUY_STOP":
-                    buy_orders.append(o)
-                else:
-                    sell_orders.append(o)
+            # Purge duplicate tickets on symbol regardless of magic number
+            if o.type in [mt5.ORDER_TYPE_BUY_STOP, 4]:
+                buy_orders.append(o)
+            elif o.type in [mt5.ORDER_TYPE_SELL_STOP, 5]:
+                sell_orders.append(o)
 
         purged_count = 0
         for group in [buy_orders, sell_orders]:

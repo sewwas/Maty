@@ -1354,12 +1354,12 @@ with tab_myfxbook:
     """, unsafe_allow_html=True)
 
 
-# VPS High-Speed Real-Time Execution Engine (250ms Sub-Second Tick Loop)
+# VPS High-Speed Non-Blocking Execution & Ultra-Smooth UI Engine
 if any(m.get("running", False) for m in st.session_state.markets.values()):
-    # Run 4 micro-tick passes (250ms interval) during the 1.0s UI refresh window
-    # Ensures instant profit taking, trailing stop lock, and order execution without VPS lag
-    for _ in range(4):
-        time.sleep(0.25)
+    # Perform 5 fast tick processing passes (200ms interval) per 1.0s UI window
+    # Ensures instant sub-second profit taking & order execution without browser DOM thrashing
+    for _ in range(5):
+        time.sleep(0.20)
         for _sym, _m in list(st.session_state.markets.items()):
             if _m.get("running", False):
                 try:

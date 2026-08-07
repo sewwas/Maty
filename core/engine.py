@@ -1035,6 +1035,11 @@ class BreakoutGridBot:
             # Always mark deployed = True after deployment attempt so background tick loops NEVER re-trigger wiping
             self.deployed = True
             self.last_deploy_time = timestamp
+            if hasattr(self.broker, "purge_duplicate_mt5_orders"):
+                try:
+                    self.broker.purge_duplicate_mt5_orders()
+                except Exception:
+                    pass
             if placed_count == 0 and len(self.broker.pending_orders) == 0:
                 self._last_deploy_error_time = timestamp
         except Exception as e:
@@ -1192,18 +1197,11 @@ class BreakoutGridBot:
 
             # Active Duplicate Level Purge Guard:
             # Instantly purge any duplicate pending orders on MT5 that landed at the exact same level
-            active_buys = [o for o in self.broker.pending_orders.values() if o.type == "BUY_STOP"]
-            active_sells = [o for o in self.broker.pending_orders.values() if o.type == "SELL_STOP"]
-            for o_group in [active_buys, active_sells]:
-                seen_prices = []
-                for o in sorted(o_group, key=lambda x: x.trigger_price):
-                    if any(abs(o.trigger_price - sp) < (gap_val * 0.35) for sp in seen_prices):
-                        try:
-                            self.broker.cancel_order(o.order_id)
-                        except Exception:
-                            pass
-                    else:
-                        seen_prices.append(o.trigger_price)
+            if hasattr(self.broker, "purge_duplicate_mt5_orders"):
+                try:
+                    self.broker.purge_duplicate_mt5_orders()
+                except Exception:
+                    pass
 
             placed_count = buy_placed + sell_placed
         except Exception as e:
