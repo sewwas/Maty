@@ -1535,9 +1535,25 @@ class BreakoutGridBot:
                     except Exception as err:
                         print(f"Failed to cancel pending orders on Runner Mode entry: {err}")
 
+            buy_pos_list = [p for p in self.broker.open_positions.values() if p.type == "BUY"]
+            sell_pos_list = [p for p in self.broker.open_positions.values() if p.type == "SELL"]
+
+            # Strong Trend Directional Confluence: Allow extra breathing room on strong trend continuations
+            is_strong_buy_trend = bool(buy_pos_list and not sell_pos_list and avg_delta > 0)
+            is_strong_sell_trend = bool(sell_pos_list and not buy_pos_list and avg_delta < 0)
+            is_strong_trend = is_strong_buy_trend or is_strong_sell_trend
+
             if self.in_runner_mode:
-                lock_pct = 0.90 if is_reversing else getattr(self, 'profit_lock_pct', 0.80)
-                # Unbreakable net-positive floor: strictly >= friction_floor + $1.00 to guarantee ZERO loss
+                # Strong active trend: allow wider trailing room (0.70) for maximum trend profit expansion
+                # Confirmed reversal: tighten instantly (0.90) to lock in 90% of peak profits before drop
+                if is_reversing:
+                    lock_pct = 0.90
+                elif is_strong_trend:
+                    lock_pct = getattr(self, 'trend_runner_lock_pct', 0.70)
+                else:
+                    lock_pct = getattr(self, 'profit_lock_pct', 0.80)
+
+                # 100% Unbreakable Net-Positive Floor: strictly >= 50% TP or friction_floor + $1.00 (Guarantees ZERO loss)
                 unbreakable_net_floor = max(friction_floor + 1.00, effective_target_profit * 0.50)
                 trailing_peak_floor = self.max_floating_pnl * lock_pct
                 runner_floor = max(unbreakable_net_floor, trailing_peak_floor)
