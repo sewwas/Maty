@@ -1520,12 +1520,14 @@ class BreakoutGridBot:
                     print(f"Notice: Grid re-centering notice: {rec_err}")
 
         # ── PENDING TRAP RESTORATION SHIELD ──────────────────────────────────────
-        # If pending orders drop to 0 while active open trades exist, automatically restore fresh traps centered around current Ask/Bid!
+        # If pending orders drop to 0 while active open trades exist, automatically restore fresh traps centered around current Ask/Bid once every 30s!
         if self.deployed and len(self.broker.pending_orders) == 0 and len(self.broker.open_positions) > 0:
-            try:
-                self.deploy_traps(current_price, timestamp, bb_width)
-            except Exception as rest_err:
-                print(f"Notice: Grid trap restoration notice: {rest_err}")
+            if timestamp >= getattr(self, "_last_trap_restoration_time", 0.0) + 30.0:
+                self._last_trap_restoration_time = timestamp
+                try:
+                    self.deploy_traps(current_price, timestamp, bb_width)
+                except Exception as rest_err:
+                    print(f"Notice: Grid trap restoration notice: {rest_err}")
 
         if not self.deployed:
             return None
