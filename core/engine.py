@@ -940,7 +940,7 @@ class BreakoutGridBot:
                 # so ETH and Gold on the same account always get the same capital tier & levels.
                 bal = float(
                     getattr(self, "shared_account_equity", None)
-                    or getattr(self.broker, "balance", 1000.0)
+                    or getattr(self.broker, "balance_usd", getattr(self.broker, "balance", 1000.0))
                 )
 
                 eval_res = self.auto_reading_engine.evaluate_market_and_account(
@@ -1540,7 +1540,8 @@ class BreakoutGridBot:
 
             # 0. PURE DYNAMIC RISK-SCALED STOP LOSS ENGINE (Zero Hardcoded Stop Loss)
             # Dynamically scales Stop Loss based on account balance/equity and open grid basket volume
-            account_eq = getattr(self.broker, "account_equity", getattr(self.broker, "initial_balance", 1000.0))
+            is_cent = getattr(self.broker, "is_cent_account", False)
+            account_eq = getattr(self.broker, "balance_usd", getattr(self.broker, "account_equity", getattr(self.broker, "initial_balance", 1000.0)))
             max_eq_risk_pct = getattr(self, "stop_loss_pct", 10.0)
             
             # Basket Volume Multiplier: 1 fill = 1.0x, 2 fills = 1.25x, 3 fills = 1.50x, 4+ fills = 1.75x
@@ -1548,7 +1549,10 @@ class BreakoutGridBot:
             volume_risk_scale = 1.0 + (max(0, num_open - 1) * 0.25)
             
             dynamic_sl_dollar = max(50.0, account_eq * (max_eq_risk_pct / 100.0) * volume_risk_scale)
-            effective_stop_loss = max(self.stop_loss, dynamic_sl_dollar) if self.stop_loss > 0 else dynamic_sl_dollar
+            if is_cent:
+                dynamic_sl_dollar *= 100.0  # Convert USD stop loss to MT5 Cents
+            base_sl = (self.stop_loss * 100.0) if is_cent else self.stop_loss
+            effective_stop_loss = max(base_sl, dynamic_sl_dollar) if base_sl > 0 else dynamic_sl_dollar
 
             if float_pnl <= -effective_stop_loss:
                 stop_loss_hit = True
@@ -1562,7 +1566,9 @@ class BreakoutGridBot:
             total_basket_lots = sum(p.size for p in self.broker.open_positions.values())
             base_size = max(0.0001, getattr(self, "order_size", 0.01))
             volume_scale_mult = max(1.0, total_basket_lots / base_size)
-            effective_target_profit = max(self.target_profit * volume_scale_mult, friction_floor + 1.00)
+            base_tp = (self.target_profit * 100.0) if is_cent else self.target_profit
+            friction_floor_adjusted = (friction_floor * 100.0) if is_cent else friction_floor
+            effective_target_profit = max(base_tp * volume_scale_mult, friction_floor_adjusted + (100.0 if is_cent else 1.00))
 
             if self.use_smart_trailing and float_pnl >= effective_target_profit:
                 if not self.in_runner_mode:

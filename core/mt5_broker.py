@@ -128,6 +128,24 @@ class MT5Broker:
             return False
 
     @property
+    def is_cent_account(self) -> bool:
+        exness_sym = self.get_exness_symbol(self.symbol)
+        if exness_sym.endswith("c"):
+            return True
+        if self.ensure_connected():
+            acc = mt5.account_info()
+            if acc and hasattr(acc, "currency") and ("USC" in str(acc.currency).upper() or "EUOC" in str(acc.currency).upper()):
+                return True
+        return False
+
+    @property
+    def balance_usd(self) -> float:
+        bal = self.balance
+        if self.is_cent_account:
+            return bal / 100.0
+        return bal
+
+    @property
     def balance(self) -> float:
         if self.ensure_connected():
             acc = mt5.account_info()
