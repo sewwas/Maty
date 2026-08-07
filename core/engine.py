@@ -1512,33 +1512,6 @@ class BreakoutGridBot:
                 except Exception as rec_err:
                     print(f"Notice: Grid re-centering notice: {rec_err}")
 
-        # ── 4+ POSITION FILL MATHEMATICAL TRAP RE-CENTERING SHIELD ──────────────────────
-        # When 4 or more positions fill, distant pending traps are stale.
-        # Purge distant pending tickets and deploy fresh mathematical reserve traps centered near live price!
-        if len(self.broker.open_positions) >= 4 and len(self.broker.pending_orders) > 0:
-            last_recenter_4p = getattr(self, "_last_4pos_recenter_ts", 0.0)
-            if (timestamp - last_recenter_4p) >= 30.0:  # 30-second cooldown between 4+ fill re-centerings
-                self._last_4pos_recenter_ts = timestamp
-                try:
-                    self.broker.cancel_all_orders()
-                    gap_val = getattr(self, "deploy_grid_gap", 3.00)
-                    fresh_offset = max(gap_val * 1.0, 3.00 if ("XAU" in str(getattr(self.broker, "symbol", "")).upper() or "GOLD" in str(getattr(self.broker, "symbol", "")).upper()) else current_price * 0.001)
-                    
-                    buy_px = round(current_price + fresh_offset, 2)
-                    sell_px = round(current_price - fresh_offset, 2)
-                    res_size = max(0.01, round(self.order_size * 1.5, 4))
-                    
-                    sym_n = str(getattr(self.broker, "symbol", "")).upper()
-                    if "BTC" in sym_n: h_dist = 50.0
-                    elif any(x in sym_n for x in ["XAU", "GOLD", "PAXG"]): h_dist = 3.00
-                    elif "ETH" in sym_n: h_dist = 3.00
-                    else: h_dist = current_price * 0.001
-                    
-                    self.broker.place_order("BUY_STOP", buy_px, res_size, timestamp, tp=round(buy_px + h_dist, 2))
-                    self.broker.place_order("SELL_STOP", sell_px, res_size, timestamp, tp=round(sell_px - h_dist, 2))
-                except Exception as err4:
-                    print(f"Notice: 4+ fill trap re-centering notice: {err4}")
-
         if not self.deployed:
             return None
 
@@ -1893,6 +1866,15 @@ class BreakoutGridBot:
                             self.broker.place_order(hedge_side, hedge_px, hedge_size, timestamp, tp=hedge_tp_px)
                         except Exception:
                             pass
+
+            # 5c. 4+ FILLS UNFILLED PENDING TRAP PURGE & MATHEMATICAL RECOVERY ENGINE
+            # When 4 or more grid levels fill on one side (heavy trend expansion):
+            # Automatically cancel all remaining unfilled pending traps so no excess orders pile up at extreme levels!
+            if len(self.broker.open_positions) >= 4 and len(self.broker.pending_orders) > 0:
+                try:
+                    self.broker.cancel_all_orders()
+                except Exception:
+                    pass
 
             # 6. MICRO-VELOCITY MOMENTUM SCALP EXIT (True Trend Reversal Guard)
             momentum_scalp_hit = False
