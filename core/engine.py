@@ -1865,10 +1865,12 @@ class BreakoutGridBot:
                     momentum_scalp_hit = True
 
             # 7. VOLUME WEIGHTED AVERAGE COST RECOVERY EXIT (WVAP Exit on 2+ Fills)
+            # Ultra-Fast Pullback Recovery: On 2+ position pullbacks, exit the entire basket in GREEN PROFIT (+ $1.00 USD) on the very first micro-bounce!
             wvap_exit_hit = False
             if len(self.broker.open_positions) >= 2 and not self.in_runner_mode:
-                wvap_target = max(volume_friction_target, friction_floor + 1.00)
-                if float_pnl >= wvap_target:
+                fast_bounce_target = (100.0 if is_cent else 1.00)  # Strictly net positive profit (+ $1.00 USD / +100 Cents)
+                standard_wvap_target = max(volume_friction_target, friction_floor + 1.00)
+                if float_pnl >= fast_bounce_target or float_pnl >= standard_wvap_target:
                     wvap_exit_hit = True
 
             # 8. SINGLE-FILL QUICK PERCENT SCALP EXIT (Equalized for Crypto & Gold)
