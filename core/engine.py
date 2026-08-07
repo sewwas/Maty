@@ -1578,7 +1578,8 @@ class BreakoutGridBot:
             if is_cent:
                 dynamic_sl_dollar *= 100.0  # Convert USD stop loss to MT5 Cents
             base_sl = (self.stop_loss * 100.0) if is_cent else self.stop_loss
-            effective_stop_loss = max(base_sl, dynamic_sl_dollar) if base_sl > 0 else dynamic_sl_dollar
+            min_sl_floor = (2500.0 if is_cent else 25.00)
+            effective_stop_loss = max(min_sl_floor, max(base_sl, dynamic_sl_dollar))
 
             if float_pnl <= -effective_stop_loss:
                 stop_loss_hit = True
