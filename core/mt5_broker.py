@@ -184,15 +184,25 @@ class MT5Broker:
         trigger_price = round(trigger_price, digits)
 
         # Anti-Overlap Level Collision Shield:
-        # Prevents adjacent grid levels from collapsing onto the exact same price due to broker stops_level clamping
-        existing_type_prices = [
+        # Queries BOTH local memory and live MT5 terminal orders to prevent adjacent grid levels from collapsing
+        mt5_live_orders = mt5.orders_get(symbol=exness_symbol) if exness_symbol else None
+        live_prices = []
+        if mt5_live_orders:
+            for o in mt5_live_orders:
+                if o.magic == self.magic_number:
+                    o_type = "BUY_STOP" if o.type in [mt5.ORDER_TYPE_BUY_STOP, 4] else "SELL_STOP"
+                    if o_type == order_type:
+                        live_prices.append(float(o.price_open))
+
+        existing_type_prices = list(set([
             o.trigger_price for o in self.pending_orders.values()
             if o.type == order_type
-        ]
-        collision_dist = max(min_stop_dist * 0.40, point * 10.0)
+        ] + live_prices))
+
+        collision_dist = max(min_stop_dist * 0.45, point * 15.0)
         shift_step = max(min_stop_dist, point * 50.0)
 
-        # Shift trigger_price outward if it collides with an existing pending order of the same type
+        # Shift trigger_price outward if it collides with an existing pending order on MT5 or in local memory
         shift_attempts = 0
         while any(abs(trigger_price - ex_p) < collision_dist for ex_p in existing_type_prices) and shift_attempts < 10:
             if order_type == "BUY_STOP":
@@ -253,6 +263,53 @@ class MT5Broker:
         self.ticket_to_order_id[ticket] = order_id
         return order
 
+    def purge_duplicate_mt5_orders(self) -> int:
+        """
+        Direct MT5 Terminal Duplicate Purge:
+        Queries live pending orders directly from MT5 terminal for this bot's magic number,
+        groups orders by price level, and immediately sends TRADE_ACTION_REMOVE to cancel any
+        overlapping duplicate tickets at the exact same or close price on MT5 server.
+        """
+        if not self.ensure_connected():
+            return 0
+
+        exness_symbol = self.get_exness_symbol(self.symbol)
+        orders = mt5.orders_get(symbol=exness_symbol) if exness_symbol else None
+        if not orders:
+            return 0
+
+        symbol_info = mt5.symbol_info(exness_symbol)
+        point = symbol_info.point if symbol_info else 0.0001
+        tolerance = max(point * 35.0, 0.0001)
+
+        buy_orders = []
+        sell_orders = []
+        for o in orders:
+            if o.magic == self.magic_number:
+                o_type = "BUY_STOP" if o.type in [mt5.ORDER_TYPE_BUY_STOP, 4] else "SELL_STOP"
+                if o_type == "BUY_STOP":
+                    buy_orders.append(o)
+                else:
+                    sell_orders.append(o)
+
+        purged_count = 0
+        for group in [buy_orders, sell_orders]:
+            seen_prices = []
+            for o in sorted(group, key=lambda x: x.price_open):
+                p = float(o.price_open)
+                if any(abs(p - sp) < tolerance for sp in seen_prices):
+                    req = {"action": mt5.TRADE_ACTION_REMOVE, "order": o.ticket}
+                    mt5.order_send(req)
+                    purged_count += 1
+                    if o.ticket in self.ticket_to_order_id:
+                        oid = self.ticket_to_order_id.pop(o.ticket, None)
+                        if oid:
+                            self.pending_orders.pop(oid, None)
+                else:
+                    seen_prices.append(p)
+
+        return purged_count
+
     def cancel_order(self, order_id: str) -> Optional[Order]:
         if not self.ensure_connected():
             return None
@@ -289,6 +346,13 @@ class MT5Broker:
                 if o.magic == self.magic_number:
                     req = {"action": mt5.TRADE_ACTION_REMOVE, "order": o.ticket}
                     mt5.order_send(req)
+
+        # Synchronous verification: wait up to 250ms for MT5 server to confirm order removals
+        for _ in range(5):
+            rem = [o for o in (mt5.orders_get(symbol=exness_symbol) or []) if o.magic == self.magic_number]
+            if not rem:
+                break
+            time.sleep(0.05)
 
         self.pending_orders.clear()
         self.ticket_to_order_id.clear()
@@ -379,6 +443,7 @@ class MT5Broker:
         exness_symbol = self.get_exness_symbol(sym)
 
         # 1. Active pending orders from MT5
+        self.purge_duplicate_mt5_orders()
         mt5_orders = mt5.orders_get(symbol=exness_symbol) if exness_symbol else None
         active_order_tickets = set()
         if mt5_orders:

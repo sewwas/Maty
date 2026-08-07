@@ -836,17 +836,26 @@ class BreakoutGridBot:
         If use_bb_filter is True, deployment will be skipped if bb_width is missing or > threshold.
         """
         self.ensure_attributes_initialized()
+
+        # Concurrent Execution Guard: Prevent overlapping deploy passes
+        if getattr(self, "_is_deploying", False):
+            return
+        self._is_deploying = True
+
         # Active Grid Lock Guard: Lock active traps in place until triggered or forced.
         # Prevents tick updates or Auto-Reading re-evaluations from churning active pending orders.
         if not force and self.deployed and len(self.broker.pending_orders) > 0 and len(self.broker.open_positions) == 0:
+            self._is_deploying = False
             return
 
         # Active Grid Guard: If grid traps are already deployed and active on MT5,
         # NEVER wipe and redeploy on background tick loops. Keep traps stationary!
         if not force and self.deployed and len(self.broker.pending_orders) > 0:
+            self._is_deploying = False
             return
 
         if not force and timestamp < getattr(self, "_last_deploy_error_time", 0.0) + 60.0:
+            self._is_deploying = False
             return
 
         # MT5 Connection Readiness Guard: Do NOT wipe or place traps if broker connection is offline/invalid
@@ -1035,6 +1044,8 @@ class BreakoutGridBot:
             self.last_deploy_time = timestamp
             self._last_deploy_error_time = timestamp
             print(f"Notice: Grid trap deployment notice: {e}")
+        finally:
+            self._is_deploying = False
 
     def repair_grid(self, current_price: float, timestamp: float) -> int:
         """
