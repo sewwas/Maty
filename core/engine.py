@@ -1499,6 +1499,19 @@ class BreakoutGridBot:
                     self._last_deploy_error_time = timestamp
                     print(f"Notice: Grid deployment on pause (60s cooldown): {dep_err}")
 
+        # ── DYNAMIC GRID RE-CENTERING SHIELD ─────────────────────────────────────
+        # If zero open positions exist and price moves far away from pending traps (> 2x gap),
+        # automatically cancel stale pending traps and re-deploy fresh traps centered around current Ask/Bid!
+        if self.deployed and len(self.broker.open_positions) == 0 and len(self.broker.pending_orders) > 0:
+            nearest_dist = min(abs(current_price - o.trigger_price) for o in self.broker.pending_orders.values())
+            recenter_threshold = max(getattr(self, "deploy_grid_gap", 3.0) * 2.0, 6.00 if ("XAU" in str(getattr(self.broker, "symbol", "")).upper() or "GOLD" in str(getattr(self.broker, "symbol", "")).upper()) else current_price * 0.005)
+            if nearest_dist > recenter_threshold:
+                try:
+                    self.broker.cancel_all_orders()
+                    self.deploy_traps(current_price, timestamp, bb_width)
+                except Exception as rec_err:
+                    print(f"Notice: Grid re-centering notice: {rec_err}")
+
         if not self.deployed:
             return None
 
