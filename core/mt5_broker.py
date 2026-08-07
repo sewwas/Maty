@@ -194,7 +194,7 @@ class MT5Broker:
             return min_dist
         return 2.50 if "XAU" in self.symbol.upper() or "GOLD" in self.symbol.upper() else 0.005
 
-    def place_order(self, order_type: str, price: float, size: float, timestamp: float) -> Order:
+    def place_order(self, order_type: str, price: float, size: float, timestamp: float, tp: float = 0.0, sl: float = 0.0) -> Order:
         if not self.ensure_connected():
             raise RuntimeError("MT5 connection offline.")
 
@@ -260,14 +260,17 @@ class MT5Broker:
         else:
             mt5_filling = mt5.ORDER_FILLING_RETURN
 
+        tp_val = round(tp, digits) if tp > 0 else 0.0
+        sl_val = round(sl, digits) if sl > 0 else 0.0
+
         request = {
             "action": mt5.TRADE_ACTION_PENDING,
             "symbol": exness_symbol,
             "volume": order_size,
             "type": mt5_type,
             "price": trigger_price,
-            "sl": 0.0,
-            "tp": 0.0,
+            "sl": sl_val,
+            "tp": tp_val,
             "magic": self.magic_number,
             "comment": "Maty Bot Trap",
             "type_filling": mt5_filling,
