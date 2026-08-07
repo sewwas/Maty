@@ -199,8 +199,8 @@ class MT5Broker:
             if o.type == order_type
         ] + live_prices))
 
-        collision_dist = max(min_stop_dist * 0.45, point * 15.0, 0.50 if "XAU" in exness_symbol.upper() or "GOLD" in exness_symbol.upper() else 0.0001)
-        shift_step = max(min_stop_dist, point * 50.0, 0.50 if "XAU" in exness_symbol.upper() or "GOLD" in exness_symbol.upper() else 0.0001)
+        collision_dist = max(min_stop_dist * 0.30, point * 10.0, 0.05)
+        shift_step = max(min_stop_dist, point * 50.0, 0.50)
 
         # Shift trigger_price outward if it collides with an existing pending order on MT5 or in local memory
         shift_attempts = 0
@@ -280,8 +280,8 @@ class MT5Broker:
 
         symbol_info = mt5.symbol_info(exness_symbol)
         point = symbol_info.point if symbol_info else 0.0001
-        stops_level = getattr(symbol_info, "trade_stops_level", 0) or 0
-        tolerance = max(stops_level * point * 0.50, point * 50.0, 0.50 if "XAU" in exness_symbol.upper() or "GOLD" in exness_symbol.upper() else 0.0001)
+        # Exact price match tolerance (3 pips / 3 cents max) to prevent purging valid grid levels
+        tolerance = max(point * 3.0, 0.03)
 
         buy_orders = []
         sell_orders = []

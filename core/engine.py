@@ -1421,22 +1421,6 @@ class BreakoutGridBot:
         if triggered_positions:
             self._last_trigger_time = timestamp
 
-        # Duplicate Open Position Guard: Instantly close any duplicate open positions at the exact same entry price
-        if self.broker.open_positions and len(self.broker.open_positions) > 1:
-            buy_pos = [p for p in self.broker.open_positions.values() if p.type == "BUY"]
-            sell_pos = [p for p in self.broker.open_positions.values() if p.type == "SELL"]
-            for pos_group in [buy_pos, sell_pos]:
-                seen_entries = []
-                for p in list(pos_group):
-                    ep = float(p.entry_price)
-                    if any(abs(ep - se) < (ep * 0.0003) for se in seen_entries):
-                        try:
-                            self.broker.close_position(p.position_id, current_price, timestamp)
-                        except Exception:
-                            pass
-                    else:
-                        seen_entries.append(ep)
-
         # OCO Trap cancellation logic
         if self.cancel_opposite_on_trigger and triggered_positions:
             for pos in triggered_positions:
