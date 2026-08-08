@@ -986,6 +986,10 @@ class BreakoutGridBot:
                     self.grid_gap = eval_res["dynamic_gap_pct"]
                 if "buy_offset_pct" in eval_res:
                     self.trap_offset = eval_res["buy_offset_pct"]
+                # Auto Mode Enhancements: Enable OCO opposite cancel & directional trap mode
+                self.cancel_opposite_on_trigger = True
+                self.unidirectional_mode = eval_res.get("unidirectional_mode", "DUAL")
+
                 # Store latest evaluation for UI display
                 self.last_auto_eval = eval_res
                 
@@ -1076,29 +1080,34 @@ class BreakoutGridBot:
             # Dual-hedge orders: Attached at WIDE NEWS SPIKE TP distance (3x wider: + $9.00 Gold / + $150 BTC) on Exness server to harvest massive news hype spikes!
             has_active_trades = (len(self.broker.open_positions) > 0)
 
+            # Directional Trap Mode: DUAL by default; BUY_ONLY / SELL_ONLY when strong trend bias detected
+            unidirectional_mode = getattr(self, "unidirectional_mode", "DUAL")
+
             # Place Buy Stop orders above Ask price
-            for i in range(self.grid_levels):
-                trigger_price = ask_ref + buy_offset_val + (i * gap_val)
-                level_size = self.calculate_level_size(self.order_size, self.order_size_multiplier, i)
-                buy_tp_dist = (min_tp_dist * 3.0) if has_active_trades else min_tp_dist
-                buy_tp_px = round(trigger_price + buy_tp_dist, 2)
-                try:
-                    self.broker.place_order("BUY_STOP", trigger_price, level_size, timestamp, tp=buy_tp_px)
-                    placed_count += 1
-                except Exception as err:
-                    print(f"Buy trap level {i+1} notice: {err}")
+            if unidirectional_mode in ("DUAL", "BUY_ONLY"):
+                for i in range(self.grid_levels):
+                    trigger_price = ask_ref + buy_offset_val + (i * gap_val)
+                    level_size = self.calculate_level_size(self.order_size, self.order_size_multiplier, i)
+                    buy_tp_dist = (min_tp_dist * 3.0) if has_active_trades else min_tp_dist
+                    buy_tp_px = round(trigger_price + buy_tp_dist, 2)
+                    try:
+                        self.broker.place_order("BUY_STOP", trigger_price, level_size, timestamp, tp=buy_tp_px)
+                        placed_count += 1
+                    except Exception as err:
+                        print(f"Buy trap level {i+1} notice: {err}")
 
             # Place Sell Stop orders below Bid price
-            for i in range(self.grid_levels):
-                trigger_price = bid_ref - sell_offset_val - (i * gap_val)
-                level_size = self.calculate_level_size(self.order_size, self.order_size_multiplier, i)
-                sell_tp_dist = (min_tp_dist * 3.0) if has_active_trades else min_tp_dist
-                sell_tp_px = round(trigger_price - sell_tp_dist, 2)
-                try:
-                    self.broker.place_order("SELL_STOP", trigger_price, level_size, timestamp, tp=sell_tp_px)
-                    placed_count += 1
-                except Exception as err:
-                    print(f"Sell trap level {i+1} notice: {err}")
+            if unidirectional_mode in ("DUAL", "SELL_ONLY"):
+                for i in range(self.grid_levels):
+                    trigger_price = bid_ref - sell_offset_val - (i * gap_val)
+                    level_size = self.calculate_level_size(self.order_size, self.order_size_multiplier, i)
+                    sell_tp_dist = (min_tp_dist * 3.0) if has_active_trades else min_tp_dist
+                    sell_tp_px = round(trigger_price - sell_tp_dist, 2)
+                    try:
+                        self.broker.place_order("SELL_STOP", trigger_price, level_size, timestamp, tp=sell_tp_px)
+                        placed_count += 1
+                    except Exception as err:
+                        print(f"Sell trap level {i+1} notice: {err}")
 
             # Always mark deployed = True after deployment attempt so background tick loops NEVER re-trigger wiping
             self.deployed = True
@@ -1579,7 +1588,16 @@ class BreakoutGridBot:
             recent_deltas = [self.price_history_ticks[i] - self.price_history_ticks[i-1] for i in range(1, len(self.price_history_ticks))]
             avg_delta = sum(recent_deltas) / len(recent_deltas)
             avg_delta_pct = (avg_delta / current_price * 100.0) if current_price > 0 else 0.0
-            is_reversing = (recent_deltas[-1] < 0 and recent_deltas[-2] < 0)
+            
+            # Position-aware reversal detection (detects top peak for BUY or bottom trough for SELL)
+            buy_pos_list = [p for p in self.broker.open_positions.values() if p.type == "BUY"]
+            sell_pos_list = [p for p in self.broker.open_positions.values() if p.type == "SELL"]
+            if buy_pos_list and not sell_pos_list:
+                is_reversing = (recent_deltas[-1] < 0 and recent_deltas[-2] < 0)
+            elif sell_pos_list and not buy_pos_list:
+                is_reversing = (recent_deltas[-1] > 0 and recent_deltas[-2] > 0)
+            else:
+                is_reversing = (recent_deltas[-1] < 0 and recent_deltas[-2] < 0)
 
         # Velocity Circuit Breaker (Black Swan Trend Shield)
         # If price moves parabolically in one direction (> 1.2% move in 10 ticks) with 2+ open positions,
@@ -1914,8 +1932,15 @@ class BreakoutGridBot:
                 if move_pct >= target_move_threshold and float_pnl >= volume_friction_target and not is_pos_trend:
                     single_fill_scalp_hit = True
 
-        if target_hit or runner_hit or trailing_stop_hit or stop_loss_hit or timeout_hit or breakeven_hit or early_range_hit or prop_guard_hit or hedge_lock_hit or velocity_shield_hit or momentum_scalp_hit or wvap_exit_hit or instant_counter_flip_hit or single_fill_scalp_hit:
-            if instant_counter_flip_hit: reason = "INSTANT_COUNTER_FLIP_EXIT"
+            # 9. INSTANT TOP/BOTTOM REVERSAL PROFIT EXIT (Never-Stuck Peak Reversal Shield)
+            top_bottom_reversal_hit = False
+            if len(self.broker.open_positions) > 0 and not self.in_runner_mode:
+                if is_reversing and float_pnl > 0.0:
+                    top_bottom_reversal_hit = True
+
+        if target_hit or runner_hit or trailing_stop_hit or stop_loss_hit or timeout_hit or breakeven_hit or early_range_hit or prop_guard_hit or hedge_lock_hit or velocity_shield_hit or momentum_scalp_hit or wvap_exit_hit or instant_counter_flip_hit or single_fill_scalp_hit or top_bottom_reversal_hit:
+            if top_bottom_reversal_hit: reason = "TOP_BOTTOM_REVERSAL_EXIT"
+            elif instant_counter_flip_hit: reason = "INSTANT_COUNTER_FLIP_EXIT"
             elif single_fill_scalp_hit: reason = "SINGLE_FILL_QUICK_SCALP"
             elif wvap_exit_hit:     reason = "WVAP_COST_RECOVERY"
             elif momentum_scalp_hit: reason = "MOMENTUM_SCALP_EXIT"
