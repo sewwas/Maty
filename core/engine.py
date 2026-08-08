@@ -389,54 +389,46 @@ class AutoReadingEngine:
             3
         )))
 
-        # ---- Symbol-Specific Dynamic Volatility-Adaptive Architecture ----
+        # ---- Symbol-Specific Dynamic Volatility-Adaptive Architecture (PAIR SWEET SPOTS) ----
+        PAIR_SWEET_SPOTS = {
+            "XAUUSD":   {"quiet_gap": 0.05, "std_gap": 0.07, "quiet_offset": 0.05, "std_offset": 0.07, "min_tp": 3.00, "lot_mult": 1.25},
+            "PAXGUSDT": {"quiet_gap": 0.05, "std_gap": 0.07, "quiet_offset": 0.05, "std_offset": 0.07, "min_tp": 3.00, "lot_mult": 1.25},
+            "GOLD":     {"quiet_gap": 0.05, "std_gap": 0.07, "quiet_offset": 0.05, "std_offset": 0.07, "min_tp": 3.00, "lot_mult": 1.25},
+
+            "BTCUSD":   {"quiet_gap": 0.06, "std_gap": 0.10, "quiet_offset": 0.05, "std_offset": 0.08, "min_tp": 3.50, "lot_mult": 1.25},
+            "BTCUSDT":  {"quiet_gap": 0.06, "std_gap": 0.10, "quiet_offset": 0.05, "std_offset": 0.08, "min_tp": 3.50, "lot_mult": 1.25},
+
+            "ETHUSD":   {"quiet_gap": 0.06, "std_gap": 0.10, "quiet_offset": 0.05, "std_offset": 0.08, "min_tp": 3.50, "lot_mult": 1.25},
+            "ETHUSDT":  {"quiet_gap": 0.06, "std_gap": 0.10, "quiet_offset": 0.05, "std_offset": 0.08, "min_tp": 3.50, "lot_mult": 1.25},
+
+            "SOLUSD":   {"quiet_gap": 0.05, "std_gap": 0.09, "quiet_offset": 0.05, "std_offset": 0.08, "min_tp": 3.00, "lot_mult": 1.25},
+            "SOLUSDT":  {"quiet_gap": 0.05, "std_gap": 0.09, "quiet_offset": 0.05, "std_offset": 0.08, "min_tp": 3.00, "lot_mult": 1.25},
+
+            "BNBUSD":   {"quiet_gap": 0.05, "std_gap": 0.09, "quiet_offset": 0.05, "std_offset": 0.08, "min_tp": 3.00, "lot_mult": 1.25},
+            "BNBUSDT":  {"quiet_gap": 0.05, "std_gap": 0.09, "quiet_offset": 0.05, "std_offset": 0.08, "min_tp": 3.00, "lot_mult": 1.25},
+
+            "DOGEUSD":  {"quiet_gap": 0.04, "std_gap": 0.07, "quiet_offset": 0.04, "std_offset": 0.07, "min_tp": 2.50, "lot_mult": 1.25},
+            "DOGEUSDT": {"quiet_gap": 0.04, "std_gap": 0.07, "quiet_offset": 0.04, "std_offset": 0.07, "min_tp": 2.50, "lot_mult": 1.25},
+
+            "XRPUSD":   {"quiet_gap": 0.04, "std_gap": 0.07, "quiet_offset": 0.04, "std_offset": 0.07, "min_tp": 2.50, "lot_mult": 1.25},
+            "XRPUSDT":  {"quiet_gap": 0.04, "std_gap": 0.07, "quiet_offset": 0.04, "std_offset": 0.07, "min_tp": 2.50, "lot_mult": 1.25},
+
+            "GBPUSD":   {"quiet_gap": 0.04, "std_gap": 0.05, "quiet_offset": 0.04, "std_offset": 0.05, "min_tp": 2.50, "lot_mult": 1.25},
+            "EURUSD":   {"quiet_gap": 0.04, "std_gap": 0.05, "quiet_offset": 0.04, "std_offset": 0.05, "min_tp": 2.50, "lot_mult": 1.25},
+            "USDJPY":   {"quiet_gap": 0.04, "std_gap": 0.05, "quiet_offset": 0.04, "std_offset": 0.05, "min_tp": 2.50, "lot_mult": 1.25},
+        }
+
         is_quiet_market = (regime == "RANGING" or atr_pct < 0.25)
-        
-        if any(x in sym_u for x in ["PAXG", "XAU", "GOLD"]):
-            # Gold Symmetric Precision (0.05% Gap & Offset)
-            min_gap = (0.05 if is_quiet_market else 0.06) * profile_gap_mult
-            min_offset = (0.05 if is_quiet_market else 0.06) * profile_offset_mult
-            dynamic_gap = min(0.12, max(min_gap, dynamic_gap))
-            buy_offset = min(0.12, max(min_offset, buy_offset))
-            sell_offset = buy_offset
-            lot_multiplier = min(1.25, lot_multiplier)
-            base_target_profit = 2.50
-        elif any(x in sym_u for x in ["BTC"]):
-            # BTC Tight Precision (0.05% Quiet / 0.08% Standard)
-            min_gap = 0.06 if is_quiet_market else 0.10
-            min_offset = 0.05 if is_quiet_market else 0.08
-            dynamic_gap = min(0.15, max(min_gap, dynamic_gap))
-            buy_offset = min(0.12, max(min_offset, buy_offset))
-            sell_offset = min(0.12, max(min_offset, sell_offset))
-            lot_multiplier = min(1.25, lot_multiplier)
-            base_target_profit = 2.50 if is_quiet_market else 3.50
-        elif any(x in sym_u for x in ["ETH"]):
-            # ETH Tight Precision (0.05% Quiet / 0.08% Standard)
-            min_gap = 0.06 if is_quiet_market else 0.10
-            min_offset = 0.05 if is_quiet_market else 0.08
-            dynamic_gap = min(0.15, max(min_gap, dynamic_gap))
-            buy_offset = min(0.12, max(min_offset, buy_offset))
-            sell_offset = min(0.12, max(min_offset, sell_offset))
-            lot_multiplier = min(1.25, lot_multiplier)
-            base_target_profit = 2.50 if is_quiet_market else 3.50
-        elif any(x in sym_u for x in ["SOL", "BNB"]):
-            # SOL/BNB Tight Precision (0.05% Quiet / 0.08% Standard)
-            min_gap = 0.05 if is_quiet_market else 0.09
-            min_offset = 0.05 if is_quiet_market else 0.08
-            dynamic_gap = min(0.12, max(min_gap, dynamic_gap))
-            buy_offset = min(0.10, max(min_offset, buy_offset))
-            sell_offset = min(0.10, max(min_offset, sell_offset))
-            lot_multiplier = min(1.25, lot_multiplier)
-            base_target_profit = 2.50 if is_quiet_market else 3.00
-        elif any(x in sym_u for x in ["DOGE", "XRP"]):
-            # DOGE/XRP Ultra-Sniper (0.04% Quiet / 0.07% Standard)
-            min_gap = 0.04 if is_quiet_market else 0.07
-            min_offset = 0.04 if is_quiet_market else 0.07
-            dynamic_gap = min(0.10, max(min_gap, dynamic_gap))
-            buy_offset = min(0.08, max(min_offset, buy_offset))
-            sell_offset = min(0.08, max(min_offset, sell_offset))
-            lot_multiplier = min(1.25, lot_multiplier)
-            base_target_profit = 2.00 if is_quiet_market else 2.50
+        pair_config = PAIR_SWEET_SPOTS.get(clean_sym, {"quiet_gap": 0.05, "std_gap": 0.08, "quiet_offset": 0.05, "std_offset": 0.08, "min_tp": 3.00, "lot_mult": 1.25})
+
+        min_gap_val = pair_config["quiet_gap"] if is_quiet_market else pair_config["std_gap"]
+        min_offset_val = pair_config["quiet_offset"] if is_quiet_market else pair_config["std_offset"]
+
+        dynamic_gap = max(min_gap_val * profile_gap_mult, dynamic_gap)
+        buy_offset = max(min_offset_val * profile_offset_mult, buy_offset)
+        sell_offset = buy_offset
+        lot_multiplier = pair_config.get("lot_mult", 1.25)
+        base_target_profit = pair_config.get("min_tp", 3.00)
 
         # Live Broker Spread-Noise Filter: Scale trap_offset dynamically if live broker spread is high
         live_spread = tech_indicators.get("live_spread", 0.0) if tech_indicators else 0.0
