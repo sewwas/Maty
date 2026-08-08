@@ -1097,8 +1097,20 @@ class BreakoutGridBot:
             digits = 4 if any(x in sym_name for x in ["DOGE", "GBP", "EUR"]) else 2
             top_buy_level = ask_ref + buy_offset_val + ((self.grid_levels - 1) * gap_val)
             bottom_sell_level = bid_ref - sell_offset_val - ((self.grid_levels - 1) * gap_val)
-            spike_buffer = max(gap_val * 4.0, min_tp_dist * 3.0)
-            sl_buffer = spike_buffer * 1.5
+
+            # Volatility & ATR Liquidity Dynamic Buffer Scaling:
+            # During fast news spikes / high ATR volatility, expand envelope buffer dynamically so the grid matrix has maximum room to harvest!
+            atr_val = getattr(self, "current_atr", 0.0)
+            vol_multiplier = 1.0
+            if atr_val > 0 and current_price > 0:
+                atr_pct = (atr_val / current_price) * 100.0
+                if atr_pct > 0.40:     # High Volatility / Fast News Spike -> Expand envelope for deep harvesting
+                    vol_multiplier = 1.50
+                elif atr_pct < 0.15:   # Low Volatility / Tight Range Chop -> Tighten envelope for rapid execution
+                    vol_multiplier = 0.85
+
+            spike_buffer = max(gap_val * 4.0 * vol_multiplier, min_tp_dist * 3.0 * vol_multiplier)
+            sl_buffer = spike_buffer * 1.50
 
             buy_tp_px = round(top_buy_level + spike_buffer, digits)
             sell_tp_px = round(bottom_sell_level - spike_buffer, digits)
