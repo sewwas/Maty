@@ -1572,43 +1572,6 @@ class BreakoutGridBot:
         if triggered_positions:
             self._last_trigger_time = timestamp
 
-        # Continuous OCO Trap Enforcement Sweeper:
-        # As long as positions are open in ONE direction, continuously sweep and cancel any opposite pending traps on EVERY tick!
-        cancel_opp = getattr(self, "cancel_opposite_on_trigger", True)
-        if cancel_opp:
-            buy_pos_active = [p for p in self.broker.open_positions.values() if p.type == "BUY"]
-            sell_pos_active = [p for p in self.broker.open_positions.values() if p.type == "SELL"]
-            
-            if buy_pos_active and not sell_pos_active:
-                # BUY positions open -> Continuously sweep and cancel all opposite SELL_STOP pending traps!
-                opposite_traps = [order_id for order_id, o in list(self.broker.pending_orders.items()) if o.type == "SELL_STOP"]
-                for order_id in opposite_traps:
-                    self.broker.cancel_order(order_id)
-            elif sell_pos_active and not buy_pos_active:
-                # SELL positions open -> Continuously sweep and cancel all opposite BUY_STOP pending traps!
-                opposite_traps = [order_id for order_id, o in list(self.broker.pending_orders.items()) if o.type == "BUY_STOP"]
-                for order_id in opposite_traps:
-                    self.broker.cancel_order(order_id)
-
-        # Calculate floating profit/loss
-        float_pnl = self.broker.get_floating_pnl(current_price)
-
-        # Automatic Autonomous Grid Repair (Disabled by default — manual override via 🔧 REPAIR GRID button)
-        if not getattr(self, "in_runner_mode", False) and getattr(self, "use_grid_repair", False):
-            buy_pending = [o for o in self.broker.pending_orders.values() if o.type == "BUY_STOP"]
-            buy_open = [p for p in self.broker.open_positions.values() if p.type == "BUY"]
-            sell_pending = [o for o in self.broker.pending_orders.values() if o.type == "SELL_STOP"]
-            sell_open = [p for p in self.broker.open_positions.values() if p.type == "SELL"]
-
-            need_buy_repair = (len(buy_pending) + len(buy_open) < self.grid_levels) and not (cancel_opp and len(sell_open) > 0)
-            need_sell_repair = (len(sell_pending) + len(sell_open) < self.grid_levels) and not (cancel_opp and len(buy_open) > 0)
-
-            if need_buy_repair or need_sell_repair:
-                try:
-                    self.repair_grid(current_price, timestamp)
-                except Exception as repair_err:
-                    print(f"Auto-repair notice: {repair_err}")
-
         # Track tick price history and velocity (Delta P / Delta t)
         if not hasattr(self, "price_history_ticks") or self.price_history_ticks is None:
             self.price_history_ticks = []
@@ -1632,7 +1595,59 @@ class BreakoutGridBot:
             recent_deltas = [self.price_history_ticks[i] - self.price_history_ticks[i-1] for i in range(1, len(self.price_history_ticks))]
             avg_delta = sum(recent_deltas) / len(recent_deltas)
             avg_delta_pct = (avg_delta / current_price * 100.0) if current_price > 0 else 0.0
+
+        # SMART DYNAMIC SAFETY OCO SHIELD ENGINE:
+        # Keeps opposite traps live in MT5 during normal ranging chop (harvesting both sides),
+        # but AUTOMATICALLY turns OCO ON when danger/volatility spikes or 2+ grid levels fill!
+        cancel_opp = getattr(self, "cancel_opposite_on_trigger", False)
+        
+        num_open_positions = len(self.broker.open_positions)
+        atr_val = getattr(self, "current_atr", 0.0)
+        atr_pct = (atr_val / current_price * 100.0) if (atr_val > 0 and current_price > 0) else 0.0
+        
+        # Danger Detection Triggers:
+        # 1. 2 or more grid levels filled in one direction (drawdown protection)
+        # 2. High ATR volatility spike (> 0.35% ATR)
+        # 3. High tick velocity spike (> 0.15% delta)
+        danger_spike_detected = (num_open_positions >= 2) or (atr_pct >= 0.35) or (abs(avg_delta_pct) >= 0.15)
+        
+        should_sweep_oco = cancel_opp or danger_spike_detected
+        if should_sweep_oco and num_open_positions > 0:
+            buy_pos_active = [p for p in self.broker.open_positions.values() if p.type == "BUY"]
+            sell_pos_active = [p for p in self.broker.open_positions.values() if p.type == "SELL"]
             
+            if buy_pos_active and not sell_pos_active:
+                # BUY positions active -> Continuously sweep and cancel all opposite SELL_STOP pending traps!
+                opposite_traps = [order_id for order_id, o in list(self.broker.pending_orders.items()) if o.type == "SELL_STOP"]
+                for order_id in opposite_traps:
+                    self.broker.cancel_order(order_id)
+            elif sell_pos_active and not buy_pos_active:
+                # SELL positions active -> Continuously sweep and cancel all opposite BUY_STOP pending traps!
+                opposite_traps = [order_id for order_id, o in list(self.broker.pending_orders.items()) if o.type == "BUY_STOP"]
+                for order_id in opposite_traps:
+                    self.broker.cancel_order(order_id)
+
+        # Calculate floating profit/loss
+        float_pnl = self.broker.get_floating_pnl(current_price)
+
+        # Automatic Autonomous Grid Repair (Disabled by default — manual override via 🔧 REPAIR GRID button)
+        if not getattr(self, "in_runner_mode", False) and getattr(self, "use_grid_repair", False):
+            buy_pending = [o for o in self.broker.pending_orders.values() if o.type == "BUY_STOP"]
+            buy_open = [p for p in self.broker.open_positions.values() if p.type == "BUY"]
+            sell_pending = [o for o in self.broker.pending_orders.values() if o.type == "SELL_STOP"]
+            sell_open = [p for p in self.broker.open_positions.values() if p.type == "SELL"]
+
+            need_buy_repair = (len(buy_pending) + len(buy_open) < self.grid_levels) and not (cancel_opp and len(sell_open) > 0)
+            need_sell_repair = (len(sell_pending) + len(sell_open) < self.grid_levels) and not (cancel_opp and len(buy_open) > 0)
+
+            if need_buy_repair or need_sell_repair:
+                try:
+                    self.repair_grid(current_price, timestamp)
+                except Exception as repair_err:
+                    print(f"Auto-repair notice: {repair_err}")
+
+        if len(self.price_history_ticks) >= 3:
+            recent_deltas = [self.price_history_ticks[i] - self.price_history_ticks[i-1] for i in range(1, len(self.price_history_ticks))]
             # Position-aware reversal detection (detects top peak for BUY or bottom trough for SELL)
             buy_pos_list = [p for p in self.broker.open_positions.values() if p.type == "BUY"]
             sell_pos_list = [p for p in self.broker.open_positions.values() if p.type == "SELL"]
