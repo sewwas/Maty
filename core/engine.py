@@ -296,24 +296,42 @@ class AutoReadingEngine:
                 clean_sym = s_token
                 break
 
-        default_sizes = {
-            "BTCUSDT": 0.004, "BTCUSD": 0.004,
-            "ETHUSDT": 0.15,  "ETHUSD": 0.15,
-            "PAXGUSDT": 0.01, "XAUUSD": 0.01, "GOLD": 0.01,
-            "GBPUSD": 0.01,   "EURUSD": 0.01, "USDJPY": 0.01,
-            "SOLUSDT": 1.50,  "SOLUSD": 1.50,
-            "BNBUSDT": 0.20,  "BNBUSD": 0.20,
-            "DOGEUSDT": 1000.0,"DOGEUSD": 1000.0,
-            "XRPUSDT": 100.0, "XRPUSD": 100.0,
+        PAIR_SWEET_SPOTS = {
+            "XAUUSD":   {"quiet_gap": 0.05, "std_gap": 0.07, "quiet_offset": 0.05, "std_offset": 0.07, "base_lot": 0.01,   "min_tp": 3.00, "lot_mult": 1.25},
+            "PAXGUSDT": {"quiet_gap": 0.05, "std_gap": 0.07, "quiet_offset": 0.05, "std_offset": 0.07, "base_lot": 0.01,   "min_tp": 3.00, "lot_mult": 1.25},
+            "GOLD":     {"quiet_gap": 0.05, "std_gap": 0.07, "quiet_offset": 0.05, "std_offset": 0.07, "base_lot": 0.01,   "min_tp": 3.00, "lot_mult": 1.25},
+
+            "BTCUSD":   {"quiet_gap": 0.06, "std_gap": 0.10, "quiet_offset": 0.05, "std_offset": 0.08, "base_lot": 0.004,  "min_tp": 3.50, "lot_mult": 1.25},
+            "BTCUSDT":  {"quiet_gap": 0.06, "std_gap": 0.10, "quiet_offset": 0.05, "std_offset": 0.08, "base_lot": 0.004,  "min_tp": 3.50, "lot_mult": 1.25},
+
+            "ETHUSD":   {"quiet_gap": 0.06, "std_gap": 0.10, "quiet_offset": 0.05, "std_offset": 0.08, "base_lot": 0.15,   "min_tp": 3.50, "lot_mult": 1.25},
+            "ETHUSDT":  {"quiet_gap": 0.06, "std_gap": 0.10, "quiet_offset": 0.05, "std_offset": 0.08, "base_lot": 0.15,   "min_tp": 3.50, "lot_mult": 1.25},
+
+            "SOLUSD":   {"quiet_gap": 0.05, "std_gap": 0.09, "quiet_offset": 0.05, "std_offset": 0.08, "base_lot": 1.50,   "min_tp": 3.00, "lot_mult": 1.25},
+            "SOLUSDT":  {"quiet_gap": 0.05, "std_gap": 0.09, "quiet_offset": 0.05, "std_offset": 0.08, "base_lot": 1.50,   "min_tp": 3.00, "lot_mult": 1.25},
+
+            "BNBUSD":   {"quiet_gap": 0.05, "std_gap": 0.09, "quiet_offset": 0.05, "std_offset": 0.08, "base_lot": 0.20,   "min_tp": 3.00, "lot_mult": 1.25},
+            "BNBUSDT":  {"quiet_gap": 0.05, "std_gap": 0.09, "quiet_offset": 0.05, "std_offset": 0.08, "base_lot": 0.20,   "min_tp": 3.00, "lot_mult": 1.25},
+
+            "DOGEUSD":  {"quiet_gap": 0.04, "std_gap": 0.07, "quiet_offset": 0.04, "std_offset": 0.07, "base_lot": 1000.0, "min_tp": 2.50, "lot_mult": 1.25},
+            "DOGEUSDT": {"quiet_gap": 0.04, "std_gap": 0.07, "quiet_offset": 0.04, "std_offset": 0.07, "base_lot": 1000.0, "min_tp": 2.50, "lot_mult": 1.25},
+
+            "XRPUSD":   {"quiet_gap": 0.04, "std_gap": 0.07, "quiet_offset": 0.04, "std_offset": 0.07, "base_lot": 100.0,  "min_tp": 2.50, "lot_mult": 1.25},
+            "XRPUSDT":  {"quiet_gap": 0.04, "std_gap": 0.07, "quiet_offset": 0.04, "std_offset": 0.07, "base_lot": 100.0,  "min_tp": 2.50, "lot_mult": 1.25},
+
+            "GBPUSD":   {"quiet_gap": 0.04, "std_gap": 0.05, "quiet_offset": 0.04, "std_offset": 0.05, "base_lot": 0.01,   "min_tp": 2.50, "lot_mult": 1.25},
+            "EURUSD":   {"quiet_gap": 0.04, "std_gap": 0.05, "quiet_offset": 0.04, "std_offset": 0.05, "base_lot": 0.01,   "min_tp": 2.50, "lot_mult": 1.25},
+            "USDJPY":   {"quiet_gap": 0.04, "std_gap": 0.05, "quiet_offset": 0.04, "std_offset": 0.05, "base_lot": 0.01,   "min_tp": 2.50, "lot_mult": 1.25},
         }
+
+        pair_config = PAIR_SWEET_SPOTS.get(clean_sym, {"quiet_gap": 0.05, "std_gap": 0.08, "quiet_offset": 0.05, "std_offset": 0.08, "base_lot": 0.01, "min_tp": 3.00, "lot_mult": 1.25})
+
         # ---- 8a. CONTINUOUS MATHEMATICAL DYNAMIC CAPITAL SCALING ENGINE ----
-        # Dynamically scales lot sizes and target profit continuously with exact account equity!
-        # Finds the exact mathematical sweet spot for any account ($100, $480, $1,250, $4,860, $25,000...)
         equity_ratio = max(0.10, account_equity / 1000.0)
         capital_tier = f"${account_equity:,.0f} Dynamic Tier"
         
         # Base Size Continuous Scaling
-        raw_base_size = default_sizes.get(clean_sym, 0.01) * equity_ratio
+        raw_base_size = pair_config["base_lot"] * equity_ratio
         
         # Symbol Specific Micro-Lot & Safety Clamp Optimization (Equalized for $1,000+ Crypto Accounts)
         if any(x in clean_sym for x in ["XAU", "GOLD", "PAXG"]):
