@@ -137,13 +137,19 @@ for sym in _symbols:
             use_auto_reading=True  # Golden Sweet Spot Auto Mode ENABLED by default
         )
         bot.max_cycle_duration = float("inf")
+        init_px = get_default_price(sym)
         st.session_state.markets[sym] = {
             "broker": brk,
             "bot": bot,
-            "running": False,
-            "last_price": get_default_price(sym),
-            "price_history": []
+            "running": True,  # Auto-start active by default
+            "last_price": init_px,
+            "price_history": [(time.time(), init_px)]
         }
+        # Deploy traps immediately on initialization
+        try:
+            bot.deploy_traps(init_px, time.time(), force=True)
+        except Exception:
+            pass
 
 # ==============================================================================
 #  3. CSS DESIGN SYSTEM & MODERN DARK THEME STYLING
