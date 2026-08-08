@@ -1098,9 +1098,15 @@ class BreakoutGridBot:
             top_buy_level = ask_ref + buy_offset_val + ((self.grid_levels - 1) * gap_val)
             bottom_sell_level = bid_ref - sell_offset_val - ((self.grid_levels - 1) * gap_val)
             spike_buffer = max(gap_val * 4.0, min_tp_dist * 3.0)
+            sl_buffer = spike_buffer * 1.5
 
             buy_tp_px = round(top_buy_level + spike_buffer, digits)
             sell_tp_px = round(bottom_sell_level - spike_buffer, digits)
+
+            # ENVELOPE-ANCHORED HARDWARE BROKER STOP-LOSS (SL) SHIELD:
+            # Hardware SL is placed far below the grid for BUYs and far above for SELLs on Exness MT5 server for black swan catastrophic safety!
+            buy_sl_px = round(bottom_sell_level - sl_buffer, digits)
+            sell_sl_px = round(top_buy_level + sl_buffer, digits)
 
             # Directional Trap Mode: DUAL by default; BUY_ONLY / SELL_ONLY when strong trend bias detected
             unidirectional_mode = getattr(self, "unidirectional_mode", "DUAL")
@@ -1111,7 +1117,7 @@ class BreakoutGridBot:
                     trigger_price = ask_ref + buy_offset_val + (i * gap_val)
                     level_size = self.calculate_level_size(self.order_size, self.order_size_multiplier, i)
                     try:
-                        self.broker.place_order("BUY_STOP", trigger_price, level_size, timestamp, tp=buy_tp_px)
+                        self.broker.place_order("BUY_STOP", trigger_price, level_size, timestamp, tp=buy_tp_px, sl=buy_sl_px)
                         placed_count += 1
                     except Exception as err:
                         print(f"Buy trap level {i+1} notice: {err}")
@@ -1122,7 +1128,7 @@ class BreakoutGridBot:
                     trigger_price = bid_ref - sell_offset_val - (i * gap_val)
                     level_size = self.calculate_level_size(self.order_size, self.order_size_multiplier, i)
                     try:
-                        self.broker.place_order("SELL_STOP", trigger_price, level_size, timestamp, tp=sell_tp_px)
+                        self.broker.place_order("SELL_STOP", trigger_price, level_size, timestamp, tp=sell_tp_px, sl=sell_sl_px)
                         placed_count += 1
                     except Exception as err:
                         print(f"Sell trap level {i+1} notice: {err}")
