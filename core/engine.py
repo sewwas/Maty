@@ -1572,14 +1572,22 @@ class BreakoutGridBot:
         if triggered_positions:
             self._last_trigger_time = timestamp
 
-        # OCO Trap cancellation logic
+        # Continuous OCO Trap Enforcement Sweeper:
+        # As long as positions are open in ONE direction, continuously sweep and cancel any opposite pending traps on EVERY tick!
         cancel_opp = getattr(self, "cancel_opposite_on_trigger", True)
-        if cancel_opp and triggered_positions:
-            for pos in triggered_positions:
-                opposite_type = "SELL_STOP" if pos.type == "BUY" else "BUY_STOP"
-                # Cancel all orders of opposite_type
-                orders_to_cancel = [order_id for order_id, o in self.broker.pending_orders.items() if o.type == opposite_type]
-                for order_id in orders_to_cancel:
+        if cancel_opp:
+            buy_pos_active = [p for p in self.broker.open_positions.values() if p.type == "BUY"]
+            sell_pos_active = [p for p in self.broker.open_positions.values() if p.type == "SELL"]
+            
+            if buy_pos_active and not sell_pos_active:
+                # BUY positions open -> Continuously sweep and cancel all opposite SELL_STOP pending traps!
+                opposite_traps = [order_id for order_id, o in list(self.broker.pending_orders.items()) if o.type == "SELL_STOP"]
+                for order_id in opposite_traps:
+                    self.broker.cancel_order(order_id)
+            elif sell_pos_active and not buy_pos_active:
+                # SELL positions open -> Continuously sweep and cancel all opposite BUY_STOP pending traps!
+                opposite_traps = [order_id for order_id, o in list(self.broker.pending_orders.items()) if o.type == "BUY_STOP"]
+                for order_id in opposite_traps:
                     self.broker.cancel_order(order_id)
 
         # Calculate floating profit/loss
