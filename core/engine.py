@@ -1075,10 +1075,16 @@ class BreakoutGridBot:
             else:
                 min_tp_dist = max(gap_val * 1.0, current_price * 0.001)
 
-            # DUAL-MODE HARDWARE BROKER TP ARCHITECTURE:
-            # Single-side orders: Attached at standard scalp TP distance (+ $3.00 Gold / + $50 BTC) for 0ms quick exits.
-            # Dual-hedge orders: Attached at WIDE NEWS SPIKE TP distance (3x wider: + $9.00 Gold / + $150 BTC) on Exness server to harvest massive news hype spikes!
-            has_active_trades = (len(self.broker.open_positions) > 0)
+            # ENVELOPE-ANCHORED HARDWARE BROKER TP SHIELD (EXNESS SERVER 0MS SPIKE HARVEST):
+            # Hardware TPs are placed WELL ABOVE the highest BUY level and WELL BELOW the lowest SELL level.
+            # Saves account from fake liquidations & heavy wicks by executing at 0ms latency on Exness server during sudden spikes!
+            digits = 4 if any(x in sym_name for x in ["DOGE", "GBP", "EUR"]) else 2
+            top_buy_level = ask_ref + buy_offset_val + ((self.grid_levels - 1) * gap_val)
+            bottom_sell_level = bid_ref - sell_offset_val - ((self.grid_levels - 1) * gap_val)
+            spike_buffer = max(gap_val * 4.0, min_tp_dist * 3.0)
+
+            buy_tp_px = round(top_buy_level + spike_buffer, digits)
+            sell_tp_px = round(bottom_sell_level - spike_buffer, digits)
 
             # Directional Trap Mode: DUAL by default; BUY_ONLY / SELL_ONLY when strong trend bias detected
             unidirectional_mode = getattr(self, "unidirectional_mode", "DUAL")
@@ -1088,8 +1094,6 @@ class BreakoutGridBot:
                 for i in range(self.grid_levels):
                     trigger_price = ask_ref + buy_offset_val + (i * gap_val)
                     level_size = self.calculate_level_size(self.order_size, self.order_size_multiplier, i)
-                    buy_tp_dist = (min_tp_dist * 3.0) if has_active_trades else min_tp_dist
-                    buy_tp_px = round(trigger_price + buy_tp_dist, 2)
                     try:
                         self.broker.place_order("BUY_STOP", trigger_price, level_size, timestamp, tp=buy_tp_px)
                         placed_count += 1
@@ -1101,8 +1105,6 @@ class BreakoutGridBot:
                 for i in range(self.grid_levels):
                     trigger_price = bid_ref - sell_offset_val - (i * gap_val)
                     level_size = self.calculate_level_size(self.order_size, self.order_size_multiplier, i)
-                    sell_tp_dist = (min_tp_dist * 3.0) if has_active_trades else min_tp_dist
-                    sell_tp_px = round(trigger_price - sell_tp_dist, 2)
                     try:
                         self.broker.place_order("SELL_STOP", trigger_price, level_size, timestamp, tp=sell_tp_px)
                         placed_count += 1
