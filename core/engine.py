@@ -559,7 +559,7 @@ class BreakoutGridBot:
         spacing_mode: Optional[str] = None,
         stop_loss: float = 0.0,
         max_cycle_duration: float = float("inf"),
-        cancel_opposite_on_trigger: bool = False,
+        cancel_opposite_on_trigger: bool = True,
         use_trailing_stop: bool = False,
         trailing_stop_distance: float = 15.0,
         use_bb_filter: bool = False,
@@ -985,7 +985,7 @@ class BreakoutGridBot:
                 if "buy_offset_pct" in eval_res:
                     self.trap_offset = eval_res["buy_offset_pct"]
                 # Auto Mode Enhancements: Enable OCO opposite cancel & directional trap mode
-                self.cancel_opposite_on_trigger = True
+                self.cancel_opposite_on_trigger = getattr(self, "cancel_opposite_on_trigger", True)
                 self.unidirectional_mode = eval_res.get("unidirectional_mode", "DUAL")
 
                 # Store latest evaluation for UI display
@@ -1537,7 +1537,8 @@ class BreakoutGridBot:
             self._last_trigger_time = timestamp
 
         # OCO Trap cancellation logic
-        if self.cancel_opposite_on_trigger and triggered_positions:
+        cancel_opp = getattr(self, "cancel_opposite_on_trigger", True)
+        if cancel_opp and triggered_positions:
             for pos in triggered_positions:
                 opposite_type = "SELL_STOP" if pos.type == "BUY" else "BUY_STOP"
                 # Cancel all orders of opposite_type
@@ -1555,7 +1556,6 @@ class BreakoutGridBot:
             sell_pending = [o for o in self.broker.pending_orders.values() if o.type == "SELL_STOP"]
             sell_open = [p for p in self.broker.open_positions.values() if p.type == "SELL"]
 
-            cancel_opp = getattr(self, "cancel_opposite_on_trigger", False)
             need_buy_repair = (len(buy_pending) + len(buy_open) < self.grid_levels) and not (cancel_opp and len(sell_open) > 0)
             need_sell_repair = (len(sell_pending) + len(sell_open) < self.grid_levels) and not (cancel_opp and len(buy_open) > 0)
 
