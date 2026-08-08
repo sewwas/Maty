@@ -1837,15 +1837,18 @@ class BreakoutGridBot:
                                 except Exception: pass
 
             # 5a-2. INDIVIDUAL POSITION PROFIT HARVESTING SHIELD:
-            # Automatically harvests cash profit from any individual position that reaches +$5.00 USD (or 500 Cents) profit!
-            indiv_tp_target = (5.00 * 100.0) if is_cent else 5.00
-            for p in list(self.broker.open_positions.values()):
+            # Automatically harvests cash profit from any individual position that reaches +$3.00 USD (or 300 Cents) profit,
+            # leaving non-profitable positions open to bounce back!
+            indiv_tp_target = (3.00 * 100.0) if is_cent else 3.00
+            for pid_key, p in list(self.broker.open_positions.items()):
                 p_profit = getattr(p, 'profit', 0.0)
+                if p_profit == 0.0 and hasattr(p, 'get_pnl'):
+                    p_profit = p.get_pnl(current_price)
                 if p_profit >= indiv_tp_target:
-                    pid = getattr(p, 'id', getattr(p, 'ticket', None))
-                    if pid:
-                        try: self.broker.close_position(str(pid), current_price, timestamp)
-                        except Exception: pass
+                    try:
+                        self.broker.close_position(str(pid_key), current_price, timestamp)
+                    except Exception:
+                        pass
 
             # 5b. DYNAMIC COUNTER-HEDGE REVERSAL LOCK (Converts single-side trend drawdown into market-neutral dual basket)
             # If a single-side basket enters floating drawdown >= 35% of effective_stop_loss during a strong move,
