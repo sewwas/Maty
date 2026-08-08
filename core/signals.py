@@ -10,7 +10,7 @@ def send_telegram_alert(bot_token: str, chat_id: str, title: str, message: str) 
     if not bot_token or not chat_id:
         return False
 
-    formatted_text = f"🤖 <b>PrifitY AI ALERT</b>\n\n📌 <b>{title}</b>\n{message}"
+    formatted_text = f"🤖 <b>Profity AI ALERT</b>\n\n📌 <b>{title}</b>\n{message}"
     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
     payload = {
         "chat_id": chat_id,
@@ -32,16 +32,19 @@ def dispatch_trade_exit_signal(bot_token: str, chat_id: str, symbol: str, cycle_
     """
     Dispatches formatted cycle exit summary to Telegram channel.
     """
-    pnl = cycle_data.get("pnl", 0.0)
+    pnl = float(cycle_data.get("pnl") or 0.0)
     pnl_symbol = "💰" if pnl >= 0 else "🔻"
-    reason = cycle_data.get("exit_reason", "MANUAL")
-    duration = cycle_data.get("exit_time", 0) - cycle_data.get("start_time", 0)
+    reason = str(cycle_data.get("exit_reason") or "MANUAL")
+    try:
+        duration = float(cycle_data.get("exit_time") or 0) - float(cycle_data.get("start_time") or 0)
+    except (ValueError, TypeError):
+        duration = 0.0
     
     title = f"{pnl_symbol} CYCLE CLOSED: {symbol}"
     msg = (
         f"• <b>Exit Reason</b>: <code>{reason}</code>\n"
         f"• <b>Realized PnL</b>: <b>{'+' if pnl>=0 else ''}${pnl:,.2f} USD</b>\n"
         f"• <b>Trades Executed</b>: {cycle_data.get('trades_count', 0)}\n"
-        f"• <b>Duration</b>: {int(duration)}s"
+        f"• <b>Duration</b>: {int(max(0, duration))}s"
     )
     return send_telegram_alert(bot_token, chat_id, title, msg)

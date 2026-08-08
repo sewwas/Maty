@@ -60,12 +60,15 @@ def save_json(path, data):
         json.dump(data, f, indent=2)
 
 SYMBOL_SPECS = {
-    "PAXGUSDT": {"icon": "🪙", "grid_gap": "0.10%", "multiplier": "1.5x", "stop_loss": "$250.00"},
-    "SOLUSDT":  {"icon": "🟣", "grid_gap": "0.08%", "multiplier": "1.5x", "stop_loss": "$150.00"},
-    "BTCUSDT":  {"icon": "🟠", "grid_gap": "0.22%", "multiplier": "1.5x", "stop_loss": "$250.00"},
-    "ETHUSDT":  {"icon": "🔷", "grid_gap": "0.22%", "multiplier": "1.5x", "stop_loss": "$250.00"},
-    "BNBUSDT":  {"icon": "🟡", "grid_gap": "0.12%", "multiplier": "1.5x", "stop_loss": "$150.00"},
-    "DOGEUSDT": {"icon": "🐕", "grid_gap": "0.08%", "multiplier": "1.5x", "stop_loss": "$150.00"},
+    "PAXGUSDT": {"icon": "🪙", "grid_gap": "0.07%", "multiplier": "1.5x", "stop_loss": "$250.00"},
+    "GBPUSD":   {"icon": "💱", "grid_gap": "0.05%", "multiplier": "1.5x", "stop_loss": "$150.00"},
+    "EURUSD":   {"icon": "💱", "grid_gap": "0.05%", "multiplier": "1.5x", "stop_loss": "$150.00"},
+    "USDJPY":   {"icon": "💱", "grid_gap": "0.05%", "multiplier": "1.5x", "stop_loss": "$150.00"},
+    "BTCUSDT":  {"icon": "🟠", "grid_gap": "0.10%", "multiplier": "1.5x", "stop_loss": "$250.00"},
+    "ETHUSDT":  {"icon": "🔷", "grid_gap": "0.07%", "multiplier": "1.5x", "stop_loss": "$250.00"},
+    "SOLUSDT":  {"icon": "🟣", "grid_gap": "0.07%", "multiplier": "1.5x", "stop_loss": "$150.00"},
+    "BNBUSDT":  {"icon": "🟡", "grid_gap": "0.07%", "multiplier": "1.5x", "stop_loss": "$150.00"},
+    "DOGEUSDT": {"icon": "🐕", "grid_gap": "0.07%", "multiplier": "1.5x", "stop_loss": "$150.00"},
 }
 
 def get_live_bot_stats():
@@ -120,11 +123,17 @@ def get_live_bot_stats():
         total_net_pnl += sym_pnl
 
         for t in reversed(trade_history[-5:]):
+            reason_str = str(t.get("exit_reason") or "EXIT").replace("_", " ")
+            raw_time = t.get("exit_time", time.time())
+            try:
+                time_val = float(raw_time)
+            except (ValueError, TypeError):
+                time_val = time.time()
             recent_feed.append({
                 "symbol": sym_key,
-                "pnl": round(t.get("pnl", 0.0), 2),
-                "reason": t.get("exit_reason", "EXIT").replace("_", " "),
-                "time": t.get("exit_time", time.time())
+                "pnl": round(float(t.get("pnl", 0.0) or 0.0), 2),
+                "reason": reason_str,
+                "time": time_val
             })
 
     recent_feed = sorted(recent_feed, key=lambda x: x["time"], reverse=True)[:10]

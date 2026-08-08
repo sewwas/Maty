@@ -95,27 +95,30 @@ class MT5Broker:
 
         res = ui_symbol
         if MT5_AVAILABLE:
-            candidate = f"{base_sym}{self.symbol_suffix}"
-            mt5.symbol_select(candidate, True)
-            if mt5.symbol_info(candidate) is not None:
-                res = candidate
-            else:
-                # Dynamic discovery across all broker MT5 symbols matching base_sym
-                all_symbols = mt5.symbols_get()
-                if all_symbols:
-                    matching = [s.name for s in all_symbols if s.name.upper().startswith(base_sym.upper())]
+            # Probe common Exness symbol variations (e.g. SOLUSDm for Exness Standard, SOLUSD, SOLUSDc)
+            probes = []
+            if self.symbol_suffix:
+                probes.append(f"{base_sym}{self.symbol_suffix}")
+            probes.extend([f"{base_sym}m", base_sym, f"{base_sym}c", f"{base_sym}.a", f"{base_sym}_i"])
+
+            for candidate in probes:
+                if mt5.symbol_select(candidate, True):
+                    info = mt5.symbol_info(candidate)
+                    if info is not None:
+                        res = candidate
+                        break
+
+            if res == ui_symbol:
+                # Group search fallback across full broker catalog
+                group_symbols = mt5.symbols_get(group=f"*{base_sym}*")
+                if group_symbols:
+                    matching = [s.name for s in group_symbols if s.name.upper().startswith(base_sym.upper())]
                     if matching:
                         matching.sort(key=lambda name: (len(name), name))
                         selected = matching[0]
-                        mt5.symbol_select(selected, True)
-                        res = selected
-                if res == ui_symbol:
-                    for suff in ["m", "c", "_i", ".a", ""]:
-                        alt = f"{base_sym}{suff}"
-                        mt5.symbol_select(alt, True)
-                        if mt5.symbol_info(alt) is not None:
-                            res = alt
-                            break
+                        if mt5.symbol_select(selected, True):
+                            res = selected
+
         self._exness_symbol_cache[ui_symbol] = res
         return res
 
@@ -175,16 +178,29 @@ class MT5Broker:
     def get_equity(self, current_price: float = 0.0) -> float:
         return self.balance
 
+    def get_cached_symbol_info(self, exness_symbol: str):
+        now = time.time()
+        if not hasattr(self, "_symbol_info_cache"):
+            self._symbol_info_cache = {}
+        if exness_symbol in self._symbol_info_cache:
+            info, ts = self._symbol_info_cache[exness_symbol]
+            if now - ts < 2.0:
+                return info
+        info = mt5.symbol_info(exness_symbol) if MT5_AVAILABLE else None
+        if info:
+            self._symbol_info_cache[exness_symbol] = (info, now)
+        return info
+
     def get_current_spread(self) -> float:
         exness_symbol = self.get_exness_symbol(self.symbol)
-        info = mt5.symbol_info(exness_symbol) if exness_symbol else None
+        info = self.get_cached_symbol_info(exness_symbol) if exness_symbol else None
         if info and info.ask and info.bid:
             return abs(info.ask - info.bid)
         return 0.0
 
     def get_min_stop_distance(self) -> float:
         exness_symbol = self.get_exness_symbol(self.symbol)
-        info = mt5.symbol_info(exness_symbol) if exness_symbol else None
+        info = self.get_cached_symbol_info(exness_symbol) if exness_symbol else None
         if info:
             point = info.point if hasattr(info, "point") and info.point else 0.0001
             stops_level = getattr(info, "trade_stops_level", 0) or 0
@@ -199,9 +215,12 @@ class MT5Broker:
             raise RuntimeError("MT5 connection offline.")
 
         exness_symbol = self.get_exness_symbol(self.symbol)
-        symbol_info = mt5.symbol_info(exness_symbol)
+        symbol_info = self.get_cached_symbol_info(exness_symbol)
         if symbol_info is None:
             raise RuntimeError(f"Symbol {exness_symbol} info not found.")
+
+        if getattr(symbol_info, "trade_mode", 4) == 0:
+            raise TradeDisabledError(f"Exness server has disabled trading for {exness_symbol} on this account (retcode 10017 / trade_mode=0).")
 
         # Minimum stop distance calculation
         point = symbol_info.point
@@ -278,6 +297,12 @@ class MT5Broker:
         }
 
         result = mt5.order_send(request)
+        if result is not None and getattr(result, "retcode", 0) == 10016:
+            # Fallback for Exness 10016 Invalid Stops: Retry with pure software TP/SL engine
+            request["tp"] = 0.0
+            request["sl"] = 0.0
+            result = mt5.order_send(request)
+
         if result is None or result.retcode not in [mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_PLACED]:
             comment = getattr(result, 'comment', 'Placement failed')
             retcode = getattr(result, 'retcode', 'N/A')
@@ -616,10 +641,12 @@ class SimulatedBroker:
     def get_current_spread(self) -> float:
         return 0.0
 
-    def place_order(self, order_type: str, price: float, size: float, timestamp: float) -> Order:
+    def place_order(self, order_type: str, price: float, size: float, timestamp: float, tp: float = 0.0, sl: float = 0.0) -> Order:
         order_id = f"sim_{int(time.time() * 1000)}_{len(self.pending_orders)+1}"
         order = Order(order_type, price, size, timestamp)
         order.order_id = order_id
+        order.tp = tp
+        order.sl = sl
         self.pending_orders[order_id] = order
         return order
 

@@ -291,91 +291,65 @@ class AutoReadingEngine:
         sym_u = (symbol or "").upper()
         # Clean symbol to handle broker suffixes (e.g. XAUUSDm, XAUUSD.a, GOLD)
         clean_sym = sym_u
-        for s_token in ["BTCUSDT", "BTCUSD", "ETHUSDT", "ETHUSD", "PAXGUSDT", "XAUUSD", "GOLD", "SOLUSDT", "SOLUSD", "BNBUSDT", "BNBUSD", "DOGEUSDT", "DOGEUSD", "XRPUSDT", "XRPUSD"]:
+        for s_token in ["BTCUSDT", "BTCUSD", "ETHUSDT", "ETHUSD", "PAXGUSDT", "XAUUSD", "GOLD", "GBPUSD", "EURUSD", "USDJPY", "SOLUSDT", "SOLUSD", "BNBUSDT", "BNBUSD", "DOGEUSDT", "DOGEUSD", "XRPUSDT", "XRPUSD"]:
             if s_token in sym_u:
                 clean_sym = s_token
                 break
 
         default_sizes = {
             "BTCUSDT": 0.001, "BTCUSD": 0.001,
-            "ETHUSDT": 0.10,  "ETHUSD": 0.10,
+            "ETHUSDT": 0.05,  "ETHUSD": 0.05,
             "PAXGUSDT": 0.01, "XAUUSD": 0.01, "GOLD": 0.01,
-            "SOLUSDT": 1.0,   "SOLUSD": 1.0,
-            "BNBUSDT": 0.10,  "BNBUSD": 0.10,
-            "DOGEUSDT": 1000.0,"DOGEUSD": 1000.0,
-            "XRPUSDT": 100.0, "XRPUSD": 100.0,
+            "GBPUSD": 0.01,   "EURUSD": 0.01, "USDJPY": 0.01,
+            "SOLUSDT": 0.50,  "SOLUSD": 0.50,
+            "BNBUSDT": 0.05,  "BNBUSD": 0.05,
+            "DOGEUSDT": 100.0,"DOGEUSD": 100.0,
+            "XRPUSDT": 10.0,  "XRPUSD": 10.0,
         }
-        # ---- 8a. CAPITAL TIER (shared across ALL symbols on same account) ----
-        # Note: account_equity here is the TOTAL account equity, not per-symbol.
-        # This ensures ETH and Gold on the same $1,000 account BOTH get the same tier level.
-        if account_equity < 250.0:
-            capital_tier = "$100 Micro"
-            base_size = default_sizes.get(clean_sym, 0.01)
-            if any(x in clean_sym for x in ["XAU", "GOLD", "PAXG"]):
-                base_size = 0.01
-            lot_multiplier = 1.20
-            max_levels = 5
-            base_target_profit = 2.00
-            stop_loss = max(10.0, account_equity * (getattr(self, "stop_loss_pct", 15.0) / 100.0))
-        elif account_equity < 2500.0:
-            capital_tier = "$1,000 Golden"
-            base_size = default_sizes.get(clean_sym, 0.01)
-            if any(x in clean_sym for x in ["XAU", "GOLD", "PAXG"]):
-                base_size = 0.01
-            lot_multiplier = 1.25
-            max_levels = 5
-            base_target_profit = 4.50
-            stop_loss = max(50.0, account_equity * (getattr(self, "stop_loss_pct", 10.0) / 100.0))
-        elif account_equity < 5000.0:
-            capital_tier = "$2,500 Pro"
-            base_size = default_sizes.get(clean_sym, 0.01)
-            if any(x in clean_sym for x in ["XAU", "GOLD", "PAXG"]):
-                base_size = 0.01  # Ultra-conservative 0.01 base lot for accounts under $5,000
-            lot_multiplier = 1.20
-            max_levels = 5
-            base_target_profit = 6.50
-            stop_loss = max(75.0, account_equity * (getattr(self, "stop_loss_pct", 10.0) / 100.0))
-        elif account_equity < 10000.0:
-            capital_tier = "$5,000 Pro"
-            base_size = default_sizes.get(clean_sym, 0.02)
-            if any(x in clean_sym for x in ["XAU", "GOLD", "PAXG"]):
-                base_size = 0.02  # Starts at 0.02 lots for $5,000 - $10,000 accounts
-            lot_multiplier = 1.20
-            max_levels = 5
-            base_target_profit = 12.50
-            stop_loss = max(100.0, account_equity * (getattr(self, "stop_loss_pct", 10.0) / 100.0))
+        # ---- 8a. CONTINUOUS MATHEMATICAL DYNAMIC CAPITAL SCALING ENGINE ----
+        # Dynamically scales lot sizes and target profit continuously with exact account equity!
+        # Finds the exact mathematical sweet spot for any account ($100, $480, $1,250, $4,860, $25,000...)
+        equity_ratio = max(0.10, account_equity / 1000.0)
+        capital_tier = f"${account_equity:,.0f} Dynamic Tier"
+        
+        # Base Size Continuous Scaling
+        raw_base_size = default_sizes.get(clean_sym, 0.01) * equity_ratio
+        
+        # Symbol Specific Micro-Lot & Safety Clamp Optimization
+        if any(x in clean_sym for x in ["XAU", "GOLD", "PAXG"]):
+            base_size = min(0.05, max(0.01, round(raw_base_size, 2)))
+        elif any(x in clean_sym for x in ["BTC"]):
+            base_size = min(0.05, max(0.001, round(raw_base_size, 3)))
+        elif any(x in clean_sym for x in ["ETH"]):
+            base_size = min(0.50, max(0.01, round(raw_base_size, 2)))
+        elif any(x in clean_sym for x in ["GBP", "EUR", "JPY"]):
+            base_size = min(0.50, max(0.01, round(raw_base_size, 2)))
         else:
-            if account_equity < 25000.0:
-                capital_tier = "$10,000 VIP"
-                base_size = 0.05
-                base_target_profit = 50.0
-            elif account_equity < 50000.0:
-                capital_tier = "$25,000 VIP"
-                base_size = 0.10
-                base_target_profit = 125.0
-            elif account_equity < 100000.0:
-                capital_tier = "$50,000 VIP"
-                base_size = 0.15
-                base_target_profit = 250.0
-            else:
-                capital_tier = "$100,000 Institutional"
-                base_size = 0.20
-                base_target_profit = 500.0
+            base_size = max(0.01, round(raw_base_size, 2))
 
-            if not any(x in clean_sym for x in ["XAU", "GOLD", "PAXG"]):
-                base_size = default_sizes.get(clean_sym, 0.05) * max(1.0, account_equity / 10000.0)
-
+        # Dynamic Target Profit Continuous Scaling ($4.50 USD baseline per $1,000 equity = 0.45% return per cycle)
+        base_target_profit = max(1.50, round(4.50 * equity_ratio, 2))
+        
+        # Dynamic Stop Loss Continuous Scaling (10% equity risk buffer)
+        stop_loss = max(25.0, round(account_equity * (getattr(self, "stop_loss_pct", 10.0) / 100.0), 2))
+        
+        # Dynamic Lot Multiplier Optimization
+        if account_equity < 500.0:
+            lot_multiplier = 1.20
+        elif account_equity < 5000.0:
             lot_multiplier = 1.25
-            max_levels = 5
-            stop_loss = max(200.0, account_equity * (getattr(self, "stop_loss_pct", 10.0) / 100.0))
+        else:
+            lot_multiplier = 1.20
+            
+        max_levels = 5
 
         # ---- 8b. SYMBOL VOLATILITY LEVEL CAP ----
         max_levels = min(20, getattr(self, "grid_levels", 5))
 
 
-        # ---- 9. GRID GEOMETRY (Tight Sniper Precision) ----
-        base_gap = max(0.04, round(atr_pct * 0.25, 3))
-        base_offset = max(0.05, round(atr_pct * 0.30, 3))
+        # ---- 9. GRID GEOMETRY (Ultra-Sniper 0.07% Golden Sweet Spot) ----
+        base_gap = 0.07
+        base_offset = 0.07
 
         # Regime-specific gap scaling
         if regime == "RANGING":
@@ -558,17 +532,17 @@ def sanitize_order_size(symbol: str, size: float) -> float:
     if any(x in sym_u for x in ["PAXG", "XAU", "GOLD"]):
         return min(0.50, max(0.01, round(val, 2)))   # Gold: 0.01–0.50 lots
     elif any(x in sym_u for x in ["BTC"]):
-        return min(0.10, max(0.01, round(val, 2)))   # BTC: 0.01–0.10 lots
+        return min(0.10, max(0.0001, round(val, 4))) # BTC: 0.0001–0.10 lots
     elif any(x in sym_u for x in ["ETH"]):
-        return min(1.0,  max(0.01, round(val, 2)))   # ETH: 0.01–1.0 lots
+        return min(1.0,  max(0.001, round(val, 3)))  # ETH: 0.001–1.0 lots
     elif any(x in sym_u for x in ["SOL"]):
-        return min(5.0,  max(0.01, round(val, 2)))   # SOL: 0.01–5.0 lots
+        return min(10.0, max(0.01, round(val, 2)))   # SOL: 0.01–10.0 lots
     elif any(x in sym_u for x in ["BNB"]):
-        return min(1.0,  max(0.01, round(val, 2)))   # BNB: 0.01–1.0 lots
+        return min(10.0, max(0.01, round(val, 2)))   # BNB: 0.01–10.0 lots
     elif any(x in sym_u for x in ["DOGE"]):
-        return min(100.0, max(0.01, round(val, 2)))  # DOGE: 0.01–100 lots
+        return min(10000.0, max(0.1, round(val, 2))) # DOGE: 0.1–10,000 lots
     else:
-        return min(10.0, max(0.01, round(val, 2)))
+        return min(10.0, max(0.0001, round(val, 4)))
 
 
 class BreakoutGridBot:
@@ -635,15 +609,8 @@ class BreakoutGridBot:
         self.use_auto_reading = use_auto_reading
         self.auto_reading_engine = AutoReadingEngine()
 
-    @property
-    def order_size(self) -> float:
         sym_str = getattr(self.broker, "symbol", getattr(self, "symbol", ""))
-        return sanitize_order_size(sym_str, getattr(self, "_order_size", 0.01))
-
-    @order_size.setter
-    def order_size(self, val: float):
-        sym_str = getattr(self.broker, "symbol", getattr(self, "symbol", ""))
-        self._order_size = sanitize_order_size(sym_str, val)
+        self._order_size = sanitize_order_size(sym_str, order_size)
 
         # Risk Control Circuit Breaker & Macro News Shield
         self.max_daily_drawdown: float = 0.0  # 0.0 disabled; e.g. 250.0 = max -$250 loss cap
@@ -655,8 +622,10 @@ class BreakoutGridBot:
         self.prop_firm_max_daily_drawdown_pct: float = 4.5  # 4.5% daily drawdown lock (buffer for 5.0% limit)
         self.prop_firm_target_pct: float = 8.0  # 8.0% challenge pass target lock
 
-        # Friday Weekend Market Shutdown Engine (Gold XAUUSD & Forex)
-        self.use_weekend_shutdown: bool = True  # Auto-enabled for Gold & traditional assets
+        # Friday Weekend Market Shutdown Engine (Gold XAUUSD, Forex, Metals, Oils, Indices)
+        sym_str_upper = sym_str.upper()
+        is_crypto_247 = any(c_sym in sym_str_upper for c_sym in ["BTC", "ETH", "SOL", "BNB", "DOGE", "XRP"])
+        self.use_weekend_shutdown: bool = not is_crypto_247  # Auto-enabled for Gold, Forex, Oils, Indices; Disabled for 24/7 Crypto
         self.weekend_shutdown_utc_hour: int = 20  # Shutdown Friday at 20:00 UTC (8 PM UTC)
         self.weekend_shutdown_triggered: bool = False
 
@@ -678,6 +647,16 @@ class BreakoutGridBot:
         self._last_trigger_time: float = 0.0
         # Cooldown after Runner Mode exits to prevent instant trap fills on trending price
         self._runner_exit_cooldown_until: float = 0.0
+
+    @property
+    def order_size(self) -> float:
+        sym_str = getattr(self.broker, "symbol", getattr(self, "symbol", ""))
+        return sanitize_order_size(sym_str, getattr(self, "_order_size", 0.01))
+
+    @order_size.setter
+    def order_size(self, val: float):
+        sym_str = getattr(self.broker, "symbol", getattr(self, "symbol", ""))
+        self._order_size = sanitize_order_size(sym_str, val)
 
     @property
     def spacing_mode(self) -> str:
@@ -1034,6 +1013,11 @@ class BreakoutGridBot:
                     sell_offset_val = max(sell_offset_val, safety_buffer)
             except Exception:
                 pass
+
+        ask_ref = getattr(self.broker, "last_ask", current_price)
+        bid_ref = getattr(self.broker, "last_bid", current_price)
+        if not ask_ref or ask_ref <= 0: ask_ref = current_price
+        if not bid_ref or bid_ref <= 0: bid_ref = current_price
 
         # Real-Time Dynamic Volume Velocity Stats Engine:
         # Evaluates tick velocity over recent price ticks to dynamically scale gap and offset for ultra-fast cycle deployment
@@ -1643,6 +1627,7 @@ class BreakoutGridBot:
         hedge_lock_hit = False
         momentum_scalp_hit = False
         wvap_exit_hit = False
+        instant_counter_flip_hit = False
         single_fill_scalp_hit = False
 
         # SMART TIMEOUT: Only exits if PnL is at or above breakeven (friction_floor).
@@ -1892,12 +1877,19 @@ class BreakoutGridBot:
             # 7. VOLUME WEIGHTED AVERAGE COST RECOVERY EXIT (WVAP Exit on 2+ Fills)
             # Ultra-Fast Near-Price Profit Exit: Exit INSTANTLY on any positive micro profit (>= +$0.25 USD / 25 Cents) right near current price!
             wvap_exit_hit = False
+            instant_counter_flip_hit = False
+
             if len(self.broker.open_positions) >= 2 and not self.in_runner_mode:
                 has_dual_hedge = (len(buy_positions) > 0 and len(sell_positions) > 0)
                 fast_bounce_target = (25.0 if is_cent else 0.25)  # Ultra-fast micro profit target (+ $0.25 USD / +25 Cents)
                 standard_wvap_target = max(volume_friction_target, friction_floor + 0.25)
                 
-                if (has_dual_hedge and float_pnl > 0.0) or float_pnl >= fast_bounce_target or float_pnl >= standard_wvap_target:
+                # 7a. INSTANT COUNTER-FILL CHOP FLIP SHIELD:
+                # If 1 SELL fills and then 1 BUY fills (or vice versa), exit IMMEDIATELY as soon as net PnL is in PROFIT (float_pnl > 0.0)
+                # Guaranteed 100% profitable exit — never exit in loss!
+                if has_dual_hedge and float_pnl > 0.0:
+                    instant_counter_flip_hit = True
+                elif (has_dual_hedge and float_pnl > 0.0) or float_pnl >= fast_bounce_target or float_pnl >= standard_wvap_target:
                     wvap_exit_hit = True
 
             # 8. SINGLE-FILL QUICK PERCENT SCALP EXIT (Equalized for Crypto & Gold)
@@ -1922,8 +1914,9 @@ class BreakoutGridBot:
                 if move_pct >= target_move_threshold and float_pnl >= volume_friction_target and not is_pos_trend:
                     single_fill_scalp_hit = True
 
-        if target_hit or runner_hit or trailing_stop_hit or stop_loss_hit or timeout_hit or breakeven_hit or early_range_hit or prop_guard_hit or hedge_lock_hit or velocity_shield_hit or momentum_scalp_hit or wvap_exit_hit or single_fill_scalp_hit:
-            if single_fill_scalp_hit: reason = "SINGLE_FILL_QUICK_SCALP"
+        if target_hit or runner_hit or trailing_stop_hit or stop_loss_hit or timeout_hit or breakeven_hit or early_range_hit or prop_guard_hit or hedge_lock_hit or velocity_shield_hit or momentum_scalp_hit or wvap_exit_hit or instant_counter_flip_hit or single_fill_scalp_hit:
+            if instant_counter_flip_hit: reason = "INSTANT_COUNTER_FLIP_EXIT"
+            elif single_fill_scalp_hit: reason = "SINGLE_FILL_QUICK_SCALP"
             elif wvap_exit_hit:     reason = "WVAP_COST_RECOVERY"
             elif momentum_scalp_hit: reason = "MOMENTUM_SCALP_EXIT"
             elif velocity_shield_hit: reason = "VELOCITY_TREND_SHIELD"

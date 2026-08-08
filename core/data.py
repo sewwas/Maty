@@ -12,8 +12,9 @@ _DEFAULT_PRICE_TABLE = {
     "PAXGUSDT": 3280.0, "XAUUSD": 3280.0, "GOLD": 3280.0,
     "SOLUSDT": 185.0,   "SOLUSD": 185.0,
     "BNBUSDT": 680.0,   "BNBUSD": 680.0,
+    "GBPUSD": 1.30,     "EURUSD": 1.09,    "USDJPY": 150.0,
+    "US30": 40000.0,    "USTEC": 19000.0,
     "XRPUSDT": 2.25,    "XRPUSD": 2.25,
-    "ADAUSDT": 0.75,    "ADAUSD": 0.75,
     "DOGEUSDT": 0.18,   "DOGEUSD": 0.18,
     "DOTUSDT": 8.50,    "DOTUSD": 8.50,
     "LINKUSDT": 18.0,   "LINKUSD": 18.0,
@@ -64,8 +65,13 @@ def get_live_price(symbol: str = "BTCUSDT") -> Optional[float]:
     try:
         import MetaTrader5 as mt5
         if mt5.terminal_info() is not None:
-            exness_sym = "XAUUSD" if sym in ("PAXGUSDT", "XAUUSD", "GOLD") else sym.replace("USDT", "USD")
-            tick = mt5.symbol_info_tick(exness_sym)
+            base_exness = "XAUUSD" if sym in ("PAXGUSDT", "XAUUSD", "GOLD") else sym.replace("USDT", "USD")
+            tick = None
+            for s_name in [base_exness, f"{base_exness}m", f"{base_exness}c", f"{base_exness}.a"]:
+                if mt5.symbol_select(s_name, True):
+                    tick = mt5.symbol_info_tick(s_name)
+                    if tick and tick.ask and tick.bid and tick.ask > 0:
+                        break
             if tick and tick.ask and tick.bid and tick.ask > 0:
                 p = float((tick.ask + tick.bid) / 2.0)
                 _LIVE_PRICE_CACHE[sym] = (p, now)
