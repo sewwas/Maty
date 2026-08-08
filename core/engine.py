@@ -297,14 +297,14 @@ class AutoReadingEngine:
                 break
 
         default_sizes = {
-            "BTCUSDT": 0.001, "BTCUSD": 0.001,
-            "ETHUSDT": 0.05,  "ETHUSD": 0.05,
+            "BTCUSDT": 0.004, "BTCUSD": 0.004,
+            "ETHUSDT": 0.15,  "ETHUSD": 0.15,
             "PAXGUSDT": 0.01, "XAUUSD": 0.01, "GOLD": 0.01,
             "GBPUSD": 0.01,   "EURUSD": 0.01, "USDJPY": 0.01,
-            "SOLUSDT": 0.50,  "SOLUSD": 0.50,
-            "BNBUSDT": 0.05,  "BNBUSD": 0.05,
-            "DOGEUSDT": 100.0,"DOGEUSD": 100.0,
-            "XRPUSDT": 10.0,  "XRPUSD": 10.0,
+            "SOLUSDT": 1.50,  "SOLUSD": 1.50,
+            "BNBUSDT": 0.20,  "BNBUSD": 0.20,
+            "DOGEUSDT": 1000.0,"DOGEUSD": 1000.0,
+            "XRPUSDT": 100.0, "XRPUSD": 100.0,
         }
         # ---- 8a. CONTINUOUS MATHEMATICAL DYNAMIC CAPITAL SCALING ENGINE ----
         # Dynamically scales lot sizes and target profit continuously with exact account equity!
@@ -315,13 +315,19 @@ class AutoReadingEngine:
         # Base Size Continuous Scaling
         raw_base_size = default_sizes.get(clean_sym, 0.01) * equity_ratio
         
-        # Symbol Specific Micro-Lot & Safety Clamp Optimization
+        # Symbol Specific Micro-Lot & Safety Clamp Optimization (Equalized for $1,000+ Crypto Accounts)
         if any(x in clean_sym for x in ["XAU", "GOLD", "PAXG"]):
             base_size = min(0.05, max(0.01, round(raw_base_size, 2)))
         elif any(x in clean_sym for x in ["BTC"]):
-            base_size = min(0.05, max(0.001, round(raw_base_size, 3)))
+            base_size = min(0.10, max(0.001, round(raw_base_size, 3)))
         elif any(x in clean_sym for x in ["ETH"]):
-            base_size = min(0.50, max(0.01, round(raw_base_size, 2)))
+            base_size = min(1.00, max(0.05, round(raw_base_size, 2)))
+        elif any(x in clean_sym for x in ["SOL"]):
+            base_size = min(10.0, max(0.50, round(raw_base_size, 2)))
+        elif any(x in clean_sym for x in ["BNB"]):
+            base_size = min(2.00, max(0.10, round(raw_base_size, 2)))
+        elif any(x in clean_sym for x in ["DOGE"]):
+            base_size = min(10000.0, max(100.0, round(raw_base_size, 1)))
         elif any(x in clean_sym for x in ["GBP", "EUR", "JPY"]):
             base_size = min(0.50, max(0.01, round(raw_base_size, 2)))
         else:
