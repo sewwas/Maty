@@ -1903,11 +1903,10 @@ class BreakoutGridBot:
                 standard_wvap_target = max(volume_friction_target, friction_floor + 0.25)
                 
                 # 7a. INSTANT COUNTER-FILL CHOP FLIP SHIELD:
-                # If 1 SELL fills and then 1 BUY fills (or vice versa), exit IMMEDIATELY as soon as net PnL is in PROFIT (float_pnl > 0.0)
-                # Guaranteed 100% profitable exit — never exit in loss!
-                if has_dual_hedge and float_pnl > 0.0:
+                # If 1 SELL fills and then 1 BUY fills (or vice versa), exit IMMEDIATELY as soon as net PnL achieves solid profit (float_pnl >= standard_wvap_target)
+                if has_dual_hedge and float_pnl >= standard_wvap_target:
                     instant_counter_flip_hit = True
-                elif (has_dual_hedge and float_pnl > 0.0) or float_pnl >= fast_bounce_target or float_pnl >= standard_wvap_target:
+                elif float_pnl >= standard_wvap_target:
                     wvap_exit_hit = True
 
             # 8. SINGLE-FILL QUICK PERCENT SCALP EXIT (Equalized for Crypto & Gold)
@@ -1932,10 +1931,11 @@ class BreakoutGridBot:
                 if move_pct >= target_move_threshold and float_pnl >= volume_friction_target and not is_pos_trend:
                     single_fill_scalp_hit = True
 
-            # 9. INSTANT TOP/BOTTOM REVERSAL PROFIT EXIT (Never-Stuck Peak Reversal Shield)
+            # 9. INSTANT TOP/BOTTOM REVERSAL PROFIT EXIT (Solid Cash Profit Peak Reversal Shield)
             top_bottom_reversal_hit = False
+            min_solid_profit = (volume_friction_target * 100.0) if is_cent else volume_friction_target
             if len(self.broker.open_positions) > 0 and not self.in_runner_mode:
-                if is_reversing and float_pnl > 0.0:
+                if is_reversing and float_pnl >= min_solid_profit:
                     top_bottom_reversal_hit = True
 
         if target_hit or runner_hit or trailing_stop_hit or stop_loss_hit or timeout_hit or breakeven_hit or early_range_hit or prop_guard_hit or hedge_lock_hit or velocity_shield_hit or momentum_scalp_hit or wvap_exit_hit or instant_counter_flip_hit or single_fill_scalp_hit or top_bottom_reversal_hit:
