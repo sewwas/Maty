@@ -27,10 +27,42 @@
     --font-body: 'Inter', sans-serif;
 }
 
+html {
+    scroll-behavior: smooth;
+    scrollbar-width: thin;
+    scrollbar-color: rgba(0, 245, 160, 0.4) #080B10;
+}
+
 * {
     box-sizing: border-box;
     margin: 0;
     padding: 0;
+}
+
+/* Custom Glassmorphism Scrollbar System */
+::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+}
+
+::-webkit-scrollbar-track {
+    background: #080B10;
+}
+
+::-webkit-scrollbar-thumb {
+    background: linear-gradient(180deg, rgba(0, 245, 160, 0.4) 0%, rgba(0, 217, 246, 0.4) 100%);
+    border-radius: 10px;
+    border: 2px solid #080B10;
+    transition: all 0.3s ease;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: linear-gradient(180deg, rgba(0, 245, 160, 0.85) 0%, rgba(0, 217, 246, 0.85) 100%);
+    box-shadow: 0 0 12px rgba(0, 245, 160, 0.7);
+}
+
+::-webkit-scrollbar-corner {
+    background: #080B10;
 }
 
 body {
@@ -427,11 +459,43 @@ body {
 .custom-range {
     width: 100%;
     height: 8px;
-    border-radius: 4px;
-    background: rgba(255, 255, 255, 0.1);
+    border-radius: 6px;
+    background: rgba(255, 255, 255, 0.08);
     outline: none;
     accent-color: var(--primary);
     cursor: pointer;
+    -webkit-appearance: none;
+    appearance: none;
+    transition: background 0.3s ease;
+}
+
+.custom-range::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    background: var(--primary-gradient);
+    border: 3px solid #080B10;
+    box-shadow: 0 0 14px rgba(0, 245, 160, 0.7);
+    cursor: pointer;
+    transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.custom-range::-webkit-slider-thumb:hover {
+    transform: scale(1.2);
+    box-shadow: 0 0 20px rgba(0, 245, 160, 0.9);
+}
+
+.custom-range::-moz-range-thumb {
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    background: var(--primary-gradient);
+    border: 3px solid #080B10;
+    box-shadow: 0 0 14px rgba(0, 245, 160, 0.7);
+    cursor: pointer;
+    transition: transform 0.2s ease, box-shadow 0.2s ease;
 }
 
 .range-marks {
@@ -500,7 +564,27 @@ body {
 .table-responsive {
     margin-top: 30px;
     overflow-x: auto;
+    scrollbar-width: thin;
+    scrollbar-color: rgba(0, 245, 160, 0.4) #080B10;
+}
 
+.table-responsive::-webkit-scrollbar {
+    height: 6px;
+}
+
+.table-responsive::-webkit-scrollbar-track {
+    background: rgba(8, 11, 16, 0.6);
+    border-radius: 6px;
+}
+
+.table-responsive::-webkit-scrollbar-thumb {
+    background: rgba(0, 245, 160, 0.4);
+    border-radius: 6px;
+}
+
+.table-responsive::-webkit-scrollbar-thumb:hover {
+    background: var(--primary);
+    box-shadow: 0 0 10px rgba(0, 245, 160, 0.8);
 }
 
 .data-table {
@@ -782,15 +866,379 @@ body {
     to { transform: translateX(0); opacity: 1; }
 }
 
+/* Flex Utilities & Layout Extensions */
+.flex-between {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.margin-top-lg {
+    margin-top: 40px;
+}
+
+.subsection-title {
+    font-size: 1.25rem;
+    font-family: var(--font-heading);
+    font-weight: 700;
+    margin-bottom: 16px;
+}
+
+/* Interactive Canvas & Legend CSS */
+.chart-legend-box {
+    display: flex;
+    gap: 16px;
+    margin-top: 18px;
+    padding-top: 14px;
+    border-top: 1px solid var(--card-border);
+}
+
+.legend-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.8rem;
+    color: var(--text-muted);
+}
+
+.legend-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+}
+
+.legend-primary {
+    background: var(--primary);
+    box-shadow: 0 0 8px var(--primary);
+}
+
+.legend-secondary {
+    background: #9CA3AF;
+}
+
+.roi-chart-card {
+    margin: 16px 0;
+    padding: 12px;
+    background: rgba(8, 11, 16, 0.5);
+    border: 1px solid rgba(255, 255, 255, 0.05);
+    border-radius: 14px;
+}
+
+.chart-canvas-wrapper {
+    position: relative;
+    width: 100%;
+}
+
+.chart-canvas-wrapper canvas {
+    width: 100% !important;
+    display: block;
+}
+
+/* Master Pool Equity Curve Section */
+.master-chart-card {
+    padding: 28px;
+    margin-bottom: 35px;
+    position: relative;
+}
+
+.chart-header {
+    margin-bottom: 18px;
+}
+
+.title-with-badge {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.title-with-badge h3 {
+    font-size: 1.35rem;
+    font-family: var(--font-heading);
+    font-weight: 700;
+}
+
+.chart-sub-info {
+    font-size: 0.82rem;
+    color: var(--text-muted);
+    margin-top: 4px;
+}
+
+.timeframe-selector {
+    display: flex;
+    gap: 6px;
+    background: rgba(255, 255, 255, 0.04);
+    padding: 4px;
+    border-radius: 10px;
+    border: 1px solid var(--card-border);
+}
+
+.tf-btn {
+    background: transparent;
+    border: none;
+    color: var(--text-muted);
+    padding: 6px 14px;
+    font-size: 0.8rem;
+    font-weight: 600;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.tf-btn:hover {
+    color: #fff;
+}
+
+.tf-btn.active {
+    background: var(--primary);
+    color: #040D1A;
+    font-weight: 700;
+    box-shadow: 0 0 12px rgba(0, 245, 160, 0.4);
+}
+
+/* Master Chart Summary Highlights Banner */
+.chart-summary-bar {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 16px;
+    padding: 16px 20px;
+    margin-bottom: 20px;
+    background: rgba(8, 11, 16, 0.5);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-radius: 14px;
+}
+
+.cs-item {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.cs-label {
+    font-size: 0.76rem;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.cs-val {
+    font-family: var(--font-heading);
+    font-size: 1.15rem;
+    font-weight: 700;
+}
+
+.master-chart-body {
+    position: relative;
+    width: 100%;
+}
+
+.master-chart-body canvas {
+    width: 100% !important;
+    display: block;
+}
+
+/* Floating Chart Hover Tooltip */
+.chart-tooltip-floating {
+    position: absolute;
+    transform: translate(-50%, -100%);
+    background: rgba(15, 23, 42, 0.92);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border: 1px solid var(--primary);
+    padding: 8px 14px;
+    border-radius: 10px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.6);
+    pointer-events: none;
+    z-index: 50;
+    white-space: nowrap;
+    transition: opacity 0.15s ease, transform 0.15s ease;
+}
+
+.tt-period { font-size: 0.75rem; color: var(--text-muted); }
+.tt-val { font-family: var(--font-heading); font-weight: 700; font-size: 1.05rem; color: #fff; }
+.tt-sub { font-size: 0.78rem; font-weight: 600; }
+
+/* High-Tech Terminal Execution Feed Header & Items */
+.ticker-badge-group {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.live-stream-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 12px;
+    background: rgba(0, 245, 160, 0.12);
+    border: 1px solid rgba(0, 245, 160, 0.3);
+    color: var(--primary);
+    border-radius: 50px;
+    font-size: 0.75rem;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+}
+
+.ticker-subtext {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+}
+
+.ticker-stats-pill {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: rgba(255, 255, 255, 0.04);
+    padding: 6px 14px;
+    border-radius: 50px;
+    font-size: 0.8rem;
+    border: 1px solid var(--card-border);
+}
+
+.t-divider { color: var(--text-muted); }
+
+.ticker-content-track {
+    display: flex;
+    gap: 14px;
+    overflow-x: auto;
+    padding-top: 14px;
+    padding-bottom: 6px;
+    scrollbar-width: thin;
+}
+
+.glass-pill {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 16px;
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid rgba(255, 255, 255, 0.07);
+    border-radius: 50px;
+    white-space: nowrap;
+    transition: transform 0.2s ease, border-color 0.2s ease;
+}
+
+.glass-pill:hover {
+    transform: translateY(-2px);
+    border-color: rgba(0, 245, 160, 0.35);
+    background: rgba(0, 245, 160, 0.05);
+}
+
+.symbol-badge {
+    font-weight: 700;
+    font-size: 0.85rem;
+    color: #fff;
+}
+
+.profit-badge {
+    font-weight: 700;
+    font-size: 0.88rem;
+}
+
+.time-tag {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+}
+
+/* Monthly Heatmap Section */
+.monthly-heatmap-section {
+    margin-bottom: 40px;
+}
+
+.heatmap-header {
+    margin-bottom: 18px;
+}
+
+.heatmap-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 16px;
+}
+
+.heatmap-card {
+    padding: 18px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    border-radius: 16px;
+    transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1), box-shadow 0.25s ease, border-color 0.25s ease;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.2);
+}
+
+.heatmap-card:hover {
+    transform: translateY(-6px) scale(1.02);
+    box-shadow: 0 12px 30px rgba(0, 245, 160, 0.2);
+}
+
+.heatmap-card.live-card {
+    box-shadow: 0 0 30px rgba(0, 245, 160, 0.25);
+}
+
+.hm-top {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+}
+
+.m-month {
+    font-weight: 600;
+}
+
+.live-pill {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 0.7rem;
+    font-weight: 700;
+    color: var(--primary);
+    background: rgba(0, 245, 160, 0.12);
+    padding: 2px 8px;
+    border-radius: 50px;
+}
+
+.m-status-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background-color: var(--success);
+}
+
+.m-yield {
+    font-size: 1.45rem;
+    font-weight: 800;
+    font-family: var(--font-heading);
+    margin: 2px 0;
+}
+
+.hm-details {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+}
+
+.m-tag {
+    font-size: 0.82rem;
+    font-weight: 700;
+}
+
+.m-sub-info {
+    font-size: 0.74rem;
+    color: var(--text-muted);
+}
+
 /* Responsive Breakpoints */
 @media (max-width: 992px) {
     .metrics-grid, .steps-grid, .dash-cards-grid { grid-template-columns: repeat(2, 1fr); }
     .calculator-grid, .dash-action-grid { grid-template-columns: 1fr; }
     .hero-title { font-size: 2.8rem; }
     .nav-links { display: none; }
+    .heatmap-grid { grid-template-columns: repeat(3, 1fr); }
+    .chart-summary-bar { grid-template-columns: 1fr; gap: 12px; }
 }
 
 @media (max-width: 600px) {
     .metrics-grid, .steps-grid, .dash-cards-grid { grid-template-columns: 1fr; }
     .hero-title { font-size: 2.2rem; }
+    .heatmap-grid { grid-template-columns: repeat(2, 1fr); }
+    .flex-between { flex-direction: column; align-items: flex-start; gap: 12px; }
 }
+
+

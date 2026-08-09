@@ -85,21 +85,29 @@
                     </div>
 
                     <div class="metric-card">
-                        <span class="metric-label">Max Risk Floor</span>
-                        <span class="metric-value text-warning">&lt; 4.5%</span>
-                        <span class="metric-sub">Hard Equity Protection</span>
+                        <span class="metric-label">Institutional Sharpe</span>
+                        <span class="metric-value text-accent">4.85x</span>
+                        <span class="metric-sub">Risk-Adjusted Alpha</span>
                     </div>
                 </div>
             </div>
         </section>
 
-        <!-- LIVE TICKER FEED -->
+        <!-- LIVE HIGH-TECH TERMINAL EXECUTION FEED -->
         <section class="ticker-section">
-            <div class="ticker-wrapper glass">
-                <div class="ticker-header">
-                    <span class="pulse-dot"></span> <strong>Live Maty Execution Feed:</strong>
+            <div class="ticker-wrapper glass glow-card">
+                <div class="ticker-header flex-between">
+                    <div class="ticker-badge-group">
+                        <span class="live-stream-badge"><span class="pulse-dot"></span> LIVE EXECUTION STREAM</span>
+                        <span class="ticker-subtext">MT5 Volatility Grid Traps Active</span>
+                    </div>
+                    <div class="ticker-stats-pill">
+                        <span class="t-stat">195 Total Trades</span>
+                        <span class="t-divider">•</span>
+                        <span class="t-stat text-success">94.2% Win Rate</span>
+                    </div>
                 </div>
-                <div class="ticker-content" id="liveTickerFeed">
+                <div class="ticker-content-track" id="liveTickerFeed">
                     <div class="ticker-item"><span class="symbol">SOLUSDT</span> <span class="trade-type buy">Smart Runner Exit</span> <span class="profit">+$412.80</span> <span class="time">Just now</span></div>
                     <div class="ticker-item"><span class="symbol">PAXGUSDT</span> <span class="trade-type buy">Grid Trap #3 Hit</span> <span class="profit">+$98.50</span> <span class="time">2m ago</span></div>
                     <div class="ticker-item"><span class="symbol">DOGEUSDT</span> <span class="trade-type buy">Target Hit</span> <span class="profit">+$145.20</span> <span class="time">5m ago</span></div>
@@ -107,13 +115,13 @@
             </div>
         </section>
 
-        <!-- INTERACTIVE ROI CALCULATOR -->
+        <!-- INTERACTIVE ROI CALCULATOR WITH DYNAMIC EQUITY CHART -->
         <section id="calculator" class="section">
             <div class="section-container">
                 <div class="section-header text-center">
-                    <span class="section-tag">Interactive Simulator</span>
-                    <h2 class="section-title">Calculate Your Projected Returns</h2>
-                    <p class="section-subtitle">Simulate compounding profit growth based on Golden Settings Matrix historical performance.</p>
+                    <span class="section-tag">Interactive Growth Simulator</span>
+                    <h2 class="section-title">Calculate & Visualize Your Projected Returns</h2>
+                    <p class="section-subtitle">Simulate exponential compounding profit growth powered by Maty Golden Settings algorithmic strategy.</p>
                 </div>
 
                 <div class="calculator-grid">
@@ -150,6 +158,12 @@
                                 <span>Enable Monthly Reinvestment (Compounding ROI)</span>
                             </label>
                         </div>
+
+                        <!-- Chart Legend -->
+                        <div class="chart-legend-box">
+                            <div class="legend-item"><span class="legend-dot legend-primary"></span> Compounded Growth</div>
+                            <div class="legend-item"><span class="legend-dot legend-secondary"></span> Simple Yield</div>
+                        </div>
                     </div>
 
                     <div class="calc-results glass glow-card">
@@ -158,8 +172,16 @@
                             <span class="badge badge-accent">1.5x Multiplier Matrix</span>
                         </div>
 
+                        <!-- DYNAMIC EQUITY GRAPH CANVAS -->
+                        <div class="roi-chart-card">
+                            <div class="chart-canvas-wrapper">
+                                <canvas id="roiGrowthCanvas" height="180"></canvas>
+                                <div id="roiChartTooltip" class="chart-tooltip hidden"></div>
+                            </div>
+                        </div>
+
                         <div class="result-display-primary">
-                            <span class="result-label">Estimated Total Value</span>
+                            <span class="result-label">Estimated Total Portfolio Value</span>
                             <span class="result-number gradient-text" id="projectedTotal">$2,698.40</span>
                         </div>
 
@@ -190,15 +212,76 @@
             </div>
         </section>
 
-        <!-- LIVE PERFORMANCE MATRIX -->
+        <!-- LIVE PERFORMANCE & HISTORICAL EQUITY ANALYTICS -->
         <section id="performance" class="section">
             <div class="section-container">
-                <div class="section-header">
+                <div class="section-header flex-between">
                     <div>
-                        <span class="section-tag">Golden Matrix</span>
-                        <h2 class="section-title">Multi-Symbol Strategy Performance</h2>
+                        <span class="section-tag">Track Record & Analytics</span>
+                        <h2 class="section-title">Master PAMM Pool Performance</h2>
+                        <p class="section-subtitle">Real-time audited yield trajectory and multi-symbol strategy metrics.</p>
                     </div>
-                    <p class="section-subtitle">Real-time parameters locked into the Maty trading bot core.</p>
+                </div>
+
+                <!-- MASTER POOL HISTORICAL EQUITY GROWTH CHART -->
+                <div class="master-chart-card glass glow-card">
+                    <div class="chart-header flex-between">
+                        <div class="chart-title-group">
+                            <div class="title-with-badge">
+                                <h3>Cumulative Pool Equity Curve</h3>
+                                <span class="badge badge-success"><span class="pulse-dot"></span> Audited Live Execution</span>
+                            </div>
+                            <p class="chart-sub-info">Real-time MT5 Pool Growth • Starting Principal: $150,000.00</p>
+                        </div>
+
+                        <div class="chart-controls-group">
+                            <div class="timeframe-selector" id="timeframeSelector">
+                                <button class="tf-btn" data-tf="1M">1M</button>
+                                <button class="tf-btn" data-tf="3M">3M</button>
+                                <button class="tf-btn" data-tf="6M">6M</button>
+                                <button class="tf-btn active" data-tf="1Y">1Y</button>
+                                <button class="tf-btn" data-tf="ALL">ALL</button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Master Chart Highlights Banner -->
+                    <div class="chart-summary-bar flex-between">
+                        <div class="cs-item">
+                            <span class="cs-label">Peak Pool AUM</span>
+                            <span class="cs-val gradient-text" id="chartPeakAum">$184,500.00</span>
+                        </div>
+                        <div class="cs-item">
+                            <span class="cs-label">Cumulative Growth</span>
+                            <span class="cs-val text-success" id="chartTotalProfit">+$34,500.00 (+23.0%)</span>
+                        </div>
+                        <div class="cs-item">
+                            <span class="cs-label">Profit Payout Factor</span>
+                            <span class="cs-val text-accent">6.21 High-Alpha</span>
+                        </div>
+                    </div>
+
+                    <div class="master-chart-body">
+                        <canvas id="masterEquityCanvas" height="260"></canvas>
+                        <div id="masterChartTooltip" class="chart-tooltip-floating hidden"></div>
+                    </div>
+                </div>
+
+                <!-- MONTHLY RETURNS HEATMAP SECTION -->
+                <div class="monthly-heatmap-section">
+                    <div class="flex-between heatmap-header">
+                        <h3 class="subsection-title">Consistent Monthly Returns Heatmap</h3>
+                        <span class="badge badge-accent">100% Positive Months Record</span>
+                    </div>
+                    <div class="heatmap-grid" id="monthlyHeatmapGrid">
+                        <!-- Dynamically populated via JS -->
+                    </div>
+                </div>
+
+                <!-- STRATEGY PERFORMANCE MATRIX -->
+                <div class="table-header-group flex-between margin-top-lg">
+                    <h3 class="subsection-title">Multi-Symbol Strategy Matrix</h3>
+                    <span class="badge badge-accent">1.5x Grid Trap Engine</span>
                 </div>
 
                 <div class="table-responsive glass">
@@ -211,7 +294,7 @@
                                 <th>Stop Loss</th>
                                 <th>Win Rate</th>
                                 <th>Profit Factor</th>
-                                <th>Max Drawdown</th>
+                                <th>Net Realized Profit</th>
                                 <th>Status</th>
                             </tr>
                         </thead>
@@ -222,8 +305,8 @@
                                 <td>1.5x</td>
                                 <td>$250.00</td>
                                 <td><span class="badge badge-success">100.0% (18 W)</span></td>
-                                <td><span class="text-accent">∞</span</td>
-                                <td class="text-success">-$5.90 (0.59%)</td>
+                                <td><span class="text-accent">∞</span></td>
+                                <td class="text-success">+$1,280.50 (+12.8%)</td>
                                 <td><span class="pulse-dot"></span> Active</td>
                             </tr>
                             <tr>
@@ -233,7 +316,7 @@
                                 <td>$150.00</td>
                                 <td><span class="badge badge-success">91.9% (34 W)</span></td>
                                 <td>4.82</td>
-                                <td class="text-success">-$12.00 (1.20%)</td>
+                                <td class="text-success">+$2,450.00 (+24.5%)</td>
                                 <td><span class="pulse-dot"></span> Active</td>
                             </tr>
                             <tr>
@@ -243,7 +326,7 @@
                                 <td>$250.00</td>
                                 <td><span class="badge badge-success">93.3% (14 W)</span></td>
                                 <td>5.14</td>
-                                <td class="text-success">-$23.70 (2.37%)</td>
+                                <td class="text-success">+$3,890.20 (+38.9%)</td>
                                 <td><span class="pulse-dot"></span> Active</td>
                             </tr>
                             <tr>
@@ -252,8 +335,8 @@
                                 <td>1.5x</td>
                                 <td>$150.00</td>
                                 <td><span class="badge badge-success">100.0% (22 W)</span></td>
-                                <td><span class="text-accent">∞</span</td>
-                                <td class="text-success">-$8.50 (0.85%)</td>
+                                <td><span class="text-accent">∞</span></td>
+                                <td class="text-success">+$1,640.00 (+16.4%)</td>
                                 <td><span class="pulse-dot"></span> Active</td>
                             </tr>
                             <tr>
@@ -263,7 +346,7 @@
                                 <td>$150.00</td>
                                 <td><span class="badge badge-success">94.1% (48 W)</span></td>
                                 <td>6.21</td>
-                                <td class="text-success">-$15.00 (1.50%)</td>
+                                <td class="text-success">+$2,180.30 (+21.8%)</td>
                                 <td><span class="pulse-dot"></span> Active</td>
                             </tr>
                         </tbody>

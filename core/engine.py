@@ -1911,9 +1911,12 @@ class BreakoutGridBot:
                 total_sell_lots = sum(p.size for p in sell_positions)
                 net_vol = total_buy_lots - total_sell_lots
 
-                # Net Volume Imbalance Counter-Hedge: Trigger ultra-fast counter-hedge at 10% drawdown threshold to flip volume dominance
+                # Net Volume Imbalance Counter-Hedge: Dynamic 5% fast surge threshold on momentum reversal, 8% standard floor
                 if abs(net_vol) > 0.0001:
-                    hedge_threshold = effective_stop_loss * 0.10
+                    is_fast_surge = is_reversing or (len(getattr(self, "price_history_ticks", [])) >= 3 and abs(avg_delta) >= 0.04)
+                    hedge_pct = 0.05 if is_fast_surge else 0.08
+                    hedge_threshold = effective_stop_loss * hedge_pct
+
                     if float_pnl <= -hedge_threshold and len(self.broker.pending_orders) < 2:
                         hedge_side = "SELL_STOP" if net_vol > 0 else "BUY_STOP"
                         hedge_dist_pct = getattr(self, "trap_offset", 0.07) * 0.50
