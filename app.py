@@ -138,20 +138,13 @@ for sym in _symbols:
         )
         bot.max_cycle_duration = float("inf")
         init_px = get_default_price(sym)
-        is_default_pair = sym in ["BTCUSDT", "ETHUSDT"]
         st.session_state.markets[sym] = {
             "broker": brk,
             "bot": bot,
-            "running": is_default_pair,  # Only BTC & ETH active by default
+            "running": False,  # Manual start only - no pair auto-starts by default
             "last_price": init_px,
             "price_history": [(time.time(), init_px)]
         }
-        # Deploy traps immediately for active default pairs
-        if is_default_pair:
-            try:
-                bot.deploy_traps(init_px, time.time(), force=True)
-            except Exception:
-                pass
 
 # ==============================================================================
 #  3. CSS DESIGN SYSTEM & MODERN DARK THEME STYLING
