@@ -577,7 +577,7 @@ class BreakoutGridBot:
         spacing_mode: Optional[str] = None,
         stop_loss: float = 0.0,
         max_cycle_duration: float = float("inf"),
-        cancel_opposite_on_trigger: bool = True,
+        cancel_opposite_on_trigger: bool = False,
         use_trailing_stop: bool = False,
         trailing_stop_distance: float = 15.0,
         use_bb_filter: bool = False,
@@ -1002,8 +1002,8 @@ class BreakoutGridBot:
                     self.grid_gap = eval_res["dynamic_gap_pct"]
                 if "buy_offset_pct" in eval_res:
                     self.trap_offset = eval_res["buy_offset_pct"]
-                # Auto Mode Enhancements: Enable OCO opposite cancel & directional trap mode
-                self.cancel_opposite_on_trigger = getattr(self, "cancel_opposite_on_trigger", True)
+                # Auto Mode Enhancements: Preserve dual-sided traps by default (OCO OFF) & set directional trap mode
+                self.cancel_opposite_on_trigger = getattr(self, "cancel_opposite_on_trigger", False)
                 self.unidirectional_mode = eval_res.get("unidirectional_mode", "DUAL")
 
                 # Store latest evaluation for UI display
@@ -1259,7 +1259,7 @@ class BreakoutGridBot:
 
         # OCO Mode Guard: If cancel_opposite_on_trigger is enabled and positions are open in ONE direction,
         # DO NOT repair or place opposite trap orders to prevent 10-level double-sided hedge lock!
-        cancel_opp = getattr(self, "cancel_opposite_on_trigger", True)
+        cancel_opp = getattr(self, "cancel_opposite_on_trigger", False)
         allow_buy_repair = True
         allow_sell_repair = True
 
@@ -1597,21 +1597,14 @@ class BreakoutGridBot:
             avg_delta_pct = (avg_delta / current_price * 100.0) if current_price > 0 else 0.0
 
         # SMART DYNAMIC SAFETY OCO SHIELD ENGINE:
-        # Keeps opposite traps live in MT5 during normal ranging chop (harvesting both sides),
-        # but AUTOMATICALLY turns OCO ON when danger/volatility spikes or 2+ grid levels fill!
+        # Keeps opposite traps live in MT5 to preserve dual-sided hedging on market reversals,
+        # OCO sweeping only occurs if cancel_opposite_on_trigger is explicitly enabled OR 4+ levels fill!
         cancel_opp = getattr(self, "cancel_opposite_on_trigger", False)
         
         num_open_positions = len(self.broker.open_positions)
-        atr_val = getattr(self, "current_atr", 0.0)
-        atr_pct = (atr_val / current_price * 100.0) if (atr_val > 0 and current_price > 0) else 0.0
         
-        # Danger Detection Triggers:
-        # 1. 2 or more grid levels filled in one direction (drawdown protection)
-        # 2. High ATR volatility spike (> 0.35% ATR)
-        # 3. High tick velocity spike (> 0.15% delta)
-        danger_spike_detected = (num_open_positions >= 2) or (atr_pct >= 0.35) or (abs(avg_delta_pct) >= 0.15)
-        
-        should_sweep_oco = cancel_opp or danger_spike_detected
+        # OCO Sweep Trigger: Explicit user toggle ON or emergency 4+ fills trend purge
+        should_sweep_oco = cancel_opp or (num_open_positions >= 4)
         if should_sweep_oco and num_open_positions > 0:
             buy_pos_active = [p for p in self.broker.open_positions.values() if p.type == "BUY"]
             sell_pos_active = [p for p in self.broker.open_positions.values() if p.type == "SELL"]
@@ -1702,10 +1695,12 @@ class BreakoutGridBot:
         early_range_hit = False
         prop_guard_hit = False
         hedge_lock_hit = False
+        velocity_shield_hit = False
         momentum_scalp_hit = False
         wvap_exit_hit = False
         instant_counter_flip_hit = False
         single_fill_scalp_hit = False
+        top_bottom_reversal_hit = False
 
         # SMART TIMEOUT: Only exits if PnL is at or above breakeven (friction_floor).
         # If the cycle is in the red when time expires, do NOT force-exit — let Stop Loss
@@ -1750,7 +1745,8 @@ class BreakoutGridBot:
             num_fills = len(self.broker.open_positions)
             total_basket_lots = sum(p.size for p in self.broker.open_positions.values())
             base_size = max(0.0001, getattr(self, "order_size", 0.01))
-            volume_scale_mult = max(1.0, total_basket_lots / base_size)
+            # Capped Volume Scale Multiplier (max 2.2x ceiling) so multi-fill grids (e.g. 4 fills) take profit reliably on small pullbacks
+            volume_scale_mult = min(2.2, max(1.0, total_basket_lots / base_size))
             base_tp = (self.target_profit * 100.0) if is_cent else self.target_profit
             friction_floor_adjusted = (friction_floor * 100.0) if is_cent else friction_floor
             effective_target_profit = max(base_tp * volume_scale_mult, friction_floor_adjusted + (100.0 if is_cent else 1.00))
@@ -1763,9 +1759,9 @@ class BreakoutGridBot:
             is_strong_sell_trend = bool(sell_pos_list and not buy_pos_list and avg_delta < 0)
             is_strong_trend = is_strong_buy_trend or is_strong_sell_trend
 
-            # High-Confidence Trend Target Profit Booster: 2.5x expansion when trend momentum is confirmed!
+            # Controlled Trend Target Profit Booster: 1.35x expansion max to prevent unachievable profit goals on multi-fills
             if is_strong_trend:
-                effective_target_profit *= 2.5
+                effective_target_profit *= 1.35
 
             if self.use_smart_trailing and float_pnl >= effective_target_profit:
                 if not self.in_runner_mode:
@@ -1950,8 +1946,8 @@ class BreakoutGridBot:
 
             if len(self.broker.open_positions) >= 2 and not self.in_runner_mode:
                 has_dual_hedge = (len(buy_positions) > 0 and len(sell_positions) > 0)
-                fast_bounce_target = (25.0 if is_cent else 0.25)  # Ultra-fast micro profit target (+ $0.25 USD / +25 Cents)
-                standard_wvap_target = max(volume_friction_target, friction_floor + 0.25)
+                min_dollar_floor = (100.0 if is_cent else 1.00)
+                standard_wvap_target = max(min_dollar_floor, max(volume_friction_target, friction_floor + 1.00))
                 
                 # 7a. INSTANT COUNTER-FILL CHOP FLIP SHIELD:
                 # If 1 SELL fills and then 1 BUY fills (or vice versa), exit IMMEDIATELY as soon as net PnL achieves solid profit (float_pnl >= standard_wvap_target)
@@ -1975,16 +1971,16 @@ class BreakoutGridBot:
                 # Single-fill ultra-fast exit at +$1.00 USD cash profit or 0.06% move
                 fast_single_target = (100.0 if is_cent else 1.00)
                 target_move_threshold = max(0.06, getattr(self, "trap_offset", 0.08) * 0.70)
-                if (move_pct >= target_move_threshold or float_pnl >= fast_single_target) and float_pnl > 0:
+                if (move_pct >= target_move_threshold or float_pnl >= fast_single_target) and float_pnl >= fast_single_target:
                     single_fill_scalp_hit = True
                 
                 target_move_threshold = max(0.08, getattr(self, "trap_offset", 0.08) * 0.90)
-                if move_pct >= target_move_threshold and float_pnl >= volume_friction_target and not is_pos_trend:
+                if move_pct >= target_move_threshold and float_pnl >= fast_single_target and not is_pos_trend:
                     single_fill_scalp_hit = True
 
             # 9. INSTANT TOP/BOTTOM REVERSAL PROFIT EXIT (Solid Cash Profit Peak Reversal Shield)
             top_bottom_reversal_hit = False
-            min_solid_profit = (volume_friction_target * 100.0) if is_cent else volume_friction_target
+            min_solid_profit = max(100.0 if is_cent else 1.00, volume_friction_target)
             if len(self.broker.open_positions) > 0 and not self.in_runner_mode:
                 if is_reversing and float_pnl >= min_solid_profit:
                     top_bottom_reversal_hit = True
