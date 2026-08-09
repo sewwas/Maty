@@ -682,6 +682,11 @@ with tab_desk:
                         p_wins   = sum(1 for t in getattr(brk, "closed_trades", []) if t.get("pnl", 0) > 0)
                         p_wr     = (p_wins / p_trades * 100.0) if p_trades > 0 else (100.0 if cycles > 0 else 0.0)
 
+                        # Compute live Hardware TP & SL envelope bounds for display
+                        hw_tp_dist = max(sym_p * (dyn_gap / 100.0) * 4.0, 3.0)
+                        hw_buy_tp = sym_p + (sym_p * (buy_off / 100.0)) + (auto_levels * sym_p * (dyn_gap / 100.0)) + hw_tp_dist
+                        hw_buy_sl = max(0.01, sym_p - (sym_p * (sell_off / 100.0)) - (auto_levels * sym_p * (dyn_gap / 100.0)) - (hw_tp_dist * 1.5))
+
                         st.markdown(f"""
                         <div class="telemetry-box">
                           <div style="display:flex;justify-content:space-between;align-items:center;font-size:0.82rem;margin-bottom:8px">
@@ -692,13 +697,15 @@ with tab_desk:
                           <div style="background:#27272a;border-radius:4px;height:6px;margin-bottom:10px">
                             <div style="background:#22c55e;width:{conf_bar}%;height:6px;border-radius:4px"></div>
                           </div>
-                          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;font-size:0.79rem;margin-bottom:8px">
+                          <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:6px;font-size:0.77rem;margin-bottom:8px">
                             <div><div style="color:#71717a">Auto Gap</div><strong>{dyn_gap:.3f}%</strong></div>
                             <div><div style="color:#71717a">Buy Offset</div><strong>{buy_off:.3f}%</strong></div>
                             <div><div style="color:#71717a">Sell Offset</div><strong>{sell_off:.3f}%</strong></div>
                             <div><div style="color:#71717a">Levels</div><strong>{auto_levels}</strong></div>
                             <div><div style="color:#71717a">Lot Size</div><strong>{auto_size:.3f}</strong></div>
                             <div><div style="color:#71717a">Target $</div><strong>${auto_tp:.2f}</strong></div>
+                            <div><div style="color:#71717a">🛡️ Server TP</div><strong style="color:#22c55e">${hw_buy_tp:,.2f}</strong></div>
+                            <div><div style="color:#71717a">🛡️ Server SL</div><strong style="color:#ef4444">${hw_buy_sl:,.2f}</strong></div>
                           </div>
                           <div style="display:flex;justify-content:space-between;font-size:0.79rem;border-top:1px solid #27272a;padding-top:8px">
                             <span>🟢 Active: <strong>{open_pos}</strong> pos / <strong>{pend_ord}</strong> traps</span>

@@ -279,8 +279,16 @@ class MT5Broker:
         else:
             mt5_filling = mt5.ORDER_FILLING_RETURN
 
-        tp_val = round(tp, digits) if tp > 0 else 0.0
-        sl_val = round(sl, digits) if sl > 0 else 0.0
+        # Hardware TP & SL clamping relative to trigger_price (Guarantees Exness 10016 Invalid Stops never occurs)
+        if order_type == "BUY_STOP":
+            tp_val = max(tp, trigger_price + min_stop_dist) if tp > 0 else 0.0
+            sl_val = min(sl, trigger_price - min_stop_dist) if sl > 0 else 0.0
+        else:
+            tp_val = min(tp, trigger_price - min_stop_dist) if tp > 0 else 0.0
+            sl_val = max(sl, trigger_price + min_stop_dist) if sl > 0 else 0.0
+
+        tp_val = round(tp_val, digits) if tp_val > 0 else 0.0
+        sl_val = round(sl_val, digits) if sl_val > 0 else 0.0
 
         request = {
             "action": mt5.TRADE_ACTION_PENDING,
