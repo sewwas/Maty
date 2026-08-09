@@ -1557,10 +1557,11 @@ class BreakoutGridBot:
             return None
         # ─────────────────────────────────────────────────────────────────────────
 
-        # Dynamic Spread Guard: Skip order fills if broker spread is abnormally wide (> 3x max spread limit)
+        # Dynamic Spread Guard & Adaptive News Friction Filter: Skip fills if broker spread > 3.0x baseline
         if hasattr(self.broker, "get_current_spread"):
             cur_spread = self.broker.get_current_spread()
-            max_allowed = getattr(self, "max_allowed_spread", 4.5)
+            base_pip = get_pip_size(getattr(self.broker, "symbol", ""), current_price)
+            max_allowed = max(getattr(self, "max_allowed_spread", 4.5), base_pip * 30.0)
             if cur_spread > max_allowed:
                 triggered_positions = []
             else:
@@ -1711,10 +1712,18 @@ class BreakoutGridBot:
         timeout_hit = _timed_out and (float_pnl >= friction_floor)
 
         if len(self.broker.open_positions) > 0:
-            # 0. PROP FIRM COMPLIANCE GUARD CHECK
+            # 0. PROP FIRM COMPLIANCE GUARD CHECK (00:00 UTC Baseline Daily Tracking)
             if getattr(self, "prop_firm_guard_enabled", False):
-                daily_limit = 10000.0 * (getattr(self, "prop_firm_max_daily_drawdown_pct", 4.5) / 100.0)
-                if float_pnl <= -daily_limit:
+                account_eq_val = getattr(self.broker, "balance_usd", getattr(self.broker, "account_equity", 10000.0))
+                now_dt = datetime.datetime.fromtimestamp(timestamp, tz=datetime.timezone.utc)
+                today_str = now_dt.strftime("%Y-%m-%d")
+                if not hasattr(self, "_daily_baseline_date") or self._daily_baseline_date != today_str:
+                    self._daily_baseline_date = today_str
+                    self._daily_starting_equity = account_eq_val
+
+                daily_base = getattr(self, "_daily_starting_equity", account_eq_val)
+                max_daily_loss = daily_base * (getattr(self, "prop_firm_max_daily_drawdown_pct", 4.5) / 100.0)
+                if float_pnl <= -max_daily_loss or (daily_base - (account_eq_val + float_pnl)) >= max_daily_loss:
                     prop_guard_hit = True
 
             # 0. PURE DYNAMIC RISK-SCALED STOP LOSS ENGINE (Zero Hardcoded Stop Loss)
@@ -1978,11 +1987,12 @@ class BreakoutGridBot:
                 if move_pct >= target_move_threshold and float_pnl >= fast_single_target and not is_pos_trend:
                     single_fill_scalp_hit = True
 
-            # 9. INSTANT TOP/BOTTOM REVERSAL PROFIT EXIT (Solid Cash Profit Peak Reversal Shield)
+            # 9. INSTANT TOP/BOTTOM REVERSAL PROFIT EXIT & NEAR-MISS 85%+ TP HARVEST
             top_bottom_reversal_hit = False
             min_solid_profit = max(100.0 if is_cent else 1.00, volume_friction_target)
+            near_miss_target = effective_target_profit * 0.85
             if len(self.broker.open_positions) > 0 and not self.in_runner_mode:
-                if is_reversing and float_pnl >= min_solid_profit:
+                if (is_reversing or float_pnl >= near_miss_target) and float_pnl >= min_solid_profit:
                     top_bottom_reversal_hit = True
 
         if target_hit or runner_hit or trailing_stop_hit or stop_loss_hit or timeout_hit or breakeven_hit or early_range_hit or prop_guard_hit or hedge_lock_hit or velocity_shield_hit or momentum_scalp_hit or wvap_exit_hit or instant_counter_flip_hit or single_fill_scalp_hit or top_bottom_reversal_hit:
