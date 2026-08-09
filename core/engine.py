@@ -1916,10 +1916,10 @@ class BreakoutGridBot:
                 total_sell_lots = sum(p.size for p in sell_positions)
                 net_vol = total_buy_lots - total_sell_lots
 
-                # Net Volume Imbalance Counter-Hedge: Dynamic 5% fast surge threshold on momentum reversal, 8% standard floor
+                # Net Volume Imbalance Counter-Hedge: Instant 2% zero-wait threshold on momentum reversal, 6% standard floor
                 if abs(net_vol) > 0.0001:
-                    is_fast_surge = is_reversing or (len(getattr(self, "price_history_ticks", [])) >= 3 and abs(avg_delta) >= 0.04)
-                    hedge_pct = 0.05 if is_fast_surge else 0.08
+                    is_fast_surge = is_reversing or (len(getattr(self, "price_history_ticks", [])) >= 3 and abs(avg_delta) >= 0.03)
+                    hedge_pct = 0.02 if is_fast_surge else 0.06
                     hedge_threshold = effective_stop_loss * hedge_pct
 
                     if float_pnl <= -hedge_threshold and len(self.broker.pending_orders) < 2:
@@ -1963,11 +1963,12 @@ class BreakoutGridBot:
 
             if len(self.broker.open_positions) >= 2 and not self.in_runner_mode:
                 has_dual_hedge = (len(buy_positions) > 0 and len(sell_positions) > 0)
-                min_dollar_floor = (100.0 if is_cent else 1.00)
-                standard_wvap_target = max(min_dollar_floor, max(volume_friction_target, friction_floor + 1.00))
+                min_dollar_floor = (50.0 if is_cent else 0.50)
+                asap_micro_target = friction_floor + (50.0 if is_cent else 0.50)
+                standard_wvap_target = max(min_dollar_floor, asap_micro_target)
                 
                 # 7a. INSTANT COUNTER-FILL CHOP FLIP SHIELD:
-                # If 1 SELL fills and then 1 BUY fills (or vice versa), exit IMMEDIATELY as soon as net PnL achieves solid profit (float_pnl >= standard_wvap_target)
+                # Exits IMMEDIATELY ASAP as soon as net PnL achieves positive micro profit (float_pnl >= standard_wvap_target)
                 if has_dual_hedge and float_pnl >= standard_wvap_target:
                     instant_counter_flip_hit = True
                 elif float_pnl >= standard_wvap_target:

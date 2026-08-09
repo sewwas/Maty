@@ -676,7 +676,7 @@ class SimulatedBroker:
             "exit_price": exit_price,
             "size": pos.size,
             "pnl": pnl,
-            "entry_time": pos.timestamp,
+            "entry_time": getattr(pos, "timestamp", getattr(pos, "entry_time", timestamp)),
             "exit_time": timestamp,
             "commission": 0.0
         }
