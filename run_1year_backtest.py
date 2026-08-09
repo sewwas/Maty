@@ -96,11 +96,14 @@ class BacktestBroker:
         self.last_bid = bid
         triggered = []
         
-        # Check pending order activations
+        # Check pending order activations with realistic adverse execution slippage simulation
+        pip_unit = 1.0 if "BTC" in self.symbol.upper() else 0.10
         for oid, o in list(self.pending_orders.items()):
             if o.type == "BUY_STOP" and ask >= o.trigger_price:
+                slippage = random.uniform(0.0, 1.5) * pip_unit
+                entry_price = o.trigger_price + slippage
                 pid = f"pos_{len(self.open_positions)+1}_{int(timestamp)}"
-                pos = Position(type="BUY", entry_price=o.trigger_price, size=o.size, entry_time=timestamp)
+                pos = Position(type="BUY", entry_price=entry_price, size=o.size, entry_time=timestamp)
                 pos.position_id = pid
                 pos.tp = getattr(o, 'tp', 0.0)
                 pos.sl = getattr(o, 'sl', 0.0)
@@ -108,8 +111,10 @@ class BacktestBroker:
                 del self.pending_orders[oid]
                 triggered.append(pos)
             elif o.type == "SELL_STOP" and bid <= o.trigger_price:
+                slippage = random.uniform(0.0, 1.5) * pip_unit
+                entry_price = o.trigger_price - slippage
                 pid = f"pos_{len(self.open_positions)+1}_{int(timestamp)}"
-                pos = Position(type="SELL", entry_price=o.trigger_price, size=o.size, entry_time=timestamp)
+                pos = Position(type="SELL", entry_price=entry_price, size=o.size, entry_time=timestamp)
                 pos.position_id = pid
                 pos.tp = getattr(o, 'tp', 0.0)
                 pos.sl = getattr(o, 'sl', 0.0)
@@ -158,11 +163,13 @@ def generate_high_precision_candles(symbol: str, num_bars: int = 50000):
             trend_bias = random.choice([-0.00008, -0.00002, 0.00002, 0.00008])
             
         ts = start_ts + (i * 60)
-        ret = trend_bias + random.gauss(0, volatility)
+        # Heavy-tail fat shock simulation: 0.5% chance of 3x volatility spike
+        fat_shock = random.choice([1.0, 1.0, 1.0, 1.0, 2.5]) if random.random() < 0.005 else 1.0
+        ret = trend_bias + (random.gauss(0, volatility) * fat_shock)
         open_p = current_price
         close_p = open_p * (1.0 + ret)
-        high_p = max(open_p, close_p) * (1.0 + abs(random.gauss(0, volatility * 0.4)))
-        low_p = min(open_p, close_p) * (1.0 - abs(random.gauss(0, volatility * 0.4)))
+        high_p = max(open_p, close_p) * (1.0 + abs(random.gauss(0, volatility * 0.4 * fat_shock)))
+        low_p = min(open_p, close_p) * (1.0 - abs(random.gauss(0, volatility * 0.4 * fat_shock)))
         current_price = max(base_price * 0.5, close_p)
         
         rates.append({

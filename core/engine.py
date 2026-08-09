@@ -593,11 +593,12 @@ class BreakoutGridBot:
         use_auto_reading: bool = False
     ):
         self.broker = broker
-        self.grid_levels = grid_levels
+        self.grid_levels = min(7, max(1, int(grid_levels)))
         self.grid_gap = grid_gap
         self.trap_offset = trap_offset
         self.order_size = order_size
-        self.order_size_multiplier = order_size_multiplier
+        self.order_size_multiplier = min(1.30, max(1.0, float(order_size_multiplier)))
+        self.max_basket_drawdown_pct = 0.15  # Emergency 15% floating equity loss ceiling shield
         self.target_profit = target_profit
         self.auto_restart = auto_restart
         if spacing_mode:
@@ -779,7 +780,7 @@ class BreakoutGridBot:
             else:
                 default_max_cap = 1.0
 
-            max_cap = getattr(self, "max_order_size", default_max_cap)
+            max_cap = min(getattr(self, "max_order_size", default_max_cap), base_size * 4.0)
             if max_cap > 0 and size > max_cap:
                 size = max_cap
         else:
@@ -1742,8 +1743,12 @@ class BreakoutGridBot:
             base_sl = (self.stop_loss * 100.0) if is_cent else self.stop_loss
             min_sl_floor = (2500.0 if is_cent else 25.00)
             effective_stop_loss = max(min_sl_floor, max(base_sl, dynamic_sl_dollar))
+            # HARD EMERGENCY BASKET FLOATING EQUITY LOSS LOCK (15% Max Equity Protection)
+            emergency_float_limit = account_eq * getattr(self, "max_basket_drawdown_pct", 0.15)
+            if is_cent:
+                emergency_float_limit *= 100.0
 
-            if float_pnl <= -effective_stop_loss:
+            if float_pnl <= -effective_stop_loss or float_pnl <= -emergency_float_limit:
                 stop_loss_hit = True
 
             # Update max PnL

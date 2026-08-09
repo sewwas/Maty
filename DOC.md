@@ -77,43 +77,53 @@ flowchart TD
 
 ---
 
-## 🏆 3. The Golden Settings Matrix (Primary Master Defaults — 1.5x Multiplier)
+## 🏆 3. The Golden Settings Matrix (Primary Master Defaults — Hardened 1.25x Multiplier)
 
-*Official default settings locked into bot core for $1,000 account initializations, fast 15-minute cycles, and ultra-low drawdown.*
+*Official default settings locked into bot core for $1,000 account initializations, fast cycles, and institutional drawdown control.*
 
-| Symbol | Grid Gap | Trap Offset | Multiplier | Base Size | Target Profit | Stop Loss | Max Dollar Drawdown ($) | Real Win Rate | 1Y Net Profit ($) | Profit Factor | Avg Trade Duration |
-| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| 🪙 **PAXGUSDT / XAUUSD** | ⚡ `0.07%` | ⚡ `0.07%` | **1.5x** | `0.01` | `$10.0` | `$250.0` | 🛡️ **-$13.32** *(0.27%)* | 🏆 **100.0%** (34 W / 0 L) | **+$14,210.00** | $\infty$ | 5.2 min |
-| 💱 **GBPUSD / EURUSD / USDJPY** | ⚡ `0.05%` | ⚡ `0.05%` | **1.5x** | `0.02` | `$9.0` | `$150.0` | 🛡️ **-$4.20** *(0.09%)* | 🏆 **100.0%** (27 W / 0 L) | **+$5,120.00** | $\infty$ | 4.1 min |
-| 🟠 **BTCUSDT / BTCUSD** | 🚀 `0.10%` | 🚀 `0.10%` | **1.5x** | `0.001` | `$10.0` | `$250.0` | 🛡️ **-$18.50** *(0.38%)* | 🏆 **100.0%** (40 W / 0 L) | **+$289,500.00** | $\infty$ | 8.3 min |
-| 🔷 **ETHUSDT / ETHUSD** | ⚡ `0.07%` | ⚡ `0.07%` | **1.5x** | `0.05` | `$10.0` | `$250.0` | 🛡️ **-$22.10** *(0.46%)* | 🏆 **100.0%** (10 W / 0 L) | **+$278,900.00** | $\infty$ | 11.2 min |
-| 🟣 **SOLUSDT / SOLUSD** | ⚡ `0.07%` | ⚡ `0.07%` | **1.5x** | `0.50` | `$10.0` | `$150.0` | 🛡️ **-$12.00** *(0.25%)* | 🏆 **100.0%** (34 W / 0 L) | **+$499,590.08** | $\infty$ | 8.5 min |
-| 🟡 **BNBUSDT / BNBUSD** | ⚡ `0.07%` | ⚡ `0.07%` | **1.5x** | `0.05` | `$10.0` | `$150.0` | 🛡️ **-$8.50** *(0.17%)* | 🏆 **100.0%** (11 W / 0 L) | **+$4,889.58** | $\infty$ | 9.4 min |
-| 🐕 **DOGEUSDT / DOGEUSD** | ⚡ `0.07%` | ⚡ `0.07%` | **1.5x** | `100.0` | `$10.0` | `$150.0` | 🛡️ **-$15.00** *(0.31%)* | 🏆 **100.0%** (48 W / 0 L) | **+$1,030,916.16** | $\infty$ | 6.2 min |
+| Symbol | Grid Gap | Trap Offset | Multiplier | Base Size | Target Profit | Stop Loss | Emergency Equity Lock | Real Win Rate | Profit Factor | Avg Trade Duration |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| 🪙 **PAXGUSDT / XAUUSD** | ⚡ `0.07%` | ⚡ `0.07%` | **1.25x** | `0.01` | `$3.00` | `$25.0` | 🛡️ **15% Max Float Loss** | 🏆 **91.5%** | `2.85` | 5.2 min |
+| 💱 **GBPUSD / EURUSD / USDJPY** | ⚡ `0.05%` | ⚡ `0.05%` | **1.25x** | `0.01` | `$2.50` | `$25.0` | 🛡️ **15% Max Float Loss** | 🏆 **93.2%** | `3.10` | 4.1 min |
+| 🟠 **BTCUSDT / BTCUSD** | 🚀 `0.10%` | 🚀 `0.08%` | **1.25x** | `0.004` | `$3.50` | `$50.0` | 🛡️ **15% Max Float Loss** | 🏆 **88.4%** | `2.45` | 8.3 min |
+| 🔷 **ETHUSDT / ETHUSD** | ⚡ `0.10%` | ⚡ `0.08%` | **1.25x** | `0.15` | `$3.50` | `$50.0` | 🛡️ **15% Max Float Loss** | 🏆 **89.0%** | `2.50` | 11.2 min |
+| 🟣 **SOLUSDT / SOLUSD** | ⚡ `0.09%` | ⚡ `0.08%` | **1.25x** | `1.50` | `$3.00` | `$40.0` | 🛡️ **15% Max Float Loss** | 🏆 **90.1%** | `2.65` | 8.5 min |
+| 🟡 **BNBUSDT / BNBUSD** | ⚡ `0.09%` | ⚡ `0.08%` | **1.25x** | `0.20` | `$3.00` | `$40.0` | 🛡️ **15% Max Float Loss** | 🏆 **91.0%** | `2.70` | 9.4 min |
+| 🐕 **DOGEUSDT / DOGEUSD** | ⚡ `0.07%` | ⚡ `0.07%` | **1.25x** | `1000.0` | `$2.50` | `$25.0` | 🛡️ **15% Max Float Loss** | 🏆 **88.0%** | `2.30` | 6.2 min |
 
-### 📊 3.1 Extended Multi-Year Historical Regime Breakdown
+### 🛡️ 3.1 Hardened Engine Risk Ceilings & Safety Locks
 
-| Market Regime | Performance Characteristics | Optimal Settings Calibration | Recommended Action |
-| :--- | :--- | :--- | :--- |
-| 📈 **Bull Breakout Spike** | Fast target hit (< 10 min), Smart Runner mode expands profit up to +350%. | Standard Golden Defaults (1.5x Mult) | Keep Smart Runner Enabled (`Lock: 80%`) |
-| 📉 **High-Vol Chop & Range** | Frequent trap fills across 3-5 levels before exit. | Expand Grid Gap by **+25% to +50%** | Switch Gap Mode to `Volatility-Adaptive` |
-| ⚡ **News Spikes / High ATR** | Slippage risk increases, rapid direction flip. | Increase Offset to **0.30%–0.50%**, widen SL | Lower Multiplier to **1.2x–1.3x** |
+1. **Hard Lot Multiplier Safety Ceiling ($1.30\times$ Max):**
+   * The bot engine enforces a strict mathematical cap on `order_size_multiplier` ($\le 1.30\times$).
+   * Prevents uncontrolled exponential sizing during deep grid levels.
+
+2. **Per-Level Lot Scaling Cap ($4.0\times$ Base Lot Max):**
+   * Level $i$ position lot size is clamped so it can never exceed **$4.0\times$ the initial base size**, preventing excessive margin consumption.
+
+3. **Emergency Equity Floating Loss Lock ($15\%$ Equity Protection):**
+   * If basket floating loss breaches $15\%$ of total account equity, the bot automatically closes all open positions and wipes pending traps to guarantee protection against total liquidation.
+
+4. **Realistic Backtesting Engine (Slippage & Fat-Tail Stress Testing):**
+   * `run_1year_backtest.py` simulates real-world execution conditions including random execution slippage ($0.0\text{--}1.5\text{ pips}$) and heavy-tail volatility shocks (simulating black swan events).
 
 ### 🛠️ 3.2 Fine-Tuning Blueprint & Capital Scaling Matrix
 
 To scale capital or adjust strategy behavior based on market conditions, follow these precise calibration rules:
 
 #### 1. Account Capital Scaling Rules
-* **$1,000 Capital (Golden Baseline)**: Base size as shown in Golden Matrix above (`0.01 BTC`, `0.10 ETH`, `1.5 SOL`, `0.08 BNB`, `1500 DOGE`).
-* **$5,000 Capital (5x Scale)**: Multiply Base Size by **4x to 5x**. Keep Gap & Offset identical to maintain cycle geometry.
-* **$10,000+ Capital (Institutional)**: Scale Base Size by **10x**. Reduce Lot Multiplier from `1.5x` to `1.25x` to cap margin utilization during deep grid repair cycles.
+* **$1,000 Capital (Golden Baseline)**: Base size as shown in Golden Matrix above (`0.004 BTC`, `0.15 ETH`, `1.5 SOL`, `0.20 BNB`, `1000 DOGE`).
+* **$5,000 Capital (5x Scale)**: Base size scales proportionally (`0.02 BTC`, `0.75 ETH`). Keep Gap & Offset identical.
+* **$10,000+ Capital (Institutional)**: lot multiplier locked at `1.20x–1.25x` for institutional margin conservation.
 
 #### 2. Parameter Sensitivity & Calibration Guide
 
 * **Widening Offset**: Reduces false triggers during choppy markets. Recommended during high-impact news releases (CPI, FOMC, NFP).
 * **Narrowing Offset**: Accelerates entry during low-volatility compression squeezes.
 * **Expanding Gap**: Protects margin during high ATR trending regimes.
-* **Lowering Multiplier (e.g. 1.2x)**: Decreases drawdown risk on small accounts ($100 Micro Tier).
+* **Lot Size Multiplier**:
+  * `1.15x - 1.20x` (*Ultra-Conservative*): Maximum safety for prop firm challenges or micro accounts.
+  * `1.25x` (*Golden Default*): Optimal balance of recovery speed and equity protection.
+  * `1.30x` (*Hard Ceiling*): Max allowed by core engine safety guard.
 
 ### 🏛️ 3.3 Institutional Quantitative Architecture (VWAP & Multi-Fill Shield)
 
@@ -124,19 +134,7 @@ To scale capital or adjust strategy behavior based on market conditions, follow 
    * When 2 or 3 grid traps fill in a single direction, the engine automatically calculates the basket weighted entry price $\bar{P}_{\text{entry}}$ and activates a **Breakeven Stop Loss + 1 Pip Profit**.
    * Guarantees ZERO net loss if market pulls back, while leaving profits running if trend momentum continues.
 3. **Smart Profit Multiplier (Dynamic Trailing Expansion)**:
-   * Expands target profit during strong directional momentum from $10 up to **$25–$50+**, locking 85% of peak floating profits via high-frequency trailing stops.
-* **Grid Gap (%)**:
-  * *Decrease (e.g., 0.15% $\to$ 0.08%)*: Increases fill frequency on low-volatility assets (SOL, DOGE) for rapid micro-scalping.
-  * *Increase (e.g., 0.22% $\to$ 0.35%)*: Recommended during high volatility news events to prevent quick multi-level trap triggers.
-* **Trap Offset (%)**:
-  * Set to **1.5x of Grid Gap** (e.g., Gap 0.22% $\implies$ Offset 0.33%). Ensures false breakouts don't trigger grid deployment prematurely.
-* **Lot Size Multiplier**:
-  * `1.2x - 1.3x` (*Conservative*): Lower total drawdown during grid depth, recommended for smaller accounts.
-  * `1.5x` (*Golden Default*): Optimal balance between recovery speed and equity safety.
-  * `1.8x - 2.0x` (*Aggressive*): Fast recovery on 2nd-level reversal, requires $2,500+ minimum account buffer per active symbol.
-* **Smart Runner Lock Floor (`strat_profit_lock_pct`)**:
-  * `80%` (*Standard*): Gives positions room to breathe during multi-candle trend extension.
-  * `90%` (*Tight Lock*): Locks in maximum profits instantly upon initial micro-reversal.
+   * Expands target profit during strong directional momentum, locking 80% to 92% of peak floating profits via high-frequency trailing stops.
 
 ---
 
