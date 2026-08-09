@@ -58,6 +58,21 @@ def save_bot_state():
     except Exception as e:
         print(f"Notice: bot_state.pkl save notice: {e}")
 
+def load_saved_bot_running_state() -> Dict[str, bool]:
+    """Loads saved bot running state from bot_state.pkl to persist running status across browser refreshes."""
+    saved_status = {}
+    try:
+        state_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bot_state.pkl")
+        if os.path.exists(state_path):
+            with open(state_path, "rb") as f:
+                state_data = pickle.load(f)
+                markets_data = state_data.get("markets", {})
+                for sym_code, m_info in markets_data.items():
+                    saved_status[sym_code] = bool(m_info.get("running", False))
+    except Exception as e:
+        print(f"Notice: bot_state.pkl load notice: {e}")
+    return saved_status
+
 # ==============================================================================
 #  1. IMPORTS & STREAMLIT PAGE CONFIGURATION
 # ==============================================================================
@@ -113,6 +128,8 @@ _golden_sweet_spots = {
     "DOGEUSDT": {"gap": 0.07, "offset": 0.07, "size": 100.0, "tp": 10.0, "mult": 1.5},  # DOGE 0.07% Ultra-Aggressive (100% Win Rate)
 }
 
+_saved_running_map = load_saved_bot_running_state()
+
 for sym in _symbols:
     if sym not in st.session_state.markets:
         magic = get_symbol_magic_number(sym)
@@ -133,15 +150,25 @@ for sym in _symbols:
             target_profit=g_cfg["tp"],
             is_percent=True,
             max_cycle_duration=float("inf"),
-            auto_restart=False,
+            auto_restart=True,
             use_auto_reading=True  # Golden Sweet Spot Auto Mode ENABLED by default
         )
         bot.max_cycle_duration = float("inf")
         init_px = get_default_price(sym)
+        
+        # Auto-detect if pair has saved running state OR active positions/pending orders on MT5 broker
+        has_active_orders = bool(brk and (len(getattr(brk, "open_positions", {})) > 0 or len(getattr(brk, "pending_orders", {})) > 0))
+        is_running = _saved_running_map.get(sym, False) or has_active_orders
+        
+        if is_running:
+            bot.auto_restart = True
+            if has_active_orders:
+                bot.deployed = True
+
         st.session_state.markets[sym] = {
             "broker": brk,
             "bot": bot,
-            "running": False,  # Manual start only - no pair auto-starts by default
+            "running": is_running,
             "last_price": init_px,
             "price_history": [(time.time(), init_px)]
         }
@@ -464,12 +491,14 @@ with tab_desk:
                     _m_item["bot"].deploy_traps(_m_item.get("last_price", 0), time.time(), force=True)
                 except Exception:
                     pass
+            save_bot_state()
             st.toast("Started all 6 pairs in Auto Mode!")
             st.rerun()
     with tb_c2:
         if st.button("⏹️ PAUSE ALL", use_container_width=True):
             for _m_item in st.session_state.markets.values():
                 _m_item["running"] = False
+            save_bot_state()
             st.toast("Paused all pairs.")
             st.rerun()
     with tb_c3:
@@ -621,10 +650,12 @@ with tab_desk:
                                     bot.deploy_traps(sym_p, time.time(), force=True)
                                 except Exception:
                                     pass
+                                save_bot_state()
                                 st.rerun()
                         else:
                             if st.button("⏹️ STOP", key=f"btn_stop_{sym_code}", use_container_width=True):
                                 m_data["running"] = False
+                                save_bot_state()
                                 st.rerun()
 
                     st.markdown("<hr style='border-color:#27272a;margin:6px 0 10px'/>", unsafe_allow_html=True)
