@@ -2054,13 +2054,13 @@ class BreakoutGridBot:
 
             self.current_cycle_id += 1
 
-            # FIX 4: Clear runner mode BEFORE calling deploy_traps so the runner guard
-            # inside deploy_traps doesn't block the fresh grid after a cycle exit.
+            # Clear runner mode & exit cooldown BEFORE calling deploy_traps so fresh grid is deployed INSTANTLY
             self.in_runner_mode = False
+            self._runner_exit_cooldown_until = 0.0
 
             if self.auto_restart:
                 # Instantly deploy new traps at the new current price
-                self.deploy_traps(current_price, timestamp)
+                self.deploy_traps(current_price, timestamp, force=True)
             else:
                 self.deployed = False
 
