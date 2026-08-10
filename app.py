@@ -871,9 +871,11 @@ with tab_desk:
                                 step=1.0, key=f"trail_d_{sym_code}", help=f"1 pip=${pip_size}"
                             )
                         with r_c3:
+                            is_auto_mode = getattr(bot, "use_auto_reading", False)
                             n_oco = st.toggle("🔗 OCO Cancel Opposite",
-                                value=bool(getattr(bot, "cancel_opposite_on_trigger", False)),
-                                key=f"oco_{sym_code}", help="Cancel opposite side when a trap fills")
+                                value=False if is_auto_mode else bool(getattr(bot, "cancel_opposite_on_trigger", False)),
+                                disabled=is_auto_mode,
+                                key=f"oco_{sym_code}", help="OCO is disabled in Auto Mode to preserve dual-sided hedging")
                             n_be  = st.toggle("🛡️ Breakeven Guard",
                                 value=bool(getattr(bot, "use_breakeven", True)),
                                 key=f"be_{sym_code}", help="Move stop to entry at 50% target")

@@ -1015,8 +1015,11 @@ class BreakoutGridBot:
                     self.grid_gap = eval_res["dynamic_gap_pct"]
                 if "buy_offset_pct" in eval_res:
                     self.trap_offset = eval_res["buy_offset_pct"]
-                # Auto Mode Enhancements: Preserve dual-sided traps by default (OCO OFF) & set directional trap mode
-                self.cancel_opposite_on_trigger = getattr(self, "cancel_opposite_on_trigger", False)
+                # Auto Mode Enhancements: Force OCO OFF completely in Auto Mode to preserve dual-sided hedging
+                if getattr(self, "use_auto_reading", False):
+                    self.cancel_opposite_on_trigger = False
+                else:
+                    self.cancel_opposite_on_trigger = getattr(self, "cancel_opposite_on_trigger", False)
                 self.unidirectional_mode = eval_res.get("unidirectional_mode", "DUAL")
 
                 # Store latest evaluation for UI display
@@ -1293,9 +1296,8 @@ class BreakoutGridBot:
         existing_buy_levels = [o.trigger_price for o in buy_pending] + [p.entry_price for p in buy_open]
         existing_sell_levels = [o.trigger_price for o in sell_pending] + [p.entry_price for p in sell_open]
 
-        # OCO Mode Guard: If cancel_opposite_on_trigger is enabled and positions are open in ONE direction,
-        # DO NOT repair or place opposite trap orders to prevent 10-level double-sided hedge lock!
-        cancel_opp = getattr(self, "cancel_opposite_on_trigger", False)
+        # OCO Mode Guard: Disabled in Auto Mode to preserve dual-sided hedging.
+        cancel_opp = getattr(self, "cancel_opposite_on_trigger", False) and not getattr(self, "use_auto_reading", False)
         allow_buy_repair = True
         allow_sell_repair = True
 
@@ -1654,9 +1656,8 @@ class BreakoutGridBot:
             avg_delta_pct = (avg_delta / current_price * 100.0) if current_price > 0 else 0.0
 
         # SMART DYNAMIC SAFETY OCO SHIELD ENGINE:
-        # Keeps opposite traps live in MT5 to preserve dual-sided hedging on market reversals,
-        # OCO sweeping only occurs if cancel_opposite_on_trigger is explicitly enabled OR 4+ levels fill!
-        cancel_opp = getattr(self, "cancel_opposite_on_trigger", False)
+        # Keeps opposite traps live in MT5 to preserve dual-sided hedging on market reversals. Disabled in Auto Mode.
+        cancel_opp = getattr(self, "cancel_opposite_on_trigger", False) and not getattr(self, "use_auto_reading", False)
         
         num_open_positions = len(self.broker.open_positions)
         
@@ -1756,6 +1757,7 @@ class BreakoutGridBot:
         momentum_scalp_hit = False
         wvap_exit_hit = False
         instant_counter_flip_hit = False
+        ranging_pnl_harvest_hit = False
         single_fill_scalp_hit = False
         top_bottom_reversal_hit = False
 
