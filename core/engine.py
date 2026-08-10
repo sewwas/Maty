@@ -897,7 +897,7 @@ class BreakoutGridBot:
             self._is_deploying = False
             return
 
-        if not force and timestamp < getattr(self, "_last_deploy_error_time", 0.0) + 60.0:
+        if not force and timestamp < getattr(self, "_last_deploy_error_time", 0.0) + 3.0:
             self._is_deploying = False
             return
 
@@ -1176,15 +1176,15 @@ class BreakoutGridBot:
             # Active trade in progress — do NOT spawn new traps in front of moving price to prevent stacking
             return 0
 
-        # Deploy & Repair Backoff Cooldown Guard: Skip repair if an order placement error occurred recently (within 60s)
-        if timestamp < getattr(self, "_last_deploy_error_time", 0.0) + 60.0:
+        # Deploy & Repair Backoff Cooldown Guard: Skip repair if an order placement error occurred recently (within 3s)
+        if timestamp < getattr(self, "_last_deploy_error_time", 0.0) + 3.0:
             return 0
-        if timestamp < getattr(self, "_last_repair_error_time", 0.0) + 60.0:
+        if timestamp < getattr(self, "_last_repair_error_time", 0.0) + 3.0:
             return 0
 
         # If no positions and no pending orders exist AND engine is not deployed, run a fresh deploy_traps call
         if not self.deployed and len(self.broker.pending_orders) == 0 and len(self.broker.open_positions) == 0:
-            if timestamp >= getattr(self, "_last_deploy_error_time", 0.0) + 60.0:
+            if timestamp >= getattr(self, "_last_deploy_error_time", 0.0) + 3.0:
                 self.deploy_traps(current_price, timestamp)
             return self.grid_levels * 2
 
@@ -1516,13 +1516,13 @@ class BreakoutGridBot:
         # ─────────────────────────────────────────────────────────────────────────
         # ── ULTRA-FAST 0.5s AUTOMATIC NEW CYCLE REDEPLOYMENT ─────────────────────
         if not self.deployed and self.auto_restart:
-            # 500ms Ultra-Fast Restart Cooldown (10x faster than standard 5s delay)
-            if (timestamp - getattr(self, "last_deploy_time", 0.0)) >= 0.50 and timestamp >= getattr(self, "_last_deploy_error_time", 0.0) + 60.0:
+            # 500ms Ultra-Fast Restart Cooldown
+            if (timestamp - getattr(self, "last_deploy_time", 0.0)) >= 0.50 and timestamp >= getattr(self, "_last_deploy_error_time", 0.0) + 3.0:
                 try:
-                    self.deploy_traps(current_price, timestamp, bb_width)
+                    self.deploy_traps(current_price, timestamp, bb_width, force=True)
                 except Exception as dep_err:
                     self._last_deploy_error_time = timestamp
-                    print(f"Notice: Grid deployment on pause (60s cooldown): {dep_err}")
+                    print(f"Notice: Grid deployment on pause (3s cooldown): {dep_err}")
 
         # ── DYNAMIC GRID RE-CENTERING SHIELD ─────────────────────────────────────
         # If zero open positions exist and price moves far away from pending traps (> 2x gap),
@@ -2069,9 +2069,10 @@ class BreakoutGridBot:
 
             self.current_cycle_id += 1
 
-            # Clear runner mode & exit cooldown BEFORE calling deploy_traps so fresh grid is deployed INSTANTLY
+            # Clear runner mode, exit cooldown & error timestamp BEFORE calling deploy_traps so fresh grid is deployed INSTANTLY
             self.in_runner_mode = False
             self._runner_exit_cooldown_until = 0.0
+            self._last_deploy_error_time = 0.0
 
             if self.auto_restart:
                 # Instantly deploy new traps at the new current price
