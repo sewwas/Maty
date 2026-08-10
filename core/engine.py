@@ -1146,21 +1146,24 @@ class BreakoutGridBot:
                     except Exception as err:
                         print(f"Sell trap level {i+1} notice: {err}")
 
-            # Always mark deployed = True after deployment attempt so background tick loops NEVER re-trigger wiping
-            self.deployed = True
-            self.last_deploy_time = timestamp
+            if placed_count > 0 or len(self.broker.pending_orders) > 0:
+                self.deployed = True
+                self.last_deploy_time = timestamp
+                self._last_deploy_error_time = 0.0
+            else:
+                self.deployed = False
+                self._last_deploy_error_time = timestamp
+                print(f"[{getattr(self.broker, 'symbol', 'BOT')}] Notice: 0 grid orders placed. Retrying deployment on next tick.")
+
             if hasattr(self.broker, "purge_duplicate_mt5_orders"):
                 try:
                     self.broker.purge_duplicate_mt5_orders()
                 except Exception:
                     pass
-            if placed_count == 0 and len(self.broker.pending_orders) == 0:
-                self._last_deploy_error_time = timestamp
         except Exception as e:
-            self.deployed = True
-            self.last_deploy_time = timestamp
+            self.deployed = False
             self._last_deploy_error_time = timestamp
-            print(f"Notice: Grid trap deployment notice: {e}")
+            print(f"[{getattr(self.broker, 'symbol', 'BOT')}] Grid trap deployment error: {e}")
         finally:
             self._is_deploying = False
 
