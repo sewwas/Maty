@@ -566,7 +566,7 @@ class BreakoutGridBot:
         self,
         broker: 'MT5Broker',
         symbol: str = "BTCUSDT",
-        grid_levels: int = 10,
+        grid_levels: int = 5,
         grid_gap: float = 10.0,
         trap_offset: float = 5.0,
         order_size: float = 0.01,
@@ -593,7 +593,7 @@ class BreakoutGridBot:
         use_auto_reading: bool = False
     ):
         self.broker = broker
-        self.grid_levels = min(20, max(1, int(grid_levels)))
+        self.grid_levels = min(5, max(1, int(grid_levels)))
         self.grid_gap = grid_gap
         self.trap_offset = trap_offset
         self.order_size = order_size
@@ -995,7 +995,11 @@ class BreakoutGridBot:
                 
                 self.order_size = eval_res["recommended_size"]
                 self.order_size_multiplier = eval_res["recommended_multiplier"]
-                self.grid_levels = max(10, int(eval_res["recommended_levels"]))
+                # Dynamic Exness Account Orders Limit Compliance Shield:
+                # Caps grid_levels to 5 (5 BUY + 5 SELL = 10 orders per pair) when multiple pairs run
+                # so total account pending orders stay strictly under Exness 100 limit, avoiding Retcode 10033!
+                rec_lvl = int(eval_res.get("recommended_levels", 5))
+                self.grid_levels = max(3, min(5, rec_lvl))
                 self.stop_loss = eval_res["recommended_stop_loss"]
                 if "recommended_target_profit" in eval_res:
                     self.target_profit = eval_res["recommended_target_profit"]
@@ -1133,6 +1137,10 @@ class BreakoutGridBot:
                         self.broker.place_order("BUY_STOP", trigger_price, level_size, timestamp, tp=buy_tp_px, sl=buy_sl_px)
                         placed_count += 1
                     except Exception as err:
+                        err_str = str(err)
+                        if "10033" in err_str or "Orders limit" in err_str:
+                            print(f"[{sym_name}] Exness Orders Limit reached (10033). Keeping {placed_count} active grid traps working.")
+                            break
                         print(f"Buy trap level {i+1} notice: {err}")
 
             # Place Sell Stop orders below Bid price
@@ -1144,6 +1152,10 @@ class BreakoutGridBot:
                         self.broker.place_order("SELL_STOP", trigger_price, level_size, timestamp, tp=sell_tp_px, sl=sell_sl_px)
                         placed_count += 1
                     except Exception as err:
+                        err_str = str(err)
+                        if "10033" in err_str or "Orders limit" in err_str:
+                            print(f"[{sym_name}] Exness Orders Limit reached (10033). Keeping {placed_count} active grid traps working.")
+                            break
                         print(f"Sell trap level {i+1} notice: {err}")
 
             if placed_count > 0 or len(self.broker.pending_orders) > 0:
