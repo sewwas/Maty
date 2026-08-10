@@ -161,8 +161,14 @@ class MT5Broker:
 
     @property
     def balance(self) -> float:
+        now = time.time()
+        if hasattr(self, "_acc_info_cache"):
+            acc, ts = self._acc_info_cache
+            if now - ts < 1.0 and acc:
+                return float(acc.equity)
         if self.ensure_connected():
             acc = mt5.account_info()
+            self._acc_info_cache = (acc, now)
             if acc:
                 return float(acc.equity)
         return 1000.0
@@ -332,7 +338,13 @@ class MT5Broker:
         Queries live pending orders directly from MT5 terminal for this bot's magic number or symbol,
         groups orders by price level, and immediately sends TRADE_ACTION_REMOVE to cancel any
         overlapping duplicate tickets at the exact same or close price on MT5 server.
+        Throttled to run at most once every 5 seconds for zero VPS CPU lag.
         """
+        now = time.time()
+        if hasattr(self, "_last_purge_time") and (now - self._last_purge_time < 5.0):
+            return 0
+        self._last_purge_time = now
+
         if not self.ensure_connected():
             return 0
 
