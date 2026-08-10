@@ -1522,7 +1522,27 @@ class BreakoutGridBot:
                     self.deploy_traps(current_price, timestamp, bb_width, force=True)
                 except Exception as dep_err:
                     self._last_deploy_error_time = timestamp
-                    print(f"Notice: Grid deployment on pause (3s cooldown): {dep_err}")
+        # ── MT5 EXTERNAL TP / SL CYCLE COMPLETION SHIELD ────────────────────────
+        # If open positions existed on previous tick and are now 0 (closed via MT5 Broker TP/SL):
+        # Automatically cancel stale pending traps, clear cooldowns, and deploy a fresh grid INSTANTLY!
+        had_open = getattr(self, "_prev_open_pos_count", 0)
+        cur_open = len(self.broker.open_positions)
+        self._prev_open_pos_count = cur_open
+
+        if self.deployed and had_open > 0 and cur_open == 0:
+            try:
+                self.broker.cancel_all_orders()
+            except Exception as c_err:
+                print(f"Notice: Stale pending order cleanup notice: {c_err}")
+            
+            self.in_runner_mode = False
+            self._runner_exit_cooldown_until = 0.0
+            self._last_deploy_error_time = 0.0
+            
+            if self.auto_restart:
+                self.deploy_traps(current_price, timestamp, bb_width, force=True)
+            else:
+                self.deployed = False
 
         # ── DYNAMIC GRID RE-CENTERING SHIELD ─────────────────────────────────────
         # If zero open positions exist and price moves far away from pending traps (> 2x gap),
