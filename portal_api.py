@@ -71,7 +71,14 @@ SYMBOL_SPECS = {
     "DOGEUSDT": {"icon": "🐕", "grid_gap": "0.07%", "multiplier": "1.5x", "stop_loss": "$150.00"},
 }
 
+_live_stats_cache = (None, 0.0)
+
 def get_live_bot_stats():
+    global _live_stats_cache
+    now = time.time()
+    if _live_stats_cache[0] is not None and (now - _live_stats_cache[1] < 1.0):
+        return _live_stats_cache[0]
+
     config = load_config()
     if not os.path.exists(STATE_PATH):
         return {"error": "bot_state.pkl not found"}
@@ -158,7 +165,7 @@ def get_live_bot_stats():
         }
     ]
 
-    return {
+    res = {
         "config": config,
         "aum": round(current_aum, 2),
         "total_net_pnl": round(total_net_pnl, 2),
@@ -171,6 +178,8 @@ def get_live_bot_stats():
         "recent_feed": recent_feed,
         "monthly_history": monthly_history
     }
+    _live_stats_cache = (res, time.time())
+    return res
 
 class DynamicPortalHandler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):

@@ -1448,20 +1448,17 @@ with tab_myfxbook:
 
 # VPS High-Speed Non-Blocking Execution & Ultra-Smooth UI Engine
 if any(m.get("running", False) for m in st.session_state.markets.values()):
-    # Perform 5 fast tick processing passes (200ms interval) per 1.0s UI window
-    # Ensures instant sub-second profit taking & order execution without browser DOM thrashing
-    for _ in range(5):
-        time.sleep(0.20)
-        for _sym, _m in list(st.session_state.markets.items()):
-            if _m.get("running", False):
-                try:
-                    _brk = _m["broker"]
-                    _bot = _m["bot"]
-                    _lp = get_live_price(_sym)
-                    if _lp and _lp > 0:
-                        _prev_p = _m.get("last_price", _lp)
-                        _m["last_price"] = _lp
-                        _bot.process_tick(_prev_p, _lp, time.time())
-                except Exception:
-                    pass
+    for _sym, _m in list(st.session_state.markets.items()):
+        if _m.get("running", False):
+            try:
+                _brk = _m["broker"]
+                _bot = _m["bot"]
+                _lp = get_live_price(_sym)
+                if _lp and _lp > 0:
+                    _prev_p = _m.get("last_price", _lp)
+                    _m["last_price"] = _lp
+                    _bot.process_tick(_prev_p, _lp, time.time())
+            except Exception:
+                pass
+    time.sleep(2.0)
     st.rerun()
