@@ -415,11 +415,18 @@ class MT5Broker:
 
         sym = symbol or self.symbol
         exness_symbol = self.get_exness_symbol(sym)
-        orders = mt5.orders_get(symbol=exness_symbol) if exness_symbol else None
-        if orders:
-            for o in orders:
-                req = {"action": mt5.TRADE_ACTION_REMOVE, "order": o.ticket}
-                mt5.order_send(req)
+        orders_sym = mt5.orders_get(symbol=exness_symbol) if exness_symbol else ()
+        orders_mag = mt5.orders_get(magic=self.magic_number) if hasattr(self, "magic_number") and self.magic_number else ()
+
+        all_tks = set()
+        if orders_sym:
+            for o in orders_sym: all_tks.add(o.ticket)
+        if orders_mag:
+            for o in orders_mag: all_tks.add(o.ticket)
+
+        for t in all_tks:
+            req = {"action": mt5.TRADE_ACTION_REMOVE, "order": t}
+            mt5.order_send(req)
 
         # Synchronous verification: wait up to 250ms for MT5 server to confirm order removals
         for _ in range(5):

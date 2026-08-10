@@ -2073,6 +2073,12 @@ class BreakoutGridBot:
             _pnl_before = self.broker.realized_pnl
             closed_trades = self.broker.close_all_positions(current_price, timestamp)
 
+            # Double verification wipe: Cancel any residual pending orders/stops post-exit
+            try:
+                self.broker.cancel_all_orders()
+            except Exception:
+                pass
+
             trades_count = len(closed_trades)
             cycle_pnl = sum(t["pnl"] for t in closed_trades)
             if not closed_trades:
