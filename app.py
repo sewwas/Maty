@@ -144,7 +144,7 @@ for sym in _symbols:
             symbol=sym,
             grid_gap=g_cfg["gap"],
             trap_offset=g_cfg["offset"],
-            grid_levels=5,
+            grid_levels=10,
             order_size=g_cfg["size"],
             order_size_multiplier=g_cfg["mult"],
             target_profit=g_cfg["tp"],

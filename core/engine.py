@@ -365,10 +365,10 @@ class AutoReadingEngine:
         else:
             lot_multiplier = 1.20
             
-        max_levels = 5
+        max_levels = 10
 
         # ---- 8b. SYMBOL VOLATILITY LEVEL CAP ----
-        max_levels = min(20, getattr(self, "grid_levels", 5))
+        max_levels = min(20, max(10, getattr(self, "grid_levels", 10)))
 
 
         # ---- 9. GRID GEOMETRY (Ultra-Sniper 0.07% Golden Sweet Spot) ----
@@ -566,7 +566,7 @@ class BreakoutGridBot:
         self,
         broker: 'MT5Broker',
         symbol: str = "BTCUSDT",
-        grid_levels: int = 5,
+        grid_levels: int = 10,
         grid_gap: float = 10.0,
         trap_offset: float = 5.0,
         order_size: float = 0.01,
@@ -593,7 +593,7 @@ class BreakoutGridBot:
         use_auto_reading: bool = False
     ):
         self.broker = broker
-        self.grid_levels = min(7, max(1, int(grid_levels)))
+        self.grid_levels = min(20, max(1, int(grid_levels)))
         self.grid_gap = grid_gap
         self.trap_offset = trap_offset
         self.order_size = order_size
@@ -995,7 +995,7 @@ class BreakoutGridBot:
                 
                 self.order_size = eval_res["recommended_size"]
                 self.order_size_multiplier = eval_res["recommended_multiplier"]
-                self.grid_levels = max(5, int(eval_res["recommended_levels"]))
+                self.grid_levels = max(10, int(eval_res["recommended_levels"]))
                 self.stop_loss = eval_res["recommended_stop_loss"]
                 if "recommended_target_profit" in eval_res:
                     self.target_profit = eval_res["recommended_target_profit"]
