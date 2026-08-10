@@ -495,7 +495,7 @@ class AutoReadingEngine:
         if "CONSERVATIVE" in prof_u:
             dynamic_gap = round(dynamic_gap * 1.30, 3)
             adj_size = round(adj_size * 0.75, 4)
-            max_levels = max(2, min(4, max_levels))
+            max_levels = max(5, max_levels)
             dynamic_target_profit = round(dynamic_target_profit * 0.85, 2)
             lot_multiplier = 1.15
         elif "AGGRESSIVE" in prof_u:
@@ -995,7 +995,7 @@ class BreakoutGridBot:
                 
                 self.order_size = eval_res["recommended_size"]
                 self.order_size_multiplier = eval_res["recommended_multiplier"]
-                self.grid_levels = eval_res["recommended_levels"]
+                self.grid_levels = max(5, int(eval_res["recommended_levels"]))
                 self.stop_loss = eval_res["recommended_stop_loss"]
                 if "recommended_target_profit" in eval_res:
                     self.target_profit = eval_res["recommended_target_profit"]
