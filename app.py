@@ -651,22 +651,37 @@ with tab_desk:
 
                     with hdr_c2:
                         st.markdown("<div style='height:24px'></div>", unsafe_allow_html=True)
-                        if not is_run:
-                            if st.button("▶ START", key=f"btn_start_{sym_code}", type="primary", use_container_width=True):
-                                m_data["running"]  = True
-                                bot.auto_restart   = is_auto
+                        btn_c1, btn_c2 = st.columns(2)
+                        with btn_c1:
+                            if not is_run:
+                                if st.button("▶ START", key=f"btn_start_{sym_code}", type="primary", use_container_width=True):
+                                    m_data["running"]  = True
+                                    bot.auto_restart   = is_auto
+                                    live_px = get_live_price(sym_code) or sym_p
+                                    if live_px > 0:
+                                        m_data["last_price"] = live_px
+                                    try:
+                                        bot.deploy_traps(live_px, time.time(), force=True)
+                                    except Exception:
+                                        pass
+                                    save_bot_state()
+                                    st.rerun()
+                            else:
+                                if st.button("⏹️ STOP", key=f"btn_stop_{sym_code}", use_container_width=True):
+                                    m_data["running"] = False
+                                    save_bot_state()
+                                    st.rerun()
+                        with btn_c2:
+                            if st.button("🔄 RESET", key=f"btn_reset_{sym_code}", use_container_width=True, help=f"Reset and re-center grid traps for {sym_code} at current live price"):
                                 live_px = get_live_price(sym_code) or sym_p
                                 if live_px > 0:
                                     m_data["last_price"] = live_px
                                 try:
                                     bot.deploy_traps(live_px, time.time(), force=True)
-                                except Exception:
-                                    pass
-                                save_bot_state()
-                                st.rerun()
-                        else:
-                            if st.button("⏹️ STOP", key=f"btn_stop_{sym_code}", use_container_width=True):
-                                m_data["running"] = False
+                                    bot.deployed = True
+                                    st.toast(f"🔄 {sym_code} Grid Traps Reset & Re-Centered!")
+                                except Exception as reset_err:
+                                    st.toast(f"Notice: {reset_err}")
                                 save_bot_state()
                                 st.rerun()
 
