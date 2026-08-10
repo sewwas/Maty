@@ -1,7 +1,9 @@
 import logging
 import warnings
 warnings.filterwarnings("ignore")
+warnings.filterwarnings("ignore", message=".*use_container_width.*")
 logging.getLogger("streamlit").setLevel(logging.ERROR)
+logging.getLogger("streamlit.runtime.caching").setLevel(logging.ERROR)
 
 import time
 import datetime
@@ -483,14 +485,17 @@ with tab_desk:
     tb_c1, tb_c2, tb_c3, tb_c4 = st.columns([3, 3, 3, 3])
     with tb_c1:
         if st.button("🚀 START ALL AUTO", type="primary", use_container_width=True):
-            for _m_item in st.session_state.markets.values():
+            for _s_code, _m_item in st.session_state.markets.items():
                 _m_item["running"] = True
                 _m_item["bot"].use_auto_reading = True
                 _m_item["bot"].auto_restart = True   # Auto bots self-redeploy on tick
-                try:
-                    _m_item["bot"].deploy_traps(_m_item.get("last_price", 0), time.time(), force=True)
-                except Exception:
-                    pass
+                live_px = get_live_price(_s_code) or _m_item.get("last_price", 0)
+                if live_px > 0:
+                    _m_item["last_price"] = live_px
+                    try:
+                        _m_item["bot"].deploy_traps(live_px, time.time(), force=True)
+                    except Exception:
+                        pass
             save_bot_state()
             st.toast("Started all 6 pairs in Auto Mode!")
             st.rerun()
@@ -533,7 +538,8 @@ with tab_desk:
                     m["bot"].auto_profile = "CONSERVATIVE"
                     if m.get("running"):
                         try:
-                            m["bot"].deploy_traps(m.get("last_price", 0), time.time(), force=True)
+                            live_px = get_live_price(m["bot"].symbol) or m.get("last_price", 0)
+                            m["bot"].deploy_traps(live_px, time.time(), force=True)
                         except Exception:
                             pass
                 st.toast("Applied Conservative Preset across all pairs!")
@@ -546,23 +552,25 @@ with tab_desk:
                     m["bot"].auto_profile = "BALANCED"
                     if m.get("running"):
                         try:
-                            m["bot"].deploy_traps(m.get("last_price", 0), time.time(), force=True)
+                            live_px = get_live_price(m["bot"].symbol) or m.get("last_price", 0)
+                            m["bot"].deploy_traps(live_px, time.time(), force=True)
                         except Exception:
                             pass
                 st.toast("Applied AI Balanced Preset across all pairs!")
                 st.rerun()
         with p_c3:
-            if st.button("⚡ APPLY AGGRESSIVE SCALPER", use_container_width=True):
+            if st.button("⚡ APPLY 1M ULTRA-FAST SCALPER", use_container_width=True):
                 for m in st.session_state.markets.values():
-                    m["bot"].grid_gap = 0.15
-                    m["bot"].trap_offset = 0.08
+                    m["bot"].grid_gap = 0.07
+                    m["bot"].trap_offset = 0.05
                     m["bot"].auto_profile = "AGGRESSIVE"
                     if m.get("running"):
                         try:
-                            m["bot"].deploy_traps(m.get("last_price", 0), time.time(), force=True)
+                            live_px = get_live_price(m["bot"].symbol) or m.get("last_price", 0)
+                            m["bot"].deploy_traps(live_px, time.time(), force=True)
                         except Exception:
                             pass
-                st.toast("Applied Aggressive Scalper Preset across all pairs!")
+                st.toast("Applied 1m Ultra-Fast Scalper Preset across all pairs!")
                 st.rerun()
         with p_c4:
             if st.button("🚀 TOGGLE RUNNER MODE (ALL)", use_container_width=True):
@@ -582,7 +590,7 @@ with tab_desk:
             st.rerun()
     for idx_f, s_code in enumerate(_symbols):
         with f_cols[idx_f + 1]:
-            s_short = s_code.replace("USDT", "").replace("USD", "")
+            s_short = "GOLD" if s_code in ("PAXGUSDT", "XAUUSD", "GOLD") else s_code.replace("USDT", "").replace("USD", "")
             if st.button(s_short, type="primary" if st.session_state.pair_filter == s_code else "secondary", use_container_width=True):
                 st.session_state.pair_filter = s_code
                 st.rerun()
@@ -634,7 +642,8 @@ with tab_desk:
                             bot.auto_restart    = new_auto
                             if is_run:
                                 try:
-                                    bot.deploy_traps(sym_p, time.time(), force=True)
+                                    live_px = get_live_price(sym_code) or sym_p
+                                    bot.deploy_traps(live_px, time.time(), force=True)
                                 except Exception:
                                     pass
                             st.toast(f"{sym_code} → {'AUTO 🤖' if new_auto else 'MANUAL 🖐️'}")
@@ -646,8 +655,11 @@ with tab_desk:
                             if st.button("▶ START", key=f"btn_start_{sym_code}", type="primary", use_container_width=True):
                                 m_data["running"]  = True
                                 bot.auto_restart   = is_auto
+                                live_px = get_live_price(sym_code) or sym_p
+                                if live_px > 0:
+                                    m_data["last_price"] = live_px
                                 try:
-                                    bot.deploy_traps(sym_p, time.time(), force=True)
+                                    bot.deploy_traps(live_px, time.time(), force=True)
                                 except Exception:
                                     pass
                                 save_bot_state()

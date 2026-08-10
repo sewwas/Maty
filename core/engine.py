@@ -72,7 +72,8 @@ def get_pip_size(symbol: str, current_price: float = 0.0) -> float:
     sym = (symbol or "").upper()
     try:
         import MetaTrader5 as mt5_ref
-        info = mt5_ref.symbol_info(sym)
+        sym_lookup = "XAUUSD" if any(x in sym for x in ["PAXG", "XAU", "GOLD"]) else (sym.replace("USDT", "USD") if "USDT" in sym else sym)
+        info = mt5_ref.symbol_info(sym_lookup) or mt5_ref.symbol_info(f"{sym_lookup}m") or mt5_ref.symbol_info(f"{sym_lookup}c")
         if info is not None and info.point > 0:
             if info.digits in (3, 5):
                 return info.point * 10.0
@@ -996,10 +997,17 @@ class BreakoutGridBot:
                 self.order_size = eval_res["recommended_size"]
                 self.order_size_multiplier = eval_res["recommended_multiplier"]
                 # Dynamic Exness Account Orders Limit Compliance Shield:
-                # Caps grid_levels to 5 (5 BUY + 5 SELL = 10 orders per pair) when multiple pairs run
-                # so total account pending orders stay strictly under Exness 100 limit, avoiding Retcode 10033!
+                # Caps grid_levels to stay strictly under Exness 100 account limit, avoiding Retcode 10033!
                 rec_lvl = int(eval_res.get("recommended_levels", 5))
-                self.grid_levels = max(3, min(5, rec_lvl))
+                tot_acc_orders = 0
+                if hasattr(self.broker, "get_total_account_orders_count"):
+                    tot_acc_orders = self.broker.get_total_account_orders_count()
+                if tot_acc_orders >= 75:
+                    self.grid_levels = max(3, min(3, rec_lvl))
+                elif tot_acc_orders >= 50:
+                    self.grid_levels = max(3, min(4, rec_lvl))
+                else:
+                    self.grid_levels = max(3, min(5, rec_lvl))
                 self.stop_loss = eval_res["recommended_stop_loss"]
                 if "recommended_target_profit" in eval_res:
                     self.target_profit = eval_res["recommended_target_profit"]
@@ -1125,8 +1133,7 @@ class BreakoutGridBot:
             buy_sl_px = round(bottom_sell_level - sl_buffer, digits)
             sell_sl_px = round(top_buy_level + sl_buffer, digits)
 
-            # Directional Trap Mode: DUAL by default; BUY_ONLY / SELL_ONLY when strong trend bias detected
-            unidirectional_mode = getattr(self, "unidirectional_mode", "DUAL")
+            limit_reached = False
 
             # Place Buy Stop orders above Ask price
             if unidirectional_mode in ("DUAL", "BUY_ONLY"):
@@ -1139,12 +1146,16 @@ class BreakoutGridBot:
                     except Exception as err:
                         err_str = str(err)
                         if "10033" in err_str or "Orders limit" in err_str:
-                            print(f"[{sym_name}] Exness Orders Limit reached (10033). Keeping {placed_count} active grid traps working.")
+                            limit_reached = True
+                            now_t = time.time()
+                            if now_t - getattr(self, "_last_10033_log_time", 0.0) >= 30.0:
+                                self._last_10033_log_time = now_t
+                                print(f"[{sym_name}] Exness Orders Limit reached (10033). Keeping {placed_count} active grid traps working. (Backing off 30s)")
                             break
                         print(f"Buy trap level {i+1} notice: {err}")
 
-            # Place Sell Stop orders below Bid price
-            if unidirectional_mode in ("DUAL", "SELL_ONLY"):
+            # Place Sell Stop orders below Bid price (only if account order limit has not been breached)
+            if not limit_reached and unidirectional_mode in ("DUAL", "SELL_ONLY"):
                 for i in range(self.grid_levels):
                     trigger_price = bid_ref - sell_offset_val - (i * gap_val)
                     level_size = self.calculate_level_size(self.order_size, self.order_size_multiplier, i)
@@ -1154,18 +1165,27 @@ class BreakoutGridBot:
                     except Exception as err:
                         err_str = str(err)
                         if "10033" in err_str or "Orders limit" in err_str:
-                            print(f"[{sym_name}] Exness Orders Limit reached (10033). Keeping {placed_count} active grid traps working.")
+                            limit_reached = True
+                            now_t = time.time()
+                            if now_t - getattr(self, "_last_10033_log_time", 0.0) >= 30.0:
+                                self._last_10033_log_time = now_t
+                                print(f"[{sym_name}] Exness Orders Limit reached (10033). Keeping {placed_count} active grid traps working. (Backing off 30s)")
                             break
                         print(f"Sell trap level {i+1} notice: {err}")
+
+            if limit_reached:
+                self._last_deploy_error_time = timestamp + 27.0
 
             if placed_count > 0 or len(self.broker.pending_orders) > 0:
                 self.deployed = True
                 self.last_deploy_time = timestamp
-                self._last_deploy_error_time = 0.0
+                if not limit_reached:
+                    self._last_deploy_error_time = 0.0
             else:
                 self.deployed = False
-                self._last_deploy_error_time = timestamp
-                print(f"[{getattr(self.broker, 'symbol', 'BOT')}] Notice: 0 grid orders placed. Retrying deployment on next tick.")
+                if not limit_reached:
+                    self._last_deploy_error_time = timestamp
+                    print(f"[{getattr(self.broker, 'symbol', 'BOT')}] Notice: 0 grid orders placed. Retrying deployment on next tick.")
 
             if hasattr(self.broker, "purge_duplicate_mt5_orders"):
                 try:
@@ -1991,22 +2011,31 @@ class BreakoutGridBot:
                 if len(self.price_history_ticks) >= 5 and is_reversing and float_pnl < getattr(self, "max_floating_pnl", float_pnl) * 0.85:
                     momentum_scalp_hit = True
 
-            # 7. VOLUME WEIGHTED AVERAGE COST RECOVERY EXIT (WVAP Exit on 2+ Fills)
-            # Ultra-Fast Near-Price Profit Exit: Exit INSTANTLY on any positive micro profit (>= +$0.25 USD / 25 Cents) right near current price!
+            # 7. VOLUME WEIGHTED AVERAGE COST RECOVERY & FAST MIXED-FILL EXITS
             wvap_exit_hit = False
             instant_counter_flip_hit = False
+            ranging_pnl_harvest_hit = False
 
-            if len(self.broker.open_positions) >= 2 and not self.in_runner_mode:
+            if len(self.broker.open_positions) >= 1 and not self.in_runner_mode:
                 has_dual_hedge = (len(buy_positions) > 0 and len(sell_positions) > 0)
+
+                # 7a. INSTANT MIXED-FILL FAST EXIT SHIELD (Dual-Side Fills):
+                # If both BUY & SELL positions are open (mix filled), exit IMMEDIATELY ASAP on any positive PnL (+ $0.10 USD)
+                mix_target = (10.0 if is_cent else 0.10)
+                if has_dual_hedge and float_pnl >= mix_target:
+                    instant_counter_flip_hit = True
+
+                # 7b. RANGING CHOP +PNL HARVEST SHIELD (Non-Trending Market):
+                # When market is ranging/choppy (not trending), harvest whatever positive PnL is available (+ $0.25 USD)
+                regime_name = str(getattr(self.last_auto_eval, "get", lambda k, d: d)("market_regime", "RANGING")).upper() if hasattr(self, "last_auto_eval") and isinstance(self.last_auto_eval, dict) else "RANGING"
+                if regime_name in ("RANGING", "CHOP", "REVERSAL") and float_pnl >= (25.0 if is_cent else 0.25):
+                    ranging_pnl_harvest_hit = True
+
+                # 7c. MULTI-FILL COST RECOVERY EXIT (2+ Fills):
                 min_dollar_floor = (50.0 if is_cent else 0.50)
                 asap_micro_target = friction_floor + (50.0 if is_cent else 0.50)
                 standard_wvap_target = max(min_dollar_floor, asap_micro_target)
-                
-                # 7a. INSTANT COUNTER-FILL CHOP FLIP SHIELD:
-                # Exits IMMEDIATELY ASAP as soon as net PnL achieves positive micro profit (float_pnl >= standard_wvap_target)
-                if has_dual_hedge and float_pnl >= standard_wvap_target:
-                    instant_counter_flip_hit = True
-                elif float_pnl >= standard_wvap_target:
+                if len(self.broker.open_positions) >= 2 and float_pnl >= standard_wvap_target:
                     wvap_exit_hit = True
 
             # 8. SINGLE-FILL QUICK PERCENT SCALP EXIT (Equalized for Crypto & Gold)
@@ -2039,9 +2068,10 @@ class BreakoutGridBot:
                 if (is_reversing or float_pnl >= near_miss_target) and float_pnl >= min_solid_profit:
                     top_bottom_reversal_hit = True
 
-        if target_hit or runner_hit or trailing_stop_hit or stop_loss_hit or timeout_hit or breakeven_hit or early_range_hit or prop_guard_hit or hedge_lock_hit or velocity_shield_hit or momentum_scalp_hit or wvap_exit_hit or instant_counter_flip_hit or single_fill_scalp_hit or top_bottom_reversal_hit:
-            if top_bottom_reversal_hit: reason = "TOP_BOTTOM_REVERSAL_EXIT"
-            elif instant_counter_flip_hit: reason = "INSTANT_COUNTER_FLIP_EXIT"
+        if target_hit or runner_hit or trailing_stop_hit or stop_loss_hit or timeout_hit or breakeven_hit or early_range_hit or prop_guard_hit or hedge_lock_hit or velocity_shield_hit or momentum_scalp_hit or wvap_exit_hit or instant_counter_flip_hit or single_fill_scalp_hit or top_bottom_reversal_hit or ranging_pnl_harvest_hit:
+            if instant_counter_flip_hit: reason = "MIXED_FILL_FAST_EXIT"
+            elif ranging_pnl_harvest_hit: reason = "RANGING_CHOP_PNL_HARVEST"
+            elif top_bottom_reversal_hit: reason = "TOP_BOTTOM_REVERSAL_EXIT"
             elif single_fill_scalp_hit: reason = "SINGLE_FILL_QUICK_SCALP"
             elif wvap_exit_hit:     reason = "WVAP_COST_RECOVERY"
             elif momentum_scalp_hit: reason = "MOMENTUM_SCALP_EXIT"

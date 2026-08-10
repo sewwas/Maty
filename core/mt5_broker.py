@@ -204,6 +204,19 @@ class MT5Broker:
             return abs(info.ask - info.bid)
         return 0.0
 
+    def get_total_account_orders_count(self) -> int:
+        """Returns total active pending orders + open positions across ALL symbols on MT5 account."""
+        if not self.ensure_connected():
+            return len(self.pending_orders) + len(self.open_positions)
+        try:
+            orders = mt5.orders_get()
+            positions = mt5.positions_get()
+            n_orders = len(orders) if orders else 0
+            n_positions = len(positions) if positions else 0
+            return n_orders + n_positions
+        except Exception:
+            return len(self.pending_orders) + len(self.open_positions)
+
     def get_min_stop_distance(self) -> float:
         exness_symbol = self.get_exness_symbol(self.symbol)
         info = self.get_cached_symbol_info(exness_symbol) if exness_symbol else None
@@ -416,13 +429,15 @@ class MT5Broker:
         sym = symbol or self.symbol
         exness_symbol = self.get_exness_symbol(sym)
         orders_sym = mt5.orders_get(symbol=exness_symbol) if exness_symbol else ()
-        orders_mag = mt5.orders_get(magic=self.magic_number) if hasattr(self, "magic_number") and self.magic_number else ()
 
         all_tks = set()
         if orders_sym:
-            for o in orders_sym: all_tks.add(o.ticket)
-        if orders_mag:
-            for o in orders_mag: all_tks.add(o.ticket)
+            for o in orders_sym:
+                if hasattr(self, "magic_number") and self.magic_number:
+                    if getattr(o, "magic", 0) == self.magic_number:
+                        all_tks.add(o.ticket)
+                else:
+                    all_tks.add(o.ticket)
 
         for t in all_tks:
             req = {"action": mt5.TRADE_ACTION_REMOVE, "order": t}
@@ -466,6 +481,14 @@ class MT5Broker:
         tick = mt5.symbol_info_tick(pos.symbol)
         price = (tick.bid if close_type == mt5.ORDER_TYPE_SELL else tick.ask) if tick else exit_price
 
+        symbol_info = self.get_cached_symbol_info(pos.symbol)
+        filling_mode = getattr(symbol_info, "filling_mode", 0) or 0
+        mt5_filling = mt5.ORDER_FILLING_IOC
+        if (filling_mode & mt5.ORDER_FILLING_FOK) != 0:
+            mt5_filling = mt5.ORDER_FILLING_FOK
+        elif (filling_mode & mt5.ORDER_FILLING_RETURN) != 0:
+            mt5_filling = mt5.ORDER_FILLING_RETURN
+
         req = {
             "action": mt5.TRADE_ACTION_DEAL,
             "symbol": pos.symbol,
@@ -475,10 +498,15 @@ class MT5Broker:
             "price": price,
             "magic": self.magic_number,
             "comment": "Maty Bot Exit",
-            "type_filling": mt5.ORDER_FILLING_IOC,
+            "type_filling": mt5_filling,
         }
 
         res = mt5.order_send(req)
+        if res is None or res.retcode not in [mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_PLACED]:
+            # Fallback retry with RETURN filling mode for zero-latency execution
+            req["type_filling"] = mt5.ORDER_FILLING_RETURN
+            res = mt5.order_send(req)
+
         if res and res.retcode in [mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_PLACED]:
             pnl = getattr(res, 'profit', 0.0) or pos.profit
             record = {
@@ -509,7 +537,7 @@ class MT5Broker:
         closed = []
         if positions:
             for pos in positions:
-                if pos.magic == self.magic_number:
+                if getattr(pos, "magic", 0) == self.magic_number or getattr(pos, "symbol", "") == exness_symbol:
                     pid = self.ticket_to_position_id.get(pos.ticket, f"live_{pos.ticket}")
                     rec = self.close_position(pid, exit_price, timestamp)
                     if rec:
