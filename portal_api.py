@@ -249,9 +249,15 @@ class DynamicPortalHandler(SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(json.dumps(payload).encode('utf-8'))
 
+from socketserver import ThreadingMixIn
+
+class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
+    """Handle requests in a separate thread for instant parallel loading."""
+    daemon_threads = True
+
 def run_server(port=8080):
     server_address = ('', port)
-    httpd = HTTPServer(server_address, DynamicPortalHandler)
+    httpd = ThreadedHTTPServer(server_address, DynamicPortalHandler)
     print(f"Dynamic Profity AI Portal Server running at http://localhost:{port}")
     httpd.serve_forever()
 
