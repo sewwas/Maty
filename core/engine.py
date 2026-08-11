@@ -1848,11 +1848,11 @@ class BreakoutGridBot:
             dynamic_sl_dollar = max(50.0, account_eq * (max_eq_risk_pct / 100.0) * volume_risk_scale)
             if is_cent:
                 dynamic_sl_dollar *= 100.0  # Convert USD stop loss to MT5 Cents
-            base_sl = (self.stop_loss * 100.0) if is_cent else self.stop_loss
-            min_sl_floor = (2500.0 if is_cent else 25.00)
-            effective_stop_loss = max(min_sl_floor, max(base_sl, dynamic_sl_dollar))
-            # HARD EMERGENCY BASKET FLOATING EQUITY LOSS LOCK (15% Max Equity Protection)
-            emergency_float_limit = account_eq * getattr(self, "max_basket_drawdown_pct", 0.15)
+            # Capped Dynamic Stop Loss Ceiling: Strictly caps max basket stop loss to $60.00 USD (or 6000 Cents)
+            max_sl_ceiling = (6000.0 if is_cent else 60.00)
+            effective_stop_loss = min(max_sl_ceiling, max(min_sl_floor, max(base_sl, dynamic_sl_dollar)))
+            # HARD EMERGENCY BASKET FLOATING EQUITY LOSS LOCK (10% Max Equity Protection)
+            emergency_float_limit = account_eq * getattr(self, "max_basket_drawdown_pct", 0.10)
             if is_cent:
                 emergency_float_limit *= 100.0
 
