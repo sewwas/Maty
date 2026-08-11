@@ -778,7 +778,7 @@ with tab_desk:
                               <span style="color:{bias_color};font-weight:800;font-size:0.88rem">{bias_badge_text}</span>
                             </div>
                             <div style="text-align:center">
-                              <div style="font-size:0.68rem;color:#a1a1aa;text-transform:uppercase;letter-spacing:0.5px">Today's Forecast</div>
+                              <div style="font-size:0.68rem;color:#a1a1aa;text-transform:uppercase;letter-spacing:0.5px">Real-Time Market Regime Forecast</div>
                               <span style="color:#f4f4f5;font-weight:700;font-size:0.78rem">{forecast_badge}</span>
                             </div>
                             <div style="text-align:right">
