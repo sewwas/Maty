@@ -1890,16 +1890,21 @@ class BreakoutGridBot:
             if is_strong_trend:
                 effective_target_profit *= 1.35
 
+            # CHOP / RANGING REGIME RUNNER RESTRICTION & INSTANT PROFIT TAKE ENGINE:
+            # In choppy, ranging, or dual grid markets, NEVER engage Runner Mode! Take profit immediately at target and restart fresh.
+            regime_name = str(getattr(self.last_auto_eval, "get", lambda k, d: d)("market_regime", "RANGING")).upper() if hasattr(self, "last_auto_eval") and isinstance(self.last_auto_eval, dict) else "RANGING"
+            is_choppy_regime = (regime_name in ("RANGING", "CHOP", "REVERSAL")) or (getattr(self, "unidirectional_mode", "DUAL") == "DUAL")
+
             # UNIDIRECTIONAL TREND RUNNER ACCELERATOR:
-            # When 100% Bullish Trend is confirmed (BUY_ONLY), engage Runner Mode at 75% TP threshold to ride move to the top!
-            unidirectional_mode_active = getattr(self, "unidirectional_mode", "DUAL") in ("BUY_ONLY", "SELL_ONLY")
+            # Engage Runner Mode ONLY during confirmed strong unidirectional trends (BUY_ONLY or SELL_ONLY)
+            unidirectional_mode_active = (getattr(self, "unidirectional_mode", "DUAL") in ("BUY_ONLY", "SELL_ONLY")) and not is_choppy_regime
             runner_trigger_threshold = (effective_target_profit * 0.75) if unidirectional_mode_active else effective_target_profit
 
-            if self.use_smart_trailing and float_pnl >= runner_trigger_threshold:
+            if self.use_smart_trailing and float_pnl >= runner_trigger_threshold and unidirectional_mode_active:
                 if not self.in_runner_mode:
                     self.in_runner_mode = True
                     self.max_floating_pnl = float_pnl
-                    # Immediately cancel pending traps on Target Profit reach to lock in runner gains
+                    # Immediately cancel pending traps on Runner Mode entry to lock in runner gains
                     try:
                         self.broker.cancel_all_orders()
                     except Exception as err:
