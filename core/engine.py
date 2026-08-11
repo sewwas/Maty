@@ -1652,6 +1652,7 @@ class BreakoutGridBot:
         if len(self.price_history_ticks) > 10:
             self.price_history_ticks.pop(0)
 
+        is_cent = getattr(self.broker, "is_cent_account", False)
         avg_delta = 0.0
         avg_delta_pct = 0.0
         is_reversing = False
@@ -1850,8 +1851,8 @@ class BreakoutGridBot:
             volume_risk_scale = 1.0 + (max(0, num_open - 1) * 0.25)
             
             dynamic_sl_dollar = max(50.0, account_eq * (max_eq_risk_pct / 100.0) * volume_risk_scale)
-            if is_cent:
-                dynamic_sl_dollar *= 100.0  # Convert USD stop loss to MT5 Cents
+            base_sl = (self.stop_loss * 100.0) if is_cent else self.stop_loss
+            min_sl_floor = (2500.0 if is_cent else 25.00)
             # Capped Dynamic Stop Loss Ceiling: Strictly caps max basket stop loss to $60.00 USD (or 6000 Cents)
             max_sl_ceiling = (6000.0 if is_cent else 60.00)
             effective_stop_loss = min(max_sl_ceiling, max(min_sl_floor, max(base_sl, dynamic_sl_dollar)))
