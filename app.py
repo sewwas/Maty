@@ -714,16 +714,40 @@ with tab_desk:
                             st.toast(f"{sym_code} Auto Profile → {new_prof}")
                             st.rerun()
 
-                        # Pull live eval data if available
+                        # Pull live eval data & telemetry if available
                         ev = getattr(bot, "last_auto_eval", None) or {}
-                        regime      = ev.get("regime", "RANGING")
-                        confidence  = ev.get("confidence_score", 0.0)
+                        regime      = ev.get("regime", ev.get("market_regime", "RANGING"))
+                        confidence  = ev.get("confidence_score", 85.0)
                         dyn_gap     = ev.get("dynamic_gap_pct", bot.grid_gap)
                         buy_off     = ev.get("buy_offset_pct",  bot.trap_offset)
                         sell_off    = ev.get("sell_offset_pct", bot.trap_offset)
                         auto_levels = ev.get("recommended_levels", bot.grid_levels)
                         auto_size   = ev.get("recommended_size",   bot.order_size)
                         auto_tp     = ev.get("recommended_target_profit", bot.target_profit)
+                        
+                        comb_bias   = float(ev.get("combined_bias", getattr(bot, "_last_eval_bias", 0.0)))
+                        unidirection = str(ev.get("unidirectional_mode", getattr(bot, "unidirectional_mode", "DUAL"))).upper()
+                        ema_b       = float(ev.get("ema_trend_bias", 0.0))
+                        ob_d        = float(ev.get("ob_delta", 0.0))
+                        rsi_val     = float(ev.get("rsi", getattr(bot, "current_rsi", 50.0)))
+                        vwap_d      = float(ev.get("vwap_dev_pct", 0.0))
+
+                        # Master Control Room Bias & Forecast Classification
+                        if comb_bias >= 0.50:
+                            bias_badge_text = f"🟢 BULLISH SURGE ({comb_bias:+.2f})"
+                            forecast_badge  = "📈 BULLISH TREND EXPANSION"
+                            bias_color      = "#22c55e"
+                        elif comb_bias <= -0.50:
+                            bias_badge_text = f"🔴 BEARISH SURGE ({comb_bias:+.2f})"
+                            forecast_badge  = "📉 BEARISH TREND EXPANSION"
+                            bias_color      = "#ef4444"
+                        else:
+                            bias_badge_text = f"🟡 RANGING CHOP ({comb_bias:+.2f})"
+                            forecast_badge  = "↔️ SIDEWAYS RANGE CONSOLIDATION"
+                            bias_color      = "#eab308"
+
+                        unidirection_color = "#22c55e" if unidirection == "BUY_ONLY" else ("#ef4444" if unidirection == "SELL_ONLY" else "#3b82f6")
+
                         regime_cls  = "pnl-green" if regime in ("RANGING","REVERSAL") else "pnl-red"
                         conf_bar    = int(min(100, max(0, confidence)))
                         pnl_cls     = "pnl-green" if pair_pnl >= 0 else "pnl-red"
@@ -733,7 +757,7 @@ with tab_desk:
                         realized  = getattr(brk, "realized_pnl", 0.0)
                         cycles    = len(getattr(bot, "cycle_history", []))
 
-                        prof_badge = "🛡️ CONSERVATIVE MODE" if new_prof == "CONSERVATIVE" else ("⚡ AGGRESSIVE SCALPER" if new_prof == "AGGRESSIVE" else "⚖️ BALANCED AI MODE")
+                        prof_badge = "🛡️ CONSERVATIVE" if new_prof == "CONSERVATIVE" else ("⚡ AGGRESSIVE SCALPER" if new_prof == "AGGRESSIVE" else "⚖️ BALANCED AI")
                         prof_color = "#3b82f6" if new_prof == "CONSERVATIVE" else ("#ef4444" if new_prof == "AGGRESSIVE" else "#22c55e")
 
                         p_trades = len(getattr(brk, "closed_trades", []))
@@ -746,15 +770,32 @@ with tab_desk:
                         hw_buy_sl = max(0.01, sym_p - (sym_p * (sell_off / 100.0)) - (auto_levels * sym_p * (dyn_gap / 100.0)) - (hw_tp_dist * 1.5))
 
                         st.markdown(f"""
-                        <div class="telemetry-box">
-                          <div style="display:flex;justify-content:space-between;align-items:center;font-size:0.82rem;margin-bottom:8px">
-                            <span><strong>🤖 Regime:</strong> <span class="{regime_cls}">{regime}</span></span>
-                            <span style="background:{prof_color}22;color:{prof_color};border:1px solid {prof_color}44;padding:2px 8px;border-radius:4px;font-size:0.75rem;font-weight:700">{prof_badge}</span>
-                            <span><strong>Confidence:</strong> {confidence:.0f}%</span>
+                        <div class="telemetry-box" style="background:#09090b;border:1px solid #27272a;border-radius:8px;padding:12px;margin-bottom:10px">
+                          <!-- MASTER CONTROL ROOM HEADER: REALTIME BIAS & FORECAST -->
+                          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;background:#18181b;padding:8px 10px;border-radius:6px;border:1px solid #27272a">
+                            <div>
+                              <div style="font-size:0.68rem;color:#a1a1aa;text-transform:uppercase;letter-spacing:0.5px">Real-Time Directional Bias</div>
+                              <span style="color:{bias_color};font-weight:800;font-size:0.88rem">{bias_badge_text}</span>
+                            </div>
+                            <div style="text-align:center">
+                              <div style="font-size:0.68rem;color:#a1a1aa;text-transform:uppercase;letter-spacing:0.5px">Today's Forecast</div>
+                              <span style="color:#f4f4f5;font-weight:700;font-size:0.78rem">{forecast_badge}</span>
+                            </div>
+                            <div style="text-align:right">
+                              <div style="font-size:0.68rem;color:#a1a1aa;text-transform:uppercase;letter-spacing:0.5px">Trap Mode</div>
+                              <span style="background:{unidirection_color}22;color:{unidirection_color};border:1px solid {unidirection_color}44;padding:2px 8px;border-radius:4px;font-size:0.75rem;font-weight:700">{unidirection}</span>
+                            </div>
                           </div>
-                          <div style="background:#27272a;border-radius:4px;height:6px;margin-bottom:10px">
-                            <div style="background:#22c55e;width:{conf_bar}%;height:6px;border-radius:4px"></div>
+
+                          <!-- INDICATOR CONFLUENCE GRID -->
+                          <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:6px;font-size:0.74rem;background:#121215;padding:6px 8px;border-radius:6px;margin-bottom:8px;border:1px solid #1f1f23">
+                            <div><span style="color:#71717a">EMA Slope:</span> <strong style="color:{'#22c55e' if ema_b>=0 else '#ef4444'}">{ema_b:+.2f}</strong></div>
+                            <div><span style="color:#71717a">DOM Delta:</span> <strong style="color:{'#22c55e' if ob_d>=0 else '#ef4444'}">{ob_d:+.2f}</strong></div>
+                            <div><span style="color:#71717a">VWAP Dev:</span> <strong>{vwap_d:.2f}%</strong></div>
+                            <div><span style="color:#71717a">RSI:</span> <strong style="color:{'#ef4444' if rsi_val>=70 else ('#22c55e' if rsi_val<=30 else '#f4f4f5')}">{rsi_val:.1f}</strong></div>
                           </div>
+
+                          <!-- GRID TELEMETRY METRICS -->
                           <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:6px;font-size:0.77rem;margin-bottom:8px">
                             <div><div style="color:#71717a">Auto Gap</div><strong>{dyn_gap:.3f}%</strong></div>
                             <div><div style="color:#71717a">Buy Offset</div><strong>{buy_off:.3f}%</strong></div>
@@ -765,6 +806,8 @@ with tab_desk:
                             <div><div style="color:#71717a">🛡️ Server TP</div><strong style="color:#22c55e">${hw_buy_tp:,.2f}</strong></div>
                             <div><div style="color:#71717a">🛡️ Server SL</div><strong style="color:#ef4444">${hw_buy_sl:,.2f}</strong></div>
                           </div>
+
+                          <!-- LIVE ENGINE STATUS BAR -->
                           <div style="display:flex;justify-content:space-between;font-size:0.79rem;border-top:1px solid #27272a;padding-top:8px">
                             <span>🟢 Active: <strong>{open_pos}</strong> pos / <strong>{pend_ord}</strong> traps</span>
                             <span>Cycles/Trades: <strong>{cycles}</strong> / <strong>{p_trades}</strong></span>
@@ -772,7 +815,7 @@ with tab_desk:
                           </div>
                           <div style="display:flex;justify-content:space-between;font-size:0.82rem;margin-top:6px">
                             <span><strong>Win Rate:</strong> <span class="pnl-green">{p_wr:.1f}%</span> ({p_wins}W/{p_trades}T)</span>
-                            <span><strong>Floating PnL:</strong> <span class="{pnl_cls}" style="font-family:JetBrains Mono,monospace">${pair_pnl:+,.2f}</span></span>
+                            <span><strong>Floating PnL:</strong> <span class="{pnl_cls}" style="font-family:JetBrains Mono,monospace;font-weight:700">${pair_pnl:+,.2f}</span></span>
                           </div>
                         </div>
                         """, unsafe_allow_html=True)
