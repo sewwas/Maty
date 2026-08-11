@@ -1679,16 +1679,16 @@ class BreakoutGridBot:
                 for order_id in opposite_traps:
                     self.broker.cancel_order(order_id)
 
-                # UNIDIRECTIONAL PULLBACK COUNTER-TREND POSITION EXIT SHIELD:
+                # UNIDIRECTIONAL PRIORITY #1 QUICK COUNTER-TREND EXIT SHIELD:
                 # If a SELL position is open during a confirmed Bullish Trend (BUY_ONLY),
-                # on ANY micro pullback or minimal loss recovery, INSTANTLY CLOSE THE SELL POSITION!
+                # on ANY positive profit (>= +$0.10), micro pullback, or minimal loss recovery, INSTANTLY CLOSE THE SELL POSITION!
                 if sell_pos_active:
                     recent_deltas = [self.price_history_ticks[i] - self.price_history_ticks[i-1] for i in range(1, len(self.price_history_ticks))] if len(getattr(self, "price_history_ticks", [])) >= 2 else []
                     is_pullback = (recent_deltas and recent_deltas[-1] < 0) or (avg_delta < 0)
                     sell_pnl = sum(getattr(p, 'profit', 0.0) for p in sell_pos_active)
                     bias_val = getattr(self, "_last_eval_bias", 0.50)
                     
-                    if is_pullback or sell_pnl >= -(1.00 if not is_cent else 100.0) or bias_val >= 0.65:
+                    if sell_pnl >= (10.0 if is_cent else 0.10) or is_pullback or sell_pnl >= -(1.00 if not is_cent else 100.0) or bias_val >= 0.65:
                         for p in sell_pos_active:
                             pid = getattr(p, 'id', getattr(p, 'ticket', None))
                             if pid:
@@ -1701,16 +1701,16 @@ class BreakoutGridBot:
                 for order_id in opposite_traps:
                     self.broker.cancel_order(order_id)
 
-                # UNIDIRECTIONAL PULLBACK COUNTER-TREND POSITION EXIT SHIELD:
+                # UNIDIRECTIONAL PRIORITY #1 QUICK COUNTER-TREND EXIT SHIELD:
                 # If a BUY position is open during a confirmed Bearish Trend (SELL_ONLY),
-                # on ANY micro pullback or minimal loss recovery, INSTANTLY CLOSE THE BUY POSITION!
+                # on ANY positive profit (>= +$0.10), micro rally, or minimal loss recovery, INSTANTLY CLOSE THE BUY POSITION!
                 if buy_pos_active:
                     recent_deltas = [self.price_history_ticks[i] - self.price_history_ticks[i-1] for i in range(1, len(self.price_history_ticks))] if len(getattr(self, "price_history_ticks", [])) >= 2 else []
                     is_pullback = (recent_deltas and recent_deltas[-1] > 0) or (avg_delta > 0)
                     buy_pnl = sum(getattr(p, 'profit', 0.0) for p in buy_pos_active)
                     bias_val = getattr(self, "_last_eval_bias", -0.50)
                     
-                    if is_pullback or buy_pnl >= -(1.00 if not is_cent else 100.0) or bias_val <= -0.65:
+                    if buy_pnl >= (10.0 if is_cent else 0.10) or is_pullback or buy_pnl >= -(1.00 if not is_cent else 100.0) or bias_val <= -0.65:
                         for p in buy_pos_active:
                             pid = getattr(p, 'id', getattr(p, 'ticket', None))
                             if pid:
