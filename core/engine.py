@@ -1999,8 +1999,11 @@ class BreakoutGridBot:
             buy_positions = [p for p in self.broker.open_positions.values() if p.type == "BUY"]
             sell_positions = [p for p in self.broker.open_positions.values() if p.type == "SELL"]
             if buy_positions and sell_positions:
-                min_dual_exit_floor = max(1.00, volume_friction_target * 0.50)
-                if float_pnl >= min_dual_exit_floor:
+                # DUAL-FILL FAST PROFIT HARVEST & FRESH START SHIELD:
+                # As soon as total combined float_pnl reaches +$1.00 USD net profit,
+                # immediately liquidate ALL dual positions, bank net cash profit, wipe pending orders, and start a 100% fresh grid cycle!
+                dual_target_floor = (100.0 if is_cent else 1.00)
+                if float_pnl >= dual_target_floor:
                     hedge_lock_hit = True
                 else:
                     # Partial Profitable Side Harvesting Shield:
