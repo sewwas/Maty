@@ -1673,11 +1673,44 @@ class BreakoutGridBot:
                 opposite_traps = [order_id for order_id, o in list(self.broker.pending_orders.items()) if o.type == "SELL_STOP"]
                 for order_id in opposite_traps:
                     self.broker.cancel_order(order_id)
+
+                # UNIDIRECTIONAL PULLBACK COUNTER-TREND POSITION EXIT SHIELD:
+                # If a SELL position is open during a confirmed Bullish Trend (BUY_ONLY),
+                # on ANY micro pullback or minimal loss recovery, INSTANTLY CLOSE THE SELL POSITION!
+                if sell_pos_active:
+                    recent_deltas = [self.price_history_ticks[i] - self.price_history_ticks[i-1] for i in range(1, len(self.price_history_ticks))] if len(getattr(self, "price_history_ticks", [])) >= 2 else []
+                    is_pullback = (recent_deltas and recent_deltas[-1] < 0) or (avg_delta < 0)
+                    sell_pnl = sum(getattr(p, 'profit', 0.0) for p in sell_pos_active)
+                    bias_val = getattr(self, "_last_eval_bias", 0.50)
+                    
+                    if is_pullback or sell_pnl >= -(1.00 if not is_cent else 100.0) or bias_val >= 0.65:
+                        for p in sell_pos_active:
+                            pid = getattr(p, 'id', getattr(p, 'ticket', None))
+                            if pid:
+                                try: self.broker.close_position(str(pid), current_price, timestamp)
+                                except Exception: pass
+
             elif (sell_pos_active and not buy_pos_active) or (unidirectional == "SELL_ONLY"):
                 # Confirmed Bearish Trend (SELL_ONLY) -> Purge all opposite BUY_STOP pending traps!
                 opposite_traps = [order_id for order_id, o in list(self.broker.pending_orders.items()) if o.type == "BUY_STOP"]
                 for order_id in opposite_traps:
                     self.broker.cancel_order(order_id)
+
+                # UNIDIRECTIONAL PULLBACK COUNTER-TREND POSITION EXIT SHIELD:
+                # If a BUY position is open during a confirmed Bearish Trend (SELL_ONLY),
+                # on ANY micro pullback or minimal loss recovery, INSTANTLY CLOSE THE BUY POSITION!
+                if buy_pos_active:
+                    recent_deltas = [self.price_history_ticks[i] - self.price_history_ticks[i-1] for i in range(1, len(self.price_history_ticks))] if len(getattr(self, "price_history_ticks", [])) >= 2 else []
+                    is_pullback = (recent_deltas and recent_deltas[-1] > 0) or (avg_delta > 0)
+                    buy_pnl = sum(getattr(p, 'profit', 0.0) for p in buy_pos_active)
+                    bias_val = getattr(self, "_last_eval_bias", -0.50)
+                    
+                    if is_pullback or buy_pnl >= -(1.00 if not is_cent else 100.0) or bias_val <= -0.65:
+                        for p in buy_pos_active:
+                            pid = getattr(p, 'id', getattr(p, 'ticket', None))
+                            if pid:
+                                try: self.broker.close_position(str(pid), current_price, timestamp)
+                                except Exception: pass
 
         # Calculate floating profit/loss
         float_pnl = self.broker.get_floating_pnl(current_price)
