@@ -1725,9 +1725,11 @@ class BreakoutGridBot:
         # execute early trend protection exit to cap drawdown at minimal loss!
         velocity_shield_hit = False
         if len(self.broker.open_positions) >= 2 and len(self.price_history_ticks) >= 5:
-            total_delta_pct = abs(self.price_history_ticks[-1] - self.price_history_ticks[0]) / self.price_history_ticks[0] * 100.0
-            if total_delta_pct >= 1.2 and float_pnl < 0:
-                velocity_shield_hit = True
+            first_tick_px = self.price_history_ticks[0]
+            if first_tick_px > 0:
+                total_delta_pct = abs(self.price_history_ticks[-1] - first_tick_px) / first_tick_px * 100.0
+                if total_delta_pct >= 1.2 and float_pnl < 0:
+                    velocity_shield_hit = True
 
         # Dynamic friction floor based on open position count to cover spread, commission & swap fees
         num_pos = len(self.broker.open_positions)
@@ -2064,12 +2066,16 @@ class BreakoutGridBot:
             if len(self.broker.open_positions) == 1 and not self.in_runner_mode:
                 open_pos = list(self.broker.open_positions.values())[0]
                 entry_px = getattr(open_pos, 'open_price', getattr(open_pos, 'price', getattr(open_pos, 'entry_price', current_price)))
-                if open_pos.type == "BUY":
-                    move_pct = (current_price - entry_px) / entry_px * 100.0
-                    is_pos_trend = (avg_delta > 0)
+                if entry_px > 0:
+                    if open_pos.type == "BUY":
+                        move_pct = (current_price - entry_px) / entry_px * 100.0
+                        is_pos_trend = (avg_delta > 0)
+                    else:
+                        move_pct = (entry_px - current_price) / entry_px * 100.0
+                        is_pos_trend = (avg_delta < 0)
                 else:
-                    move_pct = (entry_px - current_price) / entry_px * 100.0
-                    is_pos_trend = (avg_delta < 0)
+                    move_pct = 0.0
+                    is_pos_trend = False
                 
                 # Single-fill ultra-fast exit at +$1.00 USD cash profit or 0.06% move
                 fast_single_target = (100.0 if is_cent else 1.00)
