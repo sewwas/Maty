@@ -268,5 +268,6 @@ def run_high_precision_backtest(sym_name: str):
     print(f"Max Equity Drawdown : -${max_dd_usd:,.2f} USD ({max_dd_pct:.2f}%)")
     print("=" * 70)
 
+run_high_precision_backtest("XAUUSD")
 run_high_precision_backtest("BTCUSD")
 run_high_precision_backtest("ETHUSD")

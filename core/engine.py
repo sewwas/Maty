@@ -1700,15 +1700,25 @@ class BreakoutGridBot:
 
         if len(self.price_history_ticks) >= 3:
             recent_deltas = [self.price_history_ticks[i] - self.price_history_ticks[i-1] for i in range(1, len(self.price_history_ticks))]
-            # Position-aware reversal detection (detects top peak for BUY or bottom trough for SELL)
+            # Enhanced 100% Top-to-Bottom Reversal Confluence Engine:
+            # Combines consecutive tick deltas + peak price pullback ratio + RSI overbought/oversold extremes
+            max_tick_px = max(self.price_history_ticks)
+            min_tick_px = min(self.price_history_ticks)
+            top_pullback_pct = ((max_tick_px - current_price) / max_tick_px * 100.0) if max_tick_px > 0 else 0.0
+            bottom_rebound_pct = ((current_price - min_tick_px) / min_tick_px * 100.0) if min_tick_px > 0 else 0.0
+            
+            rsi_val = getattr(self, "current_rsi", 50.0)
+            is_top_peak_reversal = (recent_deltas[-1] < 0 and recent_deltas[-2] < 0) or (top_pullback_pct >= 0.04 and rsi_val >= 68.0)
+            is_bottom_trough_reversal = (recent_deltas[-1] > 0 and recent_deltas[-2] > 0) or (bottom_rebound_pct >= 0.04 and rsi_val <= 32.0)
+
             buy_pos_list = [p for p in self.broker.open_positions.values() if p.type == "BUY"]
             sell_pos_list = [p for p in self.broker.open_positions.values() if p.type == "SELL"]
             if buy_pos_list and not sell_pos_list:
-                is_reversing = (recent_deltas[-1] < 0 and recent_deltas[-2] < 0)
+                is_reversing = is_top_peak_reversal
             elif sell_pos_list and not buy_pos_list:
-                is_reversing = (recent_deltas[-1] > 0 and recent_deltas[-2] > 0)
+                is_reversing = is_bottom_trough_reversal
             else:
-                is_reversing = (recent_deltas[-1] < 0 and recent_deltas[-2] < 0)
+                is_reversing = is_top_peak_reversal or is_bottom_trough_reversal
 
         # Velocity Circuit Breaker (Black Swan Trend Shield)
         # If price moves parabolically in one direction (> 1.2% move in 10 ticks) with 2+ open positions,
