@@ -1880,7 +1880,12 @@ class BreakoutGridBot:
             if is_strong_trend:
                 effective_target_profit *= 1.35
 
-            if self.use_smart_trailing and float_pnl >= effective_target_profit:
+            # UNIDIRECTIONAL TREND RUNNER ACCELERATOR:
+            # When 100% Bullish Trend is confirmed (BUY_ONLY), engage Runner Mode at 75% TP threshold to ride move to the top!
+            unidirectional_mode_active = getattr(self, "unidirectional_mode", "DUAL") in ("BUY_ONLY", "SELL_ONLY")
+            runner_trigger_threshold = (effective_target_profit * 0.75) if unidirectional_mode_active else effective_target_profit
+
+            if self.use_smart_trailing and float_pnl >= runner_trigger_threshold:
                 if not self.in_runner_mode:
                     self.in_runner_mode = True
                     self.max_floating_pnl = float_pnl
