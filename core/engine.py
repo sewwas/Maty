@@ -1082,8 +1082,8 @@ class BreakoutGridBot:
         cancel_success = False
         placement_failed = False
         try:
-            # Dual-Sided Grid Trap Architecture: ALWAYS deploy traps on BOTH sides (BUY_STOP above, SELL_STOP below)
-            unidirectional_mode = "DUAL"
+            # Unidirectional Grid Trap Architecture: BUY_ONLY when bullish bias >= +0.50, SELL_ONLY when bearish bias <= -0.50, else DUAL
+            unidirectional_mode = getattr(self, "unidirectional_mode", "DUAL")
 
             # Always cancel existing pending orders FIRST before placing new grid traps
             try:
@@ -1661,19 +1661,20 @@ class BreakoutGridBot:
         
         num_open_positions = len(self.broker.open_positions)
         
-        # OCO Sweep Trigger: Explicit user toggle ON or emergency 4+ fills trend purge
-        should_sweep_oco = cancel_opp or (num_open_positions >= 4)
-        if should_sweep_oco and num_open_positions > 0:
+        # OCO Sweep Trigger: Explicit user toggle ON, emergency 4+ fills trend purge, or 100% Confirmed Unidirectional Trend
+        unidirectional = getattr(self, "unidirectional_mode", "DUAL")
+        should_sweep_oco = cancel_opp or (num_open_positions >= 4) or (unidirectional in ("BUY_ONLY", "SELL_ONLY"))
+        if should_sweep_oco:
             buy_pos_active = [p for p in self.broker.open_positions.values() if p.type == "BUY"]
             sell_pos_active = [p for p in self.broker.open_positions.values() if p.type == "SELL"]
             
-            if buy_pos_active and not sell_pos_active:
-                # BUY positions active -> Continuously sweep and cancel all opposite SELL_STOP pending traps!
+            if (buy_pos_active and not sell_pos_active) or (unidirectional == "BUY_ONLY"):
+                # Confirmed Bullish Trend (BUY_ONLY) -> Purge all opposite SELL_STOP pending traps!
                 opposite_traps = [order_id for order_id, o in list(self.broker.pending_orders.items()) if o.type == "SELL_STOP"]
                 for order_id in opposite_traps:
                     self.broker.cancel_order(order_id)
-            elif sell_pos_active and not buy_pos_active:
-                # SELL positions active -> Continuously sweep and cancel all opposite BUY_STOP pending traps!
+            elif (sell_pos_active and not buy_pos_active) or (unidirectional == "SELL_ONLY"):
+                # Confirmed Bearish Trend (SELL_ONLY) -> Purge all opposite BUY_STOP pending traps!
                 opposite_traps = [order_id for order_id, o in list(self.broker.pending_orders.items()) if o.type == "BUY_STOP"]
                 for order_id in opposite_traps:
                     self.broker.cancel_order(order_id)
