@@ -1935,12 +1935,17 @@ class BreakoutGridBot:
                 if float_pnl >= target_floor:
                     early_range_hit = True
 
-            # 5. HEDGE-LOCK UN-LOCK CHECK (When positions exist in BOTH directions)
+            # 5. STRANDED LEG NET-PROFIT OFFSET HARVEST & INSTANT FRESH START ENGINE
+            # When positions exist in BOTH directions (BUY positions + stranded SELL positions),
+            # as soon as total combined float_pnl reaches +$1.00 USD net profit (or volume_friction_target),
+            # trigger immediate basket liquidation to eliminate the stranded SELL position at ZERO NET LOSS
+            # and start a 100% fresh grid cycle!
             hedge_lock_hit = False
             buy_positions = [p for p in self.broker.open_positions.values() if p.type == "BUY"]
             sell_positions = [p for p in self.broker.open_positions.values() if p.type == "SELL"]
             if buy_positions and sell_positions:
-                if float_pnl >= volume_friction_target:
+                min_dual_exit_floor = max(1.00, volume_friction_target * 0.50)
+                if float_pnl >= min_dual_exit_floor:
                     hedge_lock_hit = True
                 else:
                     # Partial Profitable Side Harvesting Shield:
