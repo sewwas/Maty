@@ -1025,9 +1025,14 @@ class BreakoutGridBot:
                 # Store latest evaluation for UI display
                 self.last_auto_eval = eval_res
                 
+                # Dynamic ATR Volatility-Adaptive Gap Scaling:
+                # During high volatility sessions (ATR > 0.35% of price), expand grid gap by 1.25x for optimal trap spacing
+                atr_val = getattr(self, "current_atr", 0.0)
+                vol_gap_mult = 1.25 if (atr_val > 0 and current_price > 0 and (atr_val / current_price * 100.0) > 0.35) else 1.0
+
                 buy_offset_val = current_price * (eval_res["buy_offset_pct"] / 100.0)
                 sell_offset_val = current_price * (eval_res["sell_offset_pct"] / 100.0)
-                gap_val = current_price * (eval_res["dynamic_gap_pct"] / 100.0)
+                gap_val = current_price * (eval_res["dynamic_gap_pct"] / 100.0) * vol_gap_mult
 
             except Exception as auto_err:
                 print(f"Auto-Reading execution notice: {auto_err}")
@@ -2151,9 +2156,13 @@ class BreakoutGridBot:
             elif stop_loss_hit:     reason = "STOP_LOSS"
             else:                   reason = "TIMEOUT"
             
-            # Reset breakeven & runner state for next cycle
+            # Reset breakeven, runner state & peak memory for next cycle
             self.breakeven_activated = False
             self.ratchet_floor = 0.0
+            self.max_floating_pnl = 0.0
+            if hasattr(self, "price_history_ticks") and isinstance(self.price_history_ticks, list):
+                self.price_history_ticks.clear()
+
             # If exiting from Runner Mode, set a 10-second cooldown before next grid deploys
             if self.in_runner_mode or runner_hit:
                 self._runner_exit_cooldown_until = timestamp + 10.0
