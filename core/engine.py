@@ -1758,16 +1758,20 @@ class BreakoutGridBot:
             else:
                 is_reversing = is_top_peak_reversal or is_bottom_trough_reversal
 
-        # Velocity Circuit Breaker (Black Swan Trend Shield)
-        # If price moves parabolically in one direction (> 1.2% move in 10 ticks) with 2+ open positions,
-        # execute early trend protection exit to cap drawdown at minimal loss!
+        # ── EARLY TREND CHANGE & REVERSAL PRE-SL LIQUIDATION SHIELD ─────────────────
+        # Never wait for Stop Loss to hit!
+        # If a trend reversal occurs (is_reversing = True or strong momentum surge) while positions are in drawdown,
+        # execute an early trend protection exit to cap loss at minimal drawdown BEFORE Stop Loss is ever reached!
         velocity_shield_hit = False
-        if len(self.broker.open_positions) >= 2 and len(self.price_history_ticks) >= 5:
-            first_tick_px = self.price_history_ticks[0]
-            if first_tick_px > 0:
-                total_delta_pct = abs(self.price_history_ticks[-1] - first_tick_px) / first_tick_px * 100.0
-                if total_delta_pct >= 1.2 and float_pnl < 0:
-                    velocity_shield_hit = True
+        if len(self.broker.open_positions) >= 1:
+            if is_reversing and float_pnl < 0:
+                velocity_shield_hit = True
+            elif len(self.price_history_ticks) >= 5:
+                first_tick_px = self.price_history_ticks[0]
+                if first_tick_px > 0:
+                    total_delta_pct = abs(self.price_history_ticks[-1] - first_tick_px) / first_tick_px * 100.0
+                    if total_delta_pct >= 0.80 and float_pnl < 0:
+                        velocity_shield_hit = True
 
         # Dynamic friction floor based on open position count to cover spread, commission & swap fees
         num_pos = len(self.broker.open_positions)
