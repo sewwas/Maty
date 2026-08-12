@@ -765,7 +765,7 @@ class BreakoutGridBot:
         self.trap_offset = trap_offset
         self.order_size = order_size
         self.order_size_multiplier = min(1.30, max(1.0, float(order_size_multiplier)))
-        self.max_basket_drawdown_pct = 0.15  # Emergency 15% floating equity loss ceiling shield
+        self.max_basket_drawdown_pct = 0.05  # Emergency 5% floating equity loss ceiling shield
         self.target_profit = target_profit
         self.auto_restart = auto_restart
         self.pending_order_side_mode = pending_order_side_mode
@@ -2117,24 +2117,24 @@ class BreakoutGridBot:
                 if float_pnl <= -max_daily_loss or (daily_base - (account_eq_val + float_pnl)) >= max_daily_loss:
                     prop_guard_hit = True
 
-            # 0. PURE DYNAMIC RISK-SCALED STOP LOSS ENGINE (Zero Hardcoded Stop Loss)
-            # Dynamically scales Stop Loss based on account balance/equity and open grid basket volume
+            # 0. PURE DYNAMIC RISK-SCALED STOP LOSS ENGINE (Strict $35.00 USD Max Basket Loss Ceiling)
+            # Dynamically caps basket drawdown to $35.00 USD ($30.00 software trigger + $5 buffer)
             is_cent = getattr(self.broker, "is_cent_account", False)
             account_eq = getattr(self.broker, "balance_usd", getattr(self.broker, "account_equity", getattr(self.broker, "initial_balance", 1000.0)))
-            max_eq_risk_pct = getattr(self, "stop_loss_pct", 10.0)
+            max_eq_risk_pct = getattr(self, "stop_loss_pct", 5.0)
             
-            # Basket Volume Multiplier: 1 fill = 1.0x, 2 fills = 1.25x, 3 fills = 1.50x, 4+ fills = 1.75x
-            num_open = len(self.broker.open_positions)
-            volume_risk_scale = 1.0 + (max(0, num_open - 1) * 0.25)
-            
-            dynamic_sl_dollar = max(50.0, account_eq * (max_eq_risk_pct / 100.0) * volume_risk_scale)
+            # Strict Dynamic Basket Stop Loss Ceiling: Caps max basket stop loss to $35.00 USD (or 3500 Cents)
+            max_sl_ceiling = (3500.0 if is_cent else 35.00)
+            min_sl_floor = (1500.0 if is_cent else 15.00)
             base_sl = (self.stop_loss * 100.0) if is_cent else self.stop_loss
-            min_sl_floor = (2500.0 if is_cent else 25.00)
-            # Capped Dynamic Stop Loss Ceiling: Strictly caps max basket stop loss to $60.00 USD (or 6000 Cents)
-            max_sl_ceiling = (6000.0 if is_cent else 60.00)
-            effective_stop_loss = min(max_sl_ceiling, max(min_sl_floor, max(base_sl, dynamic_sl_dollar)))
-            # HARD EMERGENCY BASKET FLOATING EQUITY LOSS LOCK (10% Max Equity Protection)
-            emergency_float_limit = account_eq * getattr(self, "max_basket_drawdown_pct", 0.10)
+            
+            if base_sl > 0:
+                effective_stop_loss = min(max_sl_ceiling, max(min_sl_floor, base_sl))
+            else:
+                effective_stop_loss = (30.00 * 100.0) if is_cent else 30.00  # Soft trigger at -$30.00 USD
+            
+            # HARD EMERGENCY BASKET FLOATING EQUITY LOSS LOCK (5% Max Equity Protection)
+            emergency_float_limit = account_eq * getattr(self, "max_basket_drawdown_pct", 0.05)
             if is_cent:
                 emergency_float_limit *= 100.0
 
