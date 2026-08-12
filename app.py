@@ -531,11 +531,12 @@ with tab_desk:
     with st.expander("⚡ ONE-CLICK STRATEGY PRESETS & BULK MODIFIERS", expanded=False):
         p_c1, p_c2, p_c3, p_c4 = st.columns(4)
         with p_c1:
-            if st.button("🛡️ APPLY CONSERVATIVE PRESET", use_container_width=True):
+            if st.button("🛡️ CONSERVATIVE PRESET", use_container_width=True):
                 for m in st.session_state.markets.values():
                     m["bot"].grid_gap = 0.35
                     m["bot"].trap_offset = 0.20
                     m["bot"].auto_profile = "CONSERVATIVE"
+                    m["bot"].pending_order_side_mode = "AUTO_ADAPTIVE"
                     if m.get("running"):
                         try:
                             live_px = get_live_price(m["bot"].symbol) or m.get("last_price", 0)
@@ -545,11 +546,12 @@ with tab_desk:
                 st.toast("Applied Conservative Preset across all pairs!")
                 st.rerun()
         with p_c2:
-            if st.button("⚖️ APPLY AI BALANCED PRESET", use_container_width=True):
+            if st.button("⚖️ AI BALANCED PRESET", use_container_width=True):
                 for m in st.session_state.markets.values():
                     m["bot"].grid_gap = 0.30
                     m["bot"].trap_offset = 0.15
                     m["bot"].auto_profile = "BALANCED"
+                    m["bot"].pending_order_side_mode = "AUTO_ADAPTIVE"
                     if m.get("running"):
                         try:
                             live_px = get_live_price(m["bot"].symbol) or m.get("last_price", 0)
@@ -559,18 +561,19 @@ with tab_desk:
                 st.toast("Applied AI Balanced Preset across all pairs!")
                 st.rerun()
         with p_c3:
-            if st.button("⚡ APPLY 1M ULTRA-FAST SCALPER", use_container_width=True):
+            if st.button("🚀 AUTO N-MODE (1M SCALPER)", use_container_width=True):
                 for m in st.session_state.markets.values():
-                    m["bot"].grid_gap = 0.07
+                    m["bot"].grid_gap = 0.05
                     m["bot"].trap_offset = 0.05
-                    m["bot"].auto_profile = "AGGRESSIVE"
+                    m["bot"].auto_profile = "ULTRA_SCALPER"
+                    m["bot"].pending_order_side_mode = "AUTO_ADAPTIVE"
                     if m.get("running"):
                         try:
                             live_px = get_live_price(m["bot"].symbol) or m.get("last_price", 0)
                             m["bot"].deploy_traps(live_px, time.time(), force=True)
                         except Exception:
                             pass
-                st.toast("Applied 1m Ultra-Fast Scalper Preset across all pairs!")
+                st.toast("Applied Auto N-Mode (1m Ultra Scalper & Adaptive Traps) across all pairs!")
                 st.rerun()
         with p_c4:
             if st.button("🚀 TOGGLE RUNNER MODE (ALL)", use_container_width=True):
@@ -692,16 +695,24 @@ with tab_desk:
                     # ══════════════════════════════════════════════════════════
                     if is_auto:
                         cur_prof = getattr(bot, "auto_profile", "BALANCED").upper()
-                        prof_idx = 0 if "CONSERVATIVE" in cur_prof else (2 if "AGGRESSIVE" in cur_prof else 1)
+                        if "CONSERVATIVE" in cur_prof: prof_idx = 0
+                        elif "AGGRESSIVE" in cur_prof: prof_idx = 2
+                        elif "ULTRA" in cur_prof or "N_MODE" in cur_prof: prof_idx = 3
+                        else: prof_idx = 1
+
                         auto_prof = st.radio(
                             f"🤖 Auto Strategy Sub-Mode ({sym_code})",
-                            ["🛡️ CONSERVATIVE", "⚖️ BALANCED (AI)", "⚡ AGGRESSIVE SCALPER"],
+                            ["🛡️ CONSERVATIVE", "⚖️ BALANCED (AI)", "⚡ AGGRESSIVE", "🚀 AUTO N-MODE (1M SCALPER)"],
                             index=prof_idx,
                             horizontal=True,
                             key=f"auto_prof_{sym_code}",
-                            help="🛡️ CONSERVATIVE: 1.3x Gap, 0.75x Lot, tight risk | ⚖️ BALANCED: Standard AI Dynamic | ⚡ AGGRESSIVE: 0.8x Gap, 1.3x Lot, fast scalper"
+                            help="🛡️ CONSERVATIVE: 1.3x Gap, 0.75x Lot | ⚖️ BALANCED: Standard AI Dynamic | ⚡ AGGRESSIVE: 0.8x Gap, 1.3x Lot | 🚀 AUTO N-MODE: 1m Ultra-Fast Scalper (0.05% Gap)"
                         )
-                        new_prof = "CONSERVATIVE" if "CONSERVATIVE" in auto_prof else ("AGGRESSIVE" if "AGGRESSIVE" in auto_prof else "BALANCED")
+                        if "CONSERVATIVE" in auto_prof: new_prof = "CONSERVATIVE"
+                        elif "N-MODE" in auto_prof or "ULTRA" in auto_prof: new_prof = "ULTRA_SCALPER"
+                        elif "AGGRESSIVE" in auto_prof: new_prof = "AGGRESSIVE"
+                        else: new_prof = "BALANCED"
+
                         if new_prof != getattr(bot, "auto_profile", "BALANCED"):
                             bot.auto_profile = new_prof
                             bot.deployed = False
@@ -712,6 +723,31 @@ with tab_desk:
                                 except Exception:
                                     bot.deployed = True
                             st.toast(f"{sym_code} Auto Profile → {new_prof}")
+                            st.rerun()
+
+                        # 🎯 Pending Order Retention Selector
+                        cur_side_mode = getattr(bot, "pending_order_side_mode", "AUTO_ADAPTIVE").upper()
+                        side_idx = 0 if "ADAPTIVE" in cur_side_mode else (1 if "BOTH" in cur_side_mode else 2)
+                        pending_side_sel = st.selectbox(
+                            f"🎯 Pending Order Retention ({sym_code})",
+                            [
+                                "🔄 AUTO ADAPTIVE (Recommended: Both Sides in Chop / 1-Side in Trend)",
+                                "⚔️ BOTH SIDES ALWAYS (Dual Traps Always Maintained)",
+                                "🎯 TREND SIDE ONLY (Single-Side Trend Traps Only)"
+                            ],
+                            index=side_idx,
+                            key=f"pending_side_{sym_code}",
+                            help="AUTO ADAPTIVE dynamically switches based on 1m total trend. BOTH SIDES maintains dual hedging. TREND SIDE ONLY places traps only in trend direction."
+                        )
+                        new_side_mode = "AUTO_ADAPTIVE" if "ADAPTIVE" in pending_side_sel else ("BOTH_SIDES" if "BOTH" in pending_side_sel else "TREND_SIDE_ONLY")
+                        if new_side_mode != getattr(bot, "pending_order_side_mode", "AUTO_ADAPTIVE"):
+                            bot.pending_order_side_mode = new_side_mode
+                            if is_run:
+                                try:
+                                    bot.deploy_traps(sym_p, time.time(), force=True)
+                                except Exception:
+                                    pass
+                            st.toast(f"{sym_code} Pending Traps → {new_side_mode}")
                             st.rerun()
 
                         # Pull live eval data & telemetry if available

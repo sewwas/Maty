@@ -508,12 +508,31 @@ class MT5Broker:
             res = mt5.order_send(req)
 
         if res and res.retcode in [mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_PLACED]:
-            pnl = getattr(res, 'profit', 0.0) or pos.profit
+            act_exit = res.price if res.price > 0 else price
+            pnl = 0.0
+            try:
+                deals = mt5.history_deals_get(position=ticket)
+                if deals:
+                    pnl = sum(float(getattr(d, 'profit', 0.0)) + float(getattr(d, 'swap', 0.0)) + float(getattr(d, 'commission', 0.0)) for d in deals if getattr(d, 'entry', 0) in (1, 2))
+            except Exception:
+                pass
+
+            if pnl == 0.0:
+                pnl = float(getattr(pos, 'profit', 0.0))
+
+            if pnl == 0.0 and act_exit > 0 and pos.price_open > 0:
+                sym_u = str(pos.symbol).upper()
+                mult = 100.0 if "JPY" in sym_u else (100.0 if any(x in sym_u for x in ["XAU", "GOLD", "PAXG"]) else 1.0)
+                if pos.type == mt5.POSITION_TYPE_BUY:
+                    pnl = round((act_exit - pos.price_open) * pos.volume * mult, 2)
+                else:
+                    pnl = round((pos.price_open - act_exit) * pos.volume * mult, 2)
+
             record = {
                 "position_id": position_id,
                 "type": "BUY" if pos.type == mt5.POSITION_TYPE_BUY else "SELL",
                 "entry_price": pos.price_open,
-                "exit_price": res.price if res.price > 0 else price,
+                "exit_price": act_exit,
                 "size": pos.volume,
                 "pnl": pnl,
                 "entry_time": pos.time,

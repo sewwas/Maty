@@ -218,7 +218,8 @@ class AutoReadingEngine:
         tech_indicators: Optional[dict] = None,
         orderbook_depth: Optional[dict] = None,
         macro_news: Optional[List[dict]] = None,
-        auto_profile: str = "BALANCED"
+        auto_profile: str = "BALANCED",
+        pending_order_side_mode: str = "AUTO_ADAPTIVE"
     ) -> dict:
         tech = tech_indicators or {}
         ob = orderbook_depth or {}
@@ -264,13 +265,22 @@ class AutoReadingEngine:
         )
         combined_bias = max(-1.0, min(1.0, combined_bias))
 
-        # Unidirectional Trap Mode: If trend confluence score >= +0.50 -> BUY_ONLY; <= -0.50 -> SELL_ONLY; else DUAL
-        if combined_bias >= 0.50:
-            unidirectional_mode = "BUY_ONLY"
-        elif combined_bias <= -0.50:
-            unidirectional_mode = "SELL_ONLY"
-        else:
+        # Pending Order Side Retention Logic:
+        # - BOTH_SIDES: Keep pending orders always on both sides (dual traps)
+        # - TREND_SIDE_ONLY: Keep pending orders only on dominant trend side
+        # - AUTO_ADAPTIVE: Dual traps in ranging chop; single trend side in strong trend (|bias| >= 0.40)
+        side_mode = str(pending_order_side_mode or "AUTO_ADAPTIVE").upper()
+        if "BOTH" in side_mode:
             unidirectional_mode = "DUAL"
+        elif "TREND" in side_mode or "ONE" in side_mode:
+            unidirectional_mode = "BUY_ONLY" if combined_bias >= 0.0 else "SELL_ONLY"
+        else: # AUTO_ADAPTIVE
+            if combined_bias >= 0.40:
+                unidirectional_mode = "BUY_ONLY"
+            elif combined_bias <= -0.40:
+                unidirectional_mode = "SELL_ONLY"
+            else:
+                unidirectional_mode = "DUAL"
 
         # ---- 5. NEWS RISK SHIELD ----
         now_ts = time.time()
@@ -491,7 +501,7 @@ class AutoReadingEngine:
         elif any(x in clean_sym for x in ["BNB"]):
             adj_size = min(0.50, max(0.05, round(adj_size, 3)))  # Max 0.50 BNB base
 
-        # ---- 11b. AUTO STRATEGY PROFILE SCALING (CONSERVATIVE / BALANCED / AGGRESSIVE) ----
+        # ---- 11b. AUTO STRATEGY PROFILE SCALING (CONSERVATIVE / BALANCED / AGGRESSIVE / ULTRA_SCALPER) ----
         prof_u = str(auto_profile or "BALANCED").upper()
         if "CONSERVATIVE" in prof_u:
             dynamic_gap = round(dynamic_gap * 1.30, 3)
@@ -505,6 +515,13 @@ class AutoReadingEngine:
             max_levels = min(15, max_levels + 2)
             dynamic_target_profit = round(dynamic_target_profit * 1.35, 2)
             lot_multiplier = 1.35
+        elif "ULTRA" in prof_u or "N_MODE" in prof_u or "SCALPER_1M" in prof_u:
+            dynamic_gap = max(0.04, min(0.07, round(dynamic_gap * 0.65, 3)))
+            buy_offset = max(0.04, min(0.07, round(buy_offset * 0.65, 3)))
+            sell_offset = buy_offset
+            max_levels = 5
+            dynamic_target_profit = max(1.50, round(dynamic_target_profit * 0.70, 2))
+            lot_multiplier = 1.25
 
         # ---- 12. UPDATE STATE FOR REDEPLOYMENT THROTTLE ----
         self._last_eval_bias = combined_bias
@@ -518,6 +535,7 @@ class AutoReadingEngine:
             "session_name": session_name,
             "confidence_score": confidence,
             "unidirectional_mode": unidirectional_mode,
+            "pending_order_side_mode": side_mode,
             "ob_ratio": ob_ratio,
             # Bias signals
             "ema_trend_bias": ema_bias,
@@ -591,7 +609,8 @@ class BreakoutGridBot:
         base_bb_width: float = 0.005,
         adaptive_gap_min_mult: float = 0.5,
         adaptive_gap_max_mult: float = 2.5,
-        use_auto_reading: bool = False
+        use_auto_reading: bool = False,
+        pending_order_side_mode: str = "AUTO_ADAPTIVE"
     ):
         self.broker = broker
         self.grid_levels = min(5, max(1, int(grid_levels)))
@@ -602,6 +621,7 @@ class BreakoutGridBot:
         self.max_basket_drawdown_pct = 0.15  # Emergency 15% floating equity loss ceiling shield
         self.target_profit = target_profit
         self.auto_restart = auto_restart
+        self.pending_order_side_mode = pending_order_side_mode
         if spacing_mode:
             self._spacing_mode = spacing_mode
         elif is_percent:
@@ -866,6 +886,8 @@ class BreakoutGridBot:
             self.use_auto_reading = False
         if not hasattr(self, "auto_profile"):
             self.auto_profile = "BALANCED"
+        if not hasattr(self, "pending_order_side_mode"):
+            self.pending_order_side_mode = "AUTO_ADAPTIVE"
         if not hasattr(self, "auto_reading_engine"):
             self.auto_reading_engine = AutoReadingEngine()
 
@@ -991,7 +1013,8 @@ class BreakoutGridBot:
                     tech_indicators=tech,
                     orderbook_depth=ob,
                     macro_news=news,
-                    auto_profile=getattr(self, "auto_profile", "BALANCED")
+                    auto_profile=getattr(self, "auto_profile", "BALANCED"),
+                    pending_order_side_mode=getattr(self, "pending_order_side_mode", "AUTO_ADAPTIVE")
                 )
                 
                 self.order_size = eval_res["recommended_size"]
@@ -2195,6 +2218,13 @@ class BreakoutGridBot:
             _pnl_before = self.broker.realized_pnl
             closed_trades = self.broker.close_all_positions(current_price, timestamp)
 
+            # Instantly sync closed deal history from MT5 terminal to catch exact realized PnL
+            if hasattr(self.broker, "sync_history_from_mt5"):
+                try:
+                    self.broker.sync_history_from_mt5(force=True)
+                except Exception:
+                    pass
+
             # Double verification wipe: Cancel any residual pending orders/stops post-exit
             try:
                 self.broker.cancel_all_orders()
@@ -2202,22 +2232,24 @@ class BreakoutGridBot:
                 pass
 
             trades_count = len(closed_trades)
-            cycle_pnl = sum(t["pnl"] for t in closed_trades)
-            if not closed_trades:
-                # Fallback: positions may have been closed externally by MT5 or the user
-                cycle_pnl = self.broker.realized_pnl - _pnl_before
+            cycle_pnl = sum(t["pnl"] for t in closed_trades) if closed_trades else (self.broker.realized_pnl - _pnl_before)
 
-            cycle_summary = {
-                "cycle_id": self.current_cycle_id,
-                "deploy_price": self.deploy_price,
-                "exit_price": current_price,
-                "pnl": cycle_pnl,
-                "trades_count": trades_count,
-                "start_time": self.cycle_start_time,
-                "exit_time": timestamp,
-                "exit_reason": reason
-            }
-            self.cycle_history.append(cycle_summary)
+            # Prevent phantom 0-trade $0.00 records from polluting cycle history logs
+            if trades_count > 0 or abs(cycle_pnl) > 0.001:
+                cycle_summary = {
+                    "cycle_id": self.current_cycle_id,
+                    "deploy_price": self.deploy_price,
+                    "exit_price": current_price,
+                    "pnl": cycle_pnl,
+                    "trades_count": max(1, trades_count),
+                    "start_time": self.cycle_start_time,
+                    "exit_time": timestamp,
+                    "exit_reason": reason
+                }
+                self.cycle_history.append(cycle_summary)
+                self.current_cycle_id += 1
+            else:
+                cycle_summary = None
 
             # Dispatch Telegram Signal Alert if configured
             tg_token = getattr(self, "telegram_bot_token", None)
@@ -2287,7 +2319,10 @@ class BreakoutGridBot:
 
         # Build cycle history summaries
         self.cycle_history = []
-        for idx, c_trades in enumerate(cycles):
+        c_idx = 1
+        for c_trades in cycles:
+            if not c_trades or len(c_trades) == 0:
+                continue
             pnl = sum(t["pnl"] for t in c_trades)
             exit_time = c_trades[-1]["exit_time"]
             start_time = min(t["entry_time"] for t in c_trades)
