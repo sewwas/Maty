@@ -81,13 +81,13 @@ def get_live_price(symbol: str = "BTCUSDT") -> Optional[float]:
 
     if sym in _LIVE_PRICE_CACHE:
         cached_p, cached_t = _LIVE_PRICE_CACHE[sym]
-        if now - cached_t < 1.0:
+        if now - cached_t < 3.0:
             return cached_p
 
-    # 1. Try Binance API (0.3s timeout)
+    # 1. Try Binance API (0.15s ultra-fast timeout — never hangs VPS)
     try:
         url = "https://api.binance.com/api/v3/ticker/price"
-        res = requests.get(url, params={"symbol": sym}, timeout=0.3)
+        res = requests.get(url, params={"symbol": sym}, timeout=0.15)
         if res.status_code == 200:
             p = float(res.json().get("price", 0))
             if p > 0:
@@ -96,11 +96,11 @@ def get_live_price(symbol: str = "BTCUSDT") -> Optional[float]:
     except Exception:
         pass
 
-    # 2. Fallback to Coinbase API (0.3s timeout)
+    # 2. Fallback to Coinbase API (0.15s ultra-fast timeout)
     base = "PAXG" if sym == "PAXGUSDT" else sym.replace("USDT", "").replace("USD", "")
     try:
         cb_url = f"https://api.coinbase.com/v2/prices/{base}-USD/spot"
-        res = requests.get(cb_url, timeout=0.3)
+        res = requests.get(cb_url, timeout=0.15)
         if res.status_code == 200:
             p = float(res.json().get("data", {}).get("amount", 0))
             if p > 0:
@@ -441,10 +441,80 @@ def get_crypto_news(symbol: str = "BTCUSDT", limit: int = 8) -> List[dict]:
     return news_items
 
 
+def calc_choppiness_index(highs: np.ndarray, lows: np.ndarray, closes: np.ndarray, period: int = 14) -> float:
+    """
+    Calculates Choppiness Index (CI-14) (0 - 100 scale).
+    CI > 61.8 -> 100% Choppy Range Consolidation
+    CI < 38.2 -> 100% Strong Linear Trend
+    """
+    if len(closes) < period + 1:
+        return 50.0
+    tr_sum = 0.0
+    for i in range(len(closes) - period, len(closes)):
+        tr = max(highs[i] - lows[i], abs(highs[i] - closes[i-1]), abs(lows[i] - closes[i-1]))
+        tr_sum += tr
+    max_h = np.max(highs[-period:])
+    min_l = np.min(lows[-period:])
+    hl_range = max_h - min_l
+    if hl_range <= 0:
+        return 50.0
+    ci = 100.0 * (np.log10(tr_sum / hl_range) / np.log10(period))
+    return float(np.clip(ci, 0.0, 100.0))
+
+
+def calc_adx(highs: np.ndarray, lows: np.ndarray, closes: np.ndarray, period: int = 14) -> float:
+    """
+    Calculates Average Directional Index (ADX-14) (0 - 100 scale).
+    ADX > 25.0 -> Confirmed Strong Trend
+    ADX < 20.0 -> Weak / Choppy Market
+    """
+    n = len(closes)
+    if n < period * 2:
+        return 20.0
+    up_moves = []
+    down_moves = []
+    tr_list = []
+    for i in range(1, n):
+        up = highs[i] - highs[i-1]
+        down = lows[i-1] - lows[i]
+        pos_dm = up if (up > down and up > 0) else 0.0
+        neg_dm = down if (down > up and down > 0) else 0.0
+        tr = max(highs[i] - lows[i], abs(highs[i] - closes[i-1]), abs(lows[i] - closes[i-1]))
+        up_moves.append(pos_dm)
+        down_moves.append(neg_dm)
+        tr_list.append(tr)
+    
+    if len(tr_list) < period:
+        return 20.0
+
+    tr_smooth = np.mean(tr_list[:period])
+    pos_smooth = np.mean(up_moves[:period])
+    neg_smooth = np.mean(down_moves[:period])
+
+    dx_list = []
+    for i in range(period, len(tr_list)):
+        tr_smooth = tr_smooth - (tr_smooth / period) + tr_list[i]
+        pos_smooth = pos_smooth - (pos_smooth / period) + up_moves[i]
+        neg_smooth = neg_smooth - (neg_smooth / period) + down_moves[i]
+        if tr_smooth <= 0:
+            continue
+        p_di = 100.0 * (pos_smooth / tr_smooth)
+        n_di = 100.0 * (neg_smooth / tr_smooth)
+        di_sum = p_di + n_di
+        if di_sum > 0:
+            dx = 100.0 * (abs(p_di - n_di) / di_sum)
+            dx_list.append(dx)
+            
+    if not dx_list:
+        return 20.0
+    adx = np.mean(dx_list[-period:]) if len(dx_list) >= period else np.mean(dx_list)
+    return float(np.clip(adx, 0.0, 100.0))
+
+
 def calculate_technical_indicators(df_or_symbol) -> dict:
     """
-    Calculate RSI (14), ATR (14), EMA (20/50/200), Bollinger Band Squeeze %, Volume Spike,
-    and Breakout Probability Score from candle history dataframe or symbol string.
+    Calculate RSI (14), ATR (14), EMA (20/50/200), Choppiness Index (14), ADX (14),
+    Multi-Timeframe EMA Confluence (1m, 5m, 15m), BB Width, Volume Spike, and Breakout Score.
     """
     if isinstance(df_or_symbol, str):
         df = get_historical_klines(df_or_symbol, interval="1m", limit=100)
@@ -460,6 +530,11 @@ def calculate_technical_indicators(df_or_symbol) -> dict:
             "ema50": 0.0,
             "ema200": 0.0,
             "ema_trend_bias": 0.0,
+            "choppiness_index": 50.0,
+            "adx": 20.0,
+            "mtf_confluence": 50.0,
+            "ema_bias_5m": 0.0,
+            "ema_bias_15m": 0.0,
             "bb_width_pct": 0.02,
             "is_bb_squeeze": False,
             "volume_spike_mult": 1.0,
@@ -495,7 +570,11 @@ def calculate_technical_indicators(df_or_symbol) -> dict:
     atr = np.mean(tr_list[-14:]) if len(tr_list) >= 14 else (np.mean(tr_list) if len(tr_list) > 0 else 0.0)
     atr_pct = (atr / last_close * 100.0) if last_close > 0 else 0.0
 
-    # 3. Bollinger Bands (20, 2.0) & BB Width
+    # 3. Choppiness Index (CI-14) & ADX (14) Institutional Indicators
+    choppiness_index = calc_choppiness_index(highs, lows, closes, 14)
+    adx = calc_adx(highs, lows, closes, 14)
+
+    # 4. Bollinger Bands (20, 2.0) & BB Width
     period = min(20, len(closes))
     sma20 = np.mean(closes[-period:])
     std20 = np.std(closes[-period:])
@@ -504,7 +583,7 @@ def calculate_technical_indicators(df_or_symbol) -> dict:
     bb_width = (upper_band - lower_band) / sma20 if sma20 > 0 else 0.02
     is_bb_squeeze = bb_width < 0.015  # < 1.5% width indicates high compression squeeze
 
-    # 4. EMA 20, 50, 200 Calculation & Directional Trend Bias Score
+    # 5. EMA 20, 50, 200 Calculation & Directional Trend Bias Score
     def calc_ema(arr: np.ndarray, span: int) -> float:
         if len(arr) < span:
             return float(np.mean(arr))
@@ -518,11 +597,28 @@ def calculate_technical_indicators(df_or_symbol) -> dict:
     ema50 = calc_ema(closes, 50)
     ema200 = calc_ema(closes, min(200, len(closes)))
 
-    # Trend Bias Score B_trend in [-1.0, +1.0]
+    # 1m Trend Bias Score B_trend in [-1.0, +1.0]
     trend_raw = ((ema20 - ema50) / ema50 * 100.0) + ((last_close - ema200) / ema200 * 50.0) if ema50 > 0 and ema200 > 0 else 0.0
     ema_trend_bias = float(np.clip(trend_raw, -1.0, 1.0))
 
-    # 5. Volume Spike Multiplier & VWAP Calculation
+    # 6. Multi-Timeframe (5m & 15m) EMA Bias Confluence Filter
+    closes_5m = closes[::5] if len(closes) >= 10 else closes
+    closes_15m = closes[::15] if len(closes) >= 30 else closes
+    
+    ema20_5m = calc_ema(closes_5m, min(20, len(closes_5m)))
+    ema50_5m = calc_ema(closes_5m, min(50, len(closes_5m)))
+    ema_bias_5m = float(np.clip((ema20_5m - ema50_5m) / ema50_5m * 100.0, -1.0, 1.0)) if ema50_5m > 0 else 0.0
+
+    ema20_15m = calc_ema(closes_15m, min(20, len(closes_15m)))
+    ema50_15m = calc_ema(closes_15m, min(50, len(closes_15m)))
+    ema_bias_15m = float(np.clip((ema20_15m - ema50_15m) / ema50_15m * 100.0, -1.0, 1.0)) if ema50_15m > 0 else 0.0
+
+    # MTF Confluence Score (0 - 100%)
+    # 100% when 1m, 5m, and 15m trends align in the exact same direction
+    mtf_same_sign = (np.sign(ema_trend_bias) == np.sign(ema_bias_5m) == np.sign(ema_bias_15m)) and (ema_trend_bias != 0)
+    mtf_confluence = 100.0 if mtf_same_sign else (70.0 if np.sign(ema_trend_bias) == np.sign(ema_bias_5m) else 35.0)
+
+    # 7. Volume Spike Multiplier & VWAP Calculation
     vol_sma = np.mean(volumes[-period:]) if period > 0 else 1.0
     vol_last = volumes[-1]
     volume_spike_mult = (vol_last / vol_sma) if vol_sma > 0 else 1.0
@@ -533,7 +629,7 @@ def calculate_technical_indicators(df_or_symbol) -> dict:
     vwap = (np.sum(typical_prices * volumes) / total_vol) if total_vol > 0 else last_close
     vwap_deviation_pct = ((last_close - vwap) / vwap * 100.0) if vwap > 0 else 0.0
 
-    # 6. Breakout Probability Score (0 - 100)
+    # 8. Breakout Probability Score (0 - 100)
     squeeze_factor = min(40, max(0, int((0.03 - bb_width) / 0.03 * 40)))
     volume_factor = min(35, max(0, int((volume_spike_mult - 0.5) / 2.0 * 35)))
     rsi_factor = min(15, int(abs(rsi - 50.0) / 50.0 * 15))
@@ -541,7 +637,7 @@ def calculate_technical_indicators(df_or_symbol) -> dict:
     
     breakout_score = min(99, max(15, squeeze_factor + volume_factor + rsi_factor + atr_factor))
 
-    # 7. Recommended Grid Parameters derived from ATR
+    # 9. Recommended Grid Parameters derived from ATR
     recommended_gap = max(0.05, round(atr_pct * 0.35, 2))
     recommended_offset = max(0.08, round(atr_pct * 0.50, 2))
 
@@ -554,6 +650,11 @@ def calculate_technical_indicators(df_or_symbol) -> dict:
         "ema50": round(ema50, atr_prec),
         "ema200": round(ema200, atr_prec),
         "ema_trend_bias": round(ema_trend_bias, 3),
+        "choppiness_index": round(choppiness_index, 1),
+        "adx": round(adx, 1),
+        "mtf_confluence": round(mtf_confluence, 1),
+        "ema_bias_5m": round(ema_bias_5m, 3),
+        "ema_bias_15m": round(ema_bias_15m, 3),
         "vwap": round(vwap, atr_prec),
         "vwap_dev_pct": round(vwap_deviation_pct, 3),
         "bb_width_pct": round(bb_width * 100.0, 2),

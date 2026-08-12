@@ -32,13 +32,18 @@ from core.license import LicenseManager, LicenseTier
 from core.signals import send_telegram_alert, dispatch_trade_exit_signal
 from core.data import get_live_price, get_default_price, get_historical_klines, get_24h_market_stats
 
-def save_bot_state():
-    """Serializes active markets state to bot_state.pkl for Investor Portal dynamic API."""
+def save_bot_state(force: bool = False):
+    """Serializes active markets state to bot_state.pkl for Investor Portal dynamic API. Throttled to 10s for minimum RAM & disk I/O."""
     if "markets" not in st.session_state:
         return
+    now = time.time()
+    last_save = st.session_state.get("_last_bot_state_save_time", 0.0)
+    if not force and (now - last_save < 10.0):
+        return
+    st.session_state["_last_bot_state_save_time"] = now
     try:
         state_data = {
-            "timestamp": time.time(),
+            "timestamp": now,
             "markets": {}
         }
         for sym_code, m_data in st.session_state.markets.items():
@@ -60,20 +65,18 @@ def save_bot_state():
     except Exception as e:
         print(f"Notice: bot_state.pkl save notice: {e}")
 
-def load_saved_bot_running_state() -> Dict[str, bool]:
-    """Loads saved bot running state from bot_state.pkl to persist running status across browser refreshes."""
-    saved_status = {}
+def load_saved_bot_full_state() -> Dict[str, dict]:
+    """Loads saved bot state (running status, cycle history, trade history) from bot_state.pkl across session refreshes."""
+    saved_state = {}
     try:
         state_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bot_state.pkl")
         if os.path.exists(state_path):
             with open(state_path, "rb") as f:
                 state_data = pickle.load(f)
-                markets_data = state_data.get("markets", {})
-                for sym_code, m_info in markets_data.items():
-                    saved_status[sym_code] = bool(m_info.get("running", False))
+                saved_state = state_data.get("markets", {})
     except Exception as e:
         print(f"Notice: bot_state.pkl load notice: {e}")
-    return saved_status
+    return saved_state
 
 # ==============================================================================
 #  1. IMPORTS & STREAMLIT PAGE CONFIGURATION
@@ -130,7 +133,7 @@ _golden_sweet_spots = {
     "DOGEUSDT": {"gap": 0.07, "offset": 0.07, "size": 100.0, "tp": 10.0, "mult": 1.5},  # DOGE 0.07% Ultra-Aggressive (100% Win Rate)
 }
 
-_saved_running_map = load_saved_bot_running_state()
+_saved_state_map = load_saved_bot_full_state()
 
 for sym in _symbols:
     if sym not in st.session_state.markets:
@@ -158,9 +161,17 @@ for sym in _symbols:
         bot.max_cycle_duration = float("inf")
         init_px = get_default_price(sym)
         
+        # Restore saved cycle history and closed trades from bot_state.pkl if present
+        m_info_saved = _saved_state_map.get(sym, {})
+        if isinstance(m_info_saved, dict):
+            if m_info_saved.get("cycle_history"):
+                bot.cycle_history = list(m_info_saved["cycle_history"])
+            if m_info_saved.get("trade_history") and hasattr(brk, "closed_trades"):
+                brk.closed_trades = list(m_info_saved["trade_history"])
+
         # Auto-detect if pair has saved running state OR active positions/pending orders on MT5 broker
         has_active_orders = bool(brk and (len(getattr(brk, "open_positions", {})) > 0 or len(getattr(brk, "pending_orders", {})) > 0))
-        is_running = _saved_running_map.get(sym, False) or has_active_orders
+        is_running = bool(m_info_saved.get("running", False)) if isinstance(m_info_saved, dict) else has_active_orders
         
         if is_running:
             bot.auto_restart = True
@@ -182,7 +193,7 @@ st.markdown("""
 <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap');
     
-    html, body, [class*="css"] {
+    html, body, .stApp {
         font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
         background-color: #09090b !important;
         color: #f4f4f5 !important;
@@ -190,6 +201,10 @@ st.markdown("""
     
     .stApp {
         background-color: #09090b !important;
+    }
+    
+    .stMarkdown, .stText, p, span, label, h1, h2, h3, h4, h5, h6 {
+        color: #f4f4f5 !important;
     }
     
     /* Header Navbar */
@@ -317,8 +332,8 @@ for sym_code in _symbols:
     if live_p > 0:
         m_data["last_price"] = live_p
         m_data["price_history"].append((time.time(), live_p))
-        if len(m_data["price_history"]) > 300:
-            m_data["price_history"] = m_data["price_history"][-300:]
+        if len(m_data["price_history"]) > 100:
+            m_data["price_history"] = m_data["price_history"][-100:]
             
     # Execute Background Tick Pass if running
     if m_data.get("running", False):
@@ -561,19 +576,18 @@ with tab_desk:
                 st.toast("Applied AI Balanced Preset across all pairs!")
                 st.rerun()
         with p_c3:
-            if st.button("🚀 AUTO N-MODE (1M SCALPER)", use_container_width=True):
+            if st.button("⚡ APPLY 1M ULTRA-FAST SCALPER", use_container_width=True):
                 for m in st.session_state.markets.values():
-                    m["bot"].grid_gap = 0.05
+                    m["bot"].grid_gap = 0.07
                     m["bot"].trap_offset = 0.05
-                    m["bot"].auto_profile = "ULTRA_SCALPER"
-                    m["bot"].pending_order_side_mode = "AUTO_ADAPTIVE"
+                    m["bot"].auto_profile = "AGGRESSIVE"
                     if m.get("running"):
                         try:
                             live_px = get_live_price(m["bot"].symbol) or m.get("last_price", 0)
                             m["bot"].deploy_traps(live_px, time.time(), force=True)
                         except Exception:
                             pass
-                st.toast("Applied Auto N-Mode (1m Ultra Scalper & Adaptive Traps) across all pairs!")
+                st.toast("Applied 1m Ultra-Fast Scalper Preset across all pairs!")
                 st.rerun()
         with p_c4:
             if st.button("🚀 TOGGLE RUNNER MODE (ALL)", use_container_width=True):
@@ -695,24 +709,16 @@ with tab_desk:
                     # ══════════════════════════════════════════════════════════
                     if is_auto:
                         cur_prof = getattr(bot, "auto_profile", "BALANCED").upper()
-                        if "CONSERVATIVE" in cur_prof: prof_idx = 0
-                        elif "AGGRESSIVE" in cur_prof: prof_idx = 2
-                        elif "ULTRA" in cur_prof or "N_MODE" in cur_prof: prof_idx = 3
-                        else: prof_idx = 1
-
+                        prof_idx = 0 if "CONSERVATIVE" in cur_prof else (2 if "AGGRESSIVE" in cur_prof else 1)
                         auto_prof = st.radio(
                             f"🤖 Auto Strategy Sub-Mode ({sym_code})",
-                            ["🛡️ CONSERVATIVE", "⚖️ BALANCED (AI)", "⚡ AGGRESSIVE", "🚀 AUTO N-MODE (1M SCALPER)"],
+                            ["🛡️ CONSERVATIVE", "⚖️ BALANCED (AI)", "⚡ AGGRESSIVE SCALPER"],
                             index=prof_idx,
                             horizontal=True,
                             key=f"auto_prof_{sym_code}",
-                            help="🛡️ CONSERVATIVE: 1.3x Gap, 0.75x Lot | ⚖️ BALANCED: Standard AI Dynamic | ⚡ AGGRESSIVE: 0.8x Gap, 1.3x Lot | 🚀 AUTO N-MODE: 1m Ultra-Fast Scalper (0.05% Gap)"
+                            help="🛡️ CONSERVATIVE: 1.3x Gap, 0.75x Lot, tight risk | ⚖️ BALANCED: Standard AI Dynamic | ⚡ AGGRESSIVE: 0.8x Gap, 1.3x Lot, fast scalper"
                         )
-                        if "CONSERVATIVE" in auto_prof: new_prof = "CONSERVATIVE"
-                        elif "N-MODE" in auto_prof or "ULTRA" in auto_prof: new_prof = "ULTRA_SCALPER"
-                        elif "AGGRESSIVE" in auto_prof: new_prof = "AGGRESSIVE"
-                        else: new_prof = "BALANCED"
-
+                        new_prof = "CONSERVATIVE" if "CONSERVATIVE" in auto_prof else ("AGGRESSIVE" if "AGGRESSIVE" in auto_prof else "BALANCED")
                         if new_prof != getattr(bot, "auto_profile", "BALANCED"):
                             bot.auto_profile = new_prof
                             bot.deployed = False
@@ -767,6 +773,9 @@ with tab_desk:
                         ob_d        = float(ev.get("ob_delta", 0.0))
                         rsi_val     = float(ev.get("rsi", getattr(bot, "current_rsi", 50.0)))
                         vwap_d      = float(ev.get("vwap_dev_pct", 0.0))
+                        ci_val      = float(ev.get("choppiness_index", 50.0))
+                        adx_val     = float(ev.get("adx", 20.0))
+                        mtf_val     = float(ev.get("mtf_confluence", 50.0))
 
                         # Master Control Room Bias & Forecast Classification
                         if comb_bias >= 0.50:
@@ -805,6 +814,24 @@ with tab_desk:
                         hw_buy_tp = sym_p + (sym_p * (buy_off / 100.0)) + (auto_levels * sym_p * (dyn_gap / 100.0)) + hw_tp_dist
                         hw_buy_sl = max(0.01, sym_p - (sym_p * (sell_off / 100.0)) - (auto_levels * sym_p * (dyn_gap / 100.0)) - (hw_tp_dist * 1.5))
 
+                        # Top & Bottom Peak/Trough Guard Telemetry
+                        tb_status = ev.get("top_bottom_status", "NORMAL")
+                        if tb_status == "TOP_PEAK_OVERBOUGHT":
+                            tb_badge = "🔴 PEAK TOP (BUY BLOCKED)"
+                            tb_color = "#ef4444"
+                        elif tb_status == "BOTTOM_TROUGH_OVERSOLD":
+                            tb_badge = "🟢 TROUGH BOTTOM (SELL BLOCKED)"
+                            tb_color = "#22c55e"
+                        else:
+                            tb_badge = "⚖️ STABLE"
+                            tb_color = "#a1a1aa"
+
+                        # Spread Spike & Profit Ratchet Floor Telemetry
+                        spread_ratio = float(ev.get("spread_spike_ratio", 1.0))
+                        ratchet_pnl = float(getattr(bot, "ratchet_floor", 0.0))
+                        is_cent_acc = getattr(brk, "is_cent_account", False)
+                        ratchet_disp = (ratchet_pnl / 100.0) if is_cent_acc else ratchet_pnl
+
                         st.markdown(f"""
                         <div class="telemetry-box" style="background:#09090b;border:1px solid #27272a;border-radius:8px;padding:12px;margin-bottom:10px">
                           <!-- MASTER CONTROL ROOM HEADER: REALTIME BIAS & FORECAST -->
@@ -814,8 +841,8 @@ with tab_desk:
                               <span style="color:{bias_color};font-weight:800;font-size:0.88rem">{bias_badge_text}</span>
                             </div>
                             <div style="text-align:center">
-                              <div style="font-size:0.68rem;color:#a1a1aa;text-transform:uppercase;letter-spacing:0.5px">Real-Time Market Regime Forecast</div>
-                              <span style="color:#f4f4f5;font-weight:700;font-size:0.78rem">{forecast_badge}</span>
+                              <div style="font-size:0.68rem;color:#a1a1aa;text-transform:uppercase;letter-spacing:0.5px">Top & Bottom Guard</div>
+                              <span style="color:{tb_color};font-weight:700;font-size:0.78rem">{tb_badge}</span>
                             </div>
                             <div style="text-align:right">
                               <div style="font-size:0.68rem;color:#a1a1aa;text-transform:uppercase;letter-spacing:0.5px">Trap Mode</div>
@@ -824,21 +851,25 @@ with tab_desk:
                           </div>
 
                           <!-- INDICATOR CONFLUENCE GRID -->
-                          <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:6px;font-size:0.74rem;background:#121215;padding:6px 8px;border-radius:6px;margin-bottom:8px;border:1px solid #1f1f23">
+                          <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr 1fr 1fr;gap:6px;font-size:0.72rem;background:#121215;padding:6px 8px;border-radius:6px;margin-bottom:8px;border:1px solid #1f1f23">
                             <div><span style="color:#71717a">EMA Slope:</span> <strong style="color:{'#22c55e' if ema_b>=0 else '#ef4444'}">{ema_b:+.2f}</strong></div>
-                            <div><span style="color:#71717a">DOM Delta:</span> <strong style="color:{'#22c55e' if ob_d>=0 else '#ef4444'}">{ob_d:+.2f}</strong></div>
+                            <div><span style="color:#71717a">CHOP (CI):</span> <strong style="color:{'#eab308' if ci_val>=58 else '#22c55e'}">{ci_val:.1f}</strong></div>
+                            <div><span style="color:#71717a">ADX Trend:</span> <strong style="color:{'#22c55e' if adx_val>=25 else '#71717a'}">{adx_val:.1f}</strong></div>
+                            <div><span style="color:#71717a">MTF Confl:</span> <strong style="color:{'#22c55e' if mtf_val>=70 else '#eab308'}">{mtf_val:.0f}%</strong></div>
                             <div><span style="color:#71717a">VWAP Dev:</span> <strong>{vwap_d:.2f}%</strong></div>
                             <div><span style="color:#71717a">RSI:</span> <strong style="color:{'#ef4444' if rsi_val>=70 else ('#22c55e' if rsi_val<=30 else '#f4f4f5')}">{rsi_val:.1f}</strong></div>
                           </div>
 
                           <!-- GRID TELEMETRY METRICS -->
-                          <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:6px;font-size:0.77rem;margin-bottom:8px">
+                          <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr 1fr 1fr;gap:6px;font-size:0.75rem;margin-bottom:8px">
                             <div><div style="color:#71717a">Auto Gap</div><strong>{dyn_gap:.3f}%</strong></div>
                             <div><div style="color:#71717a">Buy Offset</div><strong>{buy_off:.3f}%</strong></div>
                             <div><div style="color:#71717a">Sell Offset</div><strong>{sell_off:.3f}%</strong></div>
                             <div><div style="color:#71717a">Levels</div><strong>{auto_levels}</strong></div>
                             <div><div style="color:#71717a">Lot Size</div><strong>{auto_size:.3f}</strong></div>
+                            <div><div style="color:#71717a">Spread Spike</div><strong style="color:{'#ef4444' if spread_ratio>1.5 else '#22c55e'}">{spread_ratio:.2f}x</strong></div>
                             <div><div style="color:#71717a">Target $</div><strong>${auto_tp:.2f}</strong></div>
+                            <div><div style="color:#71717a">🔒 Ratchet Floor</div><strong style="color:{'#22c55e' if ratchet_disp>0 else '#71717a'}">${ratchet_disp:.2f}</strong></div>
                             <div><div style="color:#71717a">🛡️ Server TP</div><strong style="color:#22c55e">${hw_buy_tp:,.2f}</strong></div>
                             <div><div style="color:#71717a">🛡️ Server SL</div><strong style="color:#ef4444">${hw_buy_sl:,.2f}</strong></div>
                           </div>
@@ -1144,10 +1175,16 @@ with tab_desk:
     # ── COMPREHENSIVE HISTORY & FILTERING SYSTEM ─────────────────────────────
     st.markdown("#### 📜 Completed Breakout Cycles & History Analytics")
 
-    # Collect all cycles across all pairs
+    # Collect all cycles across all pairs with 180-day MT5 deal sync
     raw_history = []
     for sym_code, m_data in st.session_state.markets.items():
         bot = m_data["bot"]
+        brk = m_data["broker"]
+        if hasattr(brk, "sync_history_from_mt5"):
+            try:
+                brk.sync_history_from_mt5(days=180)
+            except Exception:
+                pass
         if hasattr(bot, "sync_cycle_history_from_trades"):
             try:
                 bot.sync_cycle_history_from_trades()
@@ -1159,7 +1196,7 @@ with tab_desk:
             raw_history.append(rec)
 
     # Filtering Toolbar
-    flt_c1, flt_c2, flt_c3, flt_c4 = st.columns([3, 3, 3, 3])
+    flt_c1, flt_c2, flt_c3, flt_c4, flt_c5 = st.columns([2, 2, 2, 2, 2])
     with flt_c1:
         f_pair = st.selectbox(
             "🪙 Symbol Pair",
@@ -1169,7 +1206,7 @@ with tab_desk:
     with flt_c2:
         f_reason = st.selectbox(
             "🎯 Exit Reason",
-            ["ALL EXITS", "TARGET_PROFIT", "RUNNER_EXPANSION", "TRAILING_STOP", "BREAKEVEN", "STOP_LOSS", "WVAP_COST_RECOVERY", "SINGLE_FILL_QUICK_SCALP", "PROP_FIRM_GUARD", "EARLY_RANGE_EXIT"],
+            ["ALL EXITS", "TARGET_PROFIT", "COUNTER_TREND_PROFIT_HARVEST", "COUNTER_TREND_BREAKEVEN_EXIT", "RUNNER_EXPANSION", "TRAILING_STOP", "BREAKEVEN", "STOP_LOSS", "WVAP_COST_RECOVERY", "SINGLE_FILL_QUICK_SCALP", "PROP_FIRM_GUARD", "EARLY_RANGE_EXIT"],
             key="hist_flt_reason"
         )
     with flt_c3:
@@ -1183,6 +1220,12 @@ with tab_desk:
             "⏳ Sort Order",
             ["NEWEST FIRST", "OLDEST FIRST", "HIGHEST PnL", "LOWEST PnL"],
             key="hist_flt_sort"
+        )
+    with flt_c5:
+        f_limit = st.selectbox(
+            "👁️ Display Limit",
+            ["SHOW ALL (Unlimited)", "50 Rows", "100 Rows", "250 Rows", "500 Rows"],
+            key="hist_flt_limit"
         )
 
     # Apply Filters
@@ -1209,6 +1252,18 @@ with tab_desk:
     elif f_sort == "LOWEST PnL":
         filtered_list.sort(key=lambda x: float(x.get("pnl", 0)))
 
+    # Apply Display Limits
+    if "50 Rows" in f_limit:
+        display_list = filtered_list[:50]
+    elif "100 Rows" in f_limit:
+        display_list = filtered_list[:100]
+    elif "250 Rows" in f_limit:
+        display_list = filtered_list[:250]
+    elif "500 Rows" in f_limit:
+        display_list = filtered_list[:500]
+    else:
+        display_list = filtered_list
+
     # Filtered Metrics Summary
     f_total_cnt  = len(filtered_list)
     f_total_pnl  = sum(float(c.get("pnl", 0)) for c in filtered_list)
@@ -1225,7 +1280,7 @@ with tab_desk:
     st.markdown(f"""
     <div style='display:grid;grid-template-columns:1fr 1fr 1fr 1fr 1fr;gap:8px;margin:10px 0 14px'>
       <div style='background:#18181b;border:1px solid #27272a;padding:8px 12px;border-radius:6px;font-size:0.80rem'>
-        <div style='color:#71717a'>Filtered PnL</div>
+        <div style='color:#71717a'>Filtered PnL ({f_total_cnt} Cycles)</div>
         <strong class='{f_pnl_cls}' style='font-size:1.0rem'>${f_total_pnl:+,.2f}</strong>
       </div>
       <div style='background:#18181b;border:1px solid #27272a;padding:8px 12px;border-radius:6px;font-size:0.80rem'>
@@ -1248,8 +1303,19 @@ with tab_desk:
     """, unsafe_allow_html=True)
 
     if filtered_list:
+        hdr_col1, hdr_col2 = st.columns([8, 2])
+        with hdr_col1:
+            st.markdown(f"**📜 Showing {len(display_list)} of {len(filtered_list)} Completed Breakout Cycles (Total Across Account: {len(raw_history)})**")
+        with hdr_col2:
+            try:
+                df_export = pd.DataFrame(filtered_list)
+                csv_data = df_export.to_csv(index=False).encode('utf-8')
+                st.download_button("📥 Export CSV", data=csv_data, file_name="completed_cycles_history.csv", mime="text/csv", use_container_width=True)
+            except Exception:
+                pass
+
         table_rows = ""
-        for c in filtered_list:
+        for c in display_list:
             c_pnl = float(c.get("pnl", 0.0))
             pnl_cls = "pnl-green" if c_pnl >= 0 else "pnl-red"
             trades_cnt = c.get("trades_count", c.get("fills_count", 0))
@@ -1556,17 +1622,5 @@ with tab_myfxbook:
 
 # VPS High-Speed Non-Blocking Execution & Ultra-Smooth UI Engine
 if any(m.get("running", False) for m in st.session_state.markets.values()):
-    for _sym, _m in list(st.session_state.markets.items()):
-        if _m.get("running", False):
-            try:
-                _brk = _m["broker"]
-                _bot = _m["bot"]
-                _lp = get_live_price(_sym)
-                if _lp and _lp > 0:
-                    _prev_p = _m.get("last_price", _lp)
-                    _m["last_price"] = _lp
-                    _bot.process_tick(_prev_p, _lp, time.time())
-            except Exception:
-                pass
     time.sleep(2.0)
     st.rerun()

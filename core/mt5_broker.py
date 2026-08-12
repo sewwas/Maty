@@ -540,6 +540,8 @@ class MT5Broker:
                 "commission": 0.0
             }
             self.closed_trades.append(record)
+            if len(self.closed_trades) > 500:
+                self.closed_trades = self.closed_trades[-500:]
             self.realized_pnl += pnl
             self.open_positions.pop(position_id, None)
             self.ticket_to_position_id.pop(ticket, None)
@@ -631,7 +633,7 @@ class MT5Broker:
                     total_pnl += p.profit
         return total_pnl
 
-    def sync_history_from_mt5(self, days: int = 30, force: bool = False):
+    def sync_history_from_mt5(self, days: int = 180, force: bool = False):
         """
         Fetches closed deal history directly from MT5 terminal for this bot's magic number,
         synchronizing closed_trades and realized_pnl. Throttled to max once per 30s to prevent VPS lag.
@@ -649,26 +651,29 @@ class MT5Broker:
             from_date = datetime.datetime.now() - datetime.timedelta(days=days)
             to_date = datetime.datetime.now() + datetime.timedelta(days=1)
             exness_symbol = self.get_exness_symbol(self.symbol)
-            deals = mt5.history_deals_get(from_date, to_date, group=f"*{exness_symbol}*") if exness_symbol else mt5.history_deals_get(from_date, to_date)
+            deals = mt5.history_deals_get(from_date, to_date)
             if deals:
                 synced_trades = []
                 synced_pnl = 0.0
+                target_syms = {self.symbol.upper(), (exness_symbol or "").upper()}
                 for d in deals:
-                    if getattr(d, "magic", 0) == self.magic_number and getattr(d, "entry", 0) in (1, mt5.DEAL_ENTRY_OUT if hasattr(mt5, "DEAL_ENTRY_OUT") else 1):
+                    d_sym = str(getattr(d, "symbol", "")).upper()
+                    if d_sym and (d_sym in target_syms or any(ts in d_sym or d_sym in ts for ts in target_syms if ts)):
                         pnl = float(getattr(d, "profit", 0.0)) + float(getattr(d, "swap", 0.0)) + float(getattr(d, "commission", 0.0))
-                        t_record = {
-                            "position_id": f"deal_{d.ticket}",
-                            "type": "BUY" if getattr(d, "type", 0) == 1 else "SELL",
-                            "entry_price": float(d.price),
-                            "exit_price": float(d.price),
-                            "size": float(d.volume),
-                            "pnl": pnl,
-                            "entry_time": float(d.time),
-                            "exit_time": float(d.time),
-                            "commission": float(getattr(d, "commission", 0.0))
-                        }
-                        synced_trades.append(t_record)
-                        synced_pnl += pnl
+                        if getattr(d, "entry", 0) in (1, 2) or abs(pnl) > 0.0001:
+                            t_record = {
+                                "position_id": f"deal_{d.ticket}",
+                                "type": "BUY" if getattr(d, "type", 0) == 1 else "SELL",
+                                "entry_price": float(d.price),
+                                "exit_price": float(d.price),
+                                "size": float(d.volume),
+                                "pnl": pnl,
+                                "entry_time": float(d.time),
+                                "exit_time": float(d.time),
+                                "commission": float(getattr(d, "commission", 0.0))
+                            }
+                            synced_trades.append(t_record)
+                            synced_pnl += pnl
                 if synced_trades:
                     self.closed_trades = synced_trades
                     self.realized_pnl = synced_pnl
