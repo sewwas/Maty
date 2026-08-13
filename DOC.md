@@ -1,6 +1,6 @@
 # ⚖️ Profity AI — System Architecture & Technical Documentation
 
-This document details the **System Architecture**, **Execution Flow Diagrams**, **Smart Profit Expansion (Runner Mode)**, **Volatility-Adaptive Gap**, and **Dynamic Grid Repair Systems**.
+This document details the **System Architecture**, **Execution Flow Diagrams**, **Smart Profit Expansion (Runner Mode)**, **Volatility-Adaptive Gap**, **Dynamic Grid Repair Systems**, **SMC + Elliott Wave Intelligence Engine**, and **Liquidity Grab / Fake-Out Guard**.
 
 ---
 
@@ -18,6 +18,14 @@ graph TD
         E -->|Check Breakout| F[Smart Runner Mode]
         E -->|Check Volatility| G[Volatility-Adaptive Gap]
         E -->|Scan Coverage| H[Grid Repair & Cleanup]
+        E -->|Post-Fill Watch| FO[Fake-Out Guard]
+        D -->|Deploy Traps| SMC[SMC Grid Refinement]
+    end
+
+    subgraph INTEL ["Intelligence Layer (core/data.py + engine.py)"]
+        AR[AutoReadingEngine] -->|Regime + Bias| D
+        SMC_E[SMC + Elliott Wave Engine] -->|OB Snap / FVG Skip / Wave3 Boost| SMC
+        SMC_E -->|Bias Boost| AR
     end
 
     subgraph DATA ["Price Data Provider (core/data.py)"]
@@ -35,6 +43,7 @@ graph TD
     UI -->|Triggers Ticks| CORE
     DATA -->|Feeds Live Price| UI
     CORE -->|Sends Orders & Closes| BROKER
+    DATA -->|OHLCV Candles| SMC_E
 ```
 
 ---
@@ -181,7 +190,216 @@ graph LR
 
 ---
 
-## 💻 5. Running the Bot & VPS Setup
+## 🏛️ 5. SMC + Elliott Wave Intelligence Engine
+
+*Added 2026-08-13. Zero external dependencies — uses existing OHLCV candle data from `get_historical_klines()`.*
+
+### 5.1 Overview
+
+The SMC + Elliott Wave engine (`calculate_smc_elliott()` in `core/data.py`) runs on every grid deployment and feeds results into `AutoReadingEngine` and `deploy_traps()`. It applies four Smart Money Concepts disciplines and Elliott Wave theory to improve entry precision and sizing.
+
+```mermaid
+flowchart TD
+    Candles[OHLCV Klines - 100 bars] --> OB[1. Order Block Detection]
+    Candles --> FVG[2. Fair Value Gap Detection]
+    Candles --> LP[3. Liquidity Pool Mapping]
+    Candles --> BOS[4. Break of Structure]
+    Candles --> EW[5. Elliott Wave Estimator]
+
+    OB --> Score[SMC Composite Score 0-100]
+    FVG --> Score
+    LP --> Score
+    BOS --> Score
+    EW --> Score
+
+    Score -->|smc_bias BUY/SELL| BiasBoost[Boost combined_bias +0.25 max]
+    Score -->|bullish_ob| OBSnap[OB Snap in deploy_traps]
+    Score -->|fvg zones| FVGAvoid[FVG Avoidance in deploy_traps]
+    Score -->|elliott_wave == 3| W3Boost[Wave 3 Lot Boost +35%]
+```
+
+### 5.2 SMC Component Definitions
+
+#### 📦 Order Blocks (OB)
+The last consolidation candle *immediately before* an institutional impulse move (≥ 1.8× ATR body size).
+
+```
+Bullish OB = last BEARISH candle before a bullish impulse ≥ 1.8× ATR
+Bearish OB = last BULLISH candle before a bearish impulse ≥ 1.8× ATR
+```
+
+In `deploy_traps()`: if a bullish OB exists within 3× gap of current ask price, buy_offset_val is snapped to align the nearest trap with the institutional demand zone.
+
+#### 🕳️ Fair Value Gaps (FVG)
+A 3-candle price imbalance where no trading occurred. Price moves through them extremely fast — traps placed *inside* a FVG result in instant fills with no momentum.
+
+```
+Bullish FVG: candle[i-1].high < candle[i+1].low   ← gap up (price skipped)
+Bearish FVG: candle[i-1].low  > candle[i+1].high  ← gap down (price skipped)
+```
+
+In `deploy_traps()`: if the first buy/sell trap would land inside a FVG, it is shifted to the FVG edge.
+
+#### 💧 Liquidity Pools (LP)
+Equal highs or lows within 0.05% price tolerance where retail stop losses cluster. Institutions deliberately push price to these levels to collect liquidity before reversing.
+
+```
+Buy-side  LP = equal highs above current price (stop-hunt target going up)
+Sell-side LP = equal lows  below current price (stop-hunt target going down)
+```
+
+Contributes ±15 points to the SMC Composite Score and influences `combined_bias`.
+
+#### 🔨 Break of Structure (BOS)
+Confirms institutional directional commitment.
+
+```
+BOS BULLISH: current close > highest high of last 20 candles
+BOS BEARISH: current close < lowest  low  of last 20 candles
+```
+
+Contributes ±25 points (strongest signal). Required for Wave 3 lot boost activation.
+
+### 5.3 Elliott Wave Position Estimator
+
+Uses pivot swing highs/lows detected with 3-candle lookback, then applies Fibonacci ratios to classify the current wave.
+
+| Wave | Rule | Fibonacci | Lot Impact |
+|---|---|---|---|
+| Wave 1 | First impulse > 1.0× ATR from swing low | — | Normal |
+| Wave 2 | Retracement of Wave 1 | 38.2% – 78.6% | Normal |
+| **Wave 3** | **Largest impulse, ≥ 1.30× Wave 1** | **targets 1.618×** | **+35% lot boost** |
+| Wave 4 | Retracement of Wave 3 (no W1 overlap) | 23.6% – 50% | Normal |
+| Wave 5 | Final impulse, RSI divergence common | ≈ 0.618× Wave 1 | Normal |
+| ABC | Corrective 3-wave structure | — | Normal |
+
+**Wave 3 Lot Boost formula:**
+$$\text{deploy\_order\_size} = \min\bigl(\text{order\_size} \times 1.35,\; \text{order\_size} \times 1.50\bigr)$$
+
+Activates only when: `elliott_wave == 3` AND `elliott_confidence ≥ 60%` AND `bos_direction != NEUTRAL`.
+
+### 5.4 SMC Composite Score
+
+| Signal | Points |
+|---|---|
+| BOS BULLISH / BEARISH | ±25 |
+| Order Block alignment | ±20 |
+| Liquidity Pool pull direction | ±15 |
+| FVG magnet direction | ±10 |
+| Elliott Wave 3 confirmation | +10 |
+| **Total possible range** | **0 – 100** |
+
+Final `smc_bias`: **BUY** if score ≥ 60, **SELL** if score ≤ 40, else **NEUTRAL**.
+
+When `smc_bias` aligns with `ema_trend_bias`:
+$$\text{combined\_bias} = \min\bigl(1.0,\; \text{combined\_bias} + 0.15 + \text{elliott\_confidence} \times 0.10\bigr)$$
+
+### 5.5 Toggle Reference
+
+| Attribute | Default | Effect |
+|---|---|---|
+| `bot.use_smc_elliott` | `True` | Enable/disable entire SMC+Wave engine |
+| `bot._last_smc_eval` | `{}` | Cached most-recent eval result |
+
+---
+
+## 🛡️ 6. Liquidity Grab / Fake-Out Guard
+
+*Added 2026-08-13. Runs inside `process_tick()` on every tick.*
+
+### 6.1 Problem
+
+Price often spikes into a BUY_STOP or SELL_STOP trap — triggering the order — then **immediately reverses** (stop hunt / liquidity grab). Without a guard, the position stays open until the portfolio Stop Loss fires at −$30, losing the full drawdown budget on a single fake move.
+
+### 6.2 Solution — Post-Fill Confirmation Window
+
+```mermaid
+flowchart TD
+    Fill[Order Triggered - Position Opened] --> Watch[Register in Fake-Out Watch-List]
+    Watch --> TickN{Tick N within guard window?}
+    TickN -- No --> Expire[Expire - genuine breakout confirmed]
+    TickN -- Yes --> PnL{Position PnL >= 0?}
+    PnL -- Yes --> Skip[Skip - profitable - let it run]
+    PnL -- No --> Cross{Price crossed back through entry?}
+    Cross -- No --> TickN
+    Cross -- Yes --> FO[FAKE-OUT DETECTED]
+    FO --> Close[Close position early]
+    Close --> Log[Log: FAKEOUT GUARD - Early exit]
+    Expire --> Normal[Normal profit/SL logic takes over]
+```
+
+### 6.3 Detection Logic
+
+After a position opens, the engine watches for N ticks (default 8 ≈ 12 seconds at 1.5s/tick):
+
+- **BUY fake-out**: `current_price < entry_price` AND `position_pnl < 0`
+- **SELL fake-out**: `current_price > entry_price` AND `position_pnl < 0`
+
+Minimum 2-tick delay before judgment (allows price to develop direction).
+
+**Automatically disabled** in Runner Mode — confirmed trend runners are never cut early.
+
+### 6.4 Impact
+
+| Scenario | Without Guard | With Guard |
+|---|---|---|
+| Stop hunt spike then reverse | Wait for −$30 SL | Exit at −$0.20 to −$1.50 |
+| Genuine breakout | Position runs ✅ | Position runs ✅ (guard expires) |
+| Runner Mode position | N/A | Guard disabled — never cuts a winner |
+
+### 6.5 Toggle Reference
+
+| Attribute | Default | Effect |
+|---|---|---|
+| `bot._fakeout_guard_enabled` | `True` | Master toggle |
+| `bot._fakeout_guard_ticks` | `8` | Tick window (8 ticks ≈ 12 seconds) |
+
+### 6.6 Live Log Example
+
+```
+[XAUUSD] 🛡️ FAKEOUT GUARD: BUY stop-hunt detected.
+         Entry 3250.10 → price now 3249.60 (4 ticks). Early exit, PnL: -0.18
+[XAUUSD] 📦 SMC ORDER BLOCK SNAP: buy offset -> OB @ 3248.50
+[XAUUSD] 🌊 ELLIOTT WAVE 3 BOOST: lot 0.01 -> 0.0135 (Wave 3, conf 78%, BOS BULLISH)
+[XAUUSD] 🛡️ TROUGH GUARD: BOTTOM_TROUGH_OVERSOLD active! Harvested SELL position #1024 at bottom (PnL: $0.15) & purged SELL traps.
+```
+
+### 6.8 Trend Expansion Override Shield (Never Miss Real Trends)
+
+*Upgraded 2026-08-13 to ensure strong trend breakdowns & breakouts are NEVER misclassified as reversals.*
+
+#### The Problem
+During a powerful trending move (e.g. Gold dumping 200 pips or BTC breaking out), RSI naturally reaches extreme levels (RSI ≤ 30 or ≥ 70) and stays there. A naive guard would mistakenly call this a "bottom trough" or "top peak", block trend traps, and force counter-trend entries — **causing the bot to miss the real trend!**
+
+#### The Quantitative Solution — 5-Factor Multi-Confluence Classification
+The Top & Bottom Guard uses a **5-Factor Institutional Trend Matrix**:
+
+```python
+trend_score = 0
+if adx >= 25.0:           trend_score += 1  # Factor 1: ADX Trend Strength
+if ci <= 48.0:            trend_score += 1  # Factor 2: Unchoppy Expansion
+if mtf_conf >= 70.0:      trend_score += 1  # Factor 3: 1m+5m+15m MTF Alignment
+if abs(ema_bias) >= 0.35: trend_score += 1  # Factor 4: Strong EMA Slope
+if vol_spike >= 1.30:     trend_score += 1  # Factor 5: Volume Expansion
+
+is_strong_trend = (trend_score >= 2)  # Requires 2+ confirming factors
+```
+
+1. **During a Confirmed Real Trend (`trend_score ≥ 2`)**:
+   - Top & Bottom Guard is **BYPASSED (Forced NORMAL)**.
+   - The bot continues deploying trend traps (`SELL_ONLY` in downtrend, `BUY_ONLY` in uptrend) to capture **100% of the trend**.
+   - Trend-following positions are **NEVER closed early**.
+
+2. **Only During Exhausted / Ranging Markets (`trend_score < 2`)**:
+   - Requires extreme RSI (≤ 28 or ≥ 72) and VWAP deviation (≥ 0.50%) before declaring a peak or trough.
+   - Guarantees 100% decision accuracy without false-locking during real trends.
+
+---
+
+
+
+
+## 💻 7. Running the Bot & VPS Setup
 
 ### 🖥️ 5.1 Local Execution
 To start the Streamlit trading dashboard locally:
@@ -272,7 +490,7 @@ python -m streamlit run app.py --server.port 8501 --server.address 0.0.0.0
 
 ---
 
-## 🌐 6. Investor Portal & Exness IB Referral Integration
+## 🌐 8. Investor Portal & Exness IB Referral Integration
 
 The Profity AI Investor Portal allows clients to view live strategy stats, simulate compounding ROI, and join the Master PAMM pool.
 

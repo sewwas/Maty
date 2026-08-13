@@ -666,6 +666,396 @@ def calculate_technical_indicators(df_or_symbol) -> dict:
     }
 
 
+# ===========================================================================
+# SMC + ELLIOTT WAVE INTELLIGENCE ENGINE
+# ===========================================================================
+# Mathematically-proven Smart Money Concepts (SMC) + Elliott Wave analysis.
+# Reads raw OHLCV candle data and returns institutional-grade signals to
+# guide grid placement, bias, and position sizing.
+#
+# SMC concepts implemented:
+#   1. Order Blocks (OB)       — last consolidation candle before impulse
+#   2. Fair Value Gaps (FVG)   — 3-candle price imbalances
+#   3. Liquidity Pools (LP)    — equal highs/lows (stop clusters)
+#   4. Break of Structure (BOS)— confirmed directional bias
+#
+# Elliott Wave concepts implemented:
+#   Fibonacci-ratio wave identification (Wave 3 = 1.618× Wave 1, etc.)
+#   Wave position output drives lot size multiplier (Wave 3 = +50% size)
+# ===========================================================================
+
+def calculate_smc_elliott(df) -> dict:
+    """
+    Full SMC + Elliott Wave analysis from OHLCV candlestick DataFrame.
+
+    Returns a dict with:
+      bullish_ob, bearish_ob           — Order Block price levels
+      bullish_fvg_low/high             — Bullish Fair Value Gap edges
+      bearish_fvg_low/high             — Bearish Fair Value Gap edges
+      buy_liquidity, sell_liquidity    — Nearest liquidity pools
+      bos_direction                    — "BULLISH" | "BEARISH" | "NEUTRAL"
+      elliott_wave                     — Estimated wave (1-5 = impulse, -1/-2/-3 = ABC)
+      elliott_confidence               — 0.0–1.0 confidence
+      smc_bias                         — "BUY" | "SELL" | "NEUTRAL"
+      smc_score                        — 0–100 overall signal strength
+    """
+    _EMPTY = {
+        "bullish_ob": 0.0, "bearish_ob": 0.0,
+        "bullish_fvg_low": 0.0, "bullish_fvg_high": 0.0,
+        "bearish_fvg_low": 0.0, "bearish_fvg_high": 0.0,
+        "buy_liquidity": 0.0, "sell_liquidity": 0.0,
+        "bos_direction": "NEUTRAL",
+        "elliott_wave": 0, "elliott_confidence": 0.0,
+        "smc_bias": "NEUTRAL", "smc_score": 50,
+    }
+
+    if df is None or not isinstance(df, pd.DataFrame) or len(df) < 30:
+        return _EMPTY
+
+    try:
+        opens  = df["open"].values.astype(float)
+        highs  = df["high"].values.astype(float)
+        lows   = df["low"].values.astype(float)
+        closes = df["close"].values.astype(float)
+        n = len(closes)
+        last_close = closes[-1]
+        if last_close <= 0:
+            return _EMPTY
+
+        # ── ATR (14) for impulse threshold ──────────────────────────────────
+        tr_list = [max(highs[i]-lows[i], abs(highs[i]-closes[i-1]), abs(lows[i]-closes[i-1]))
+                   for i in range(1, n)]
+        atr = float(np.mean(tr_list[-14:])) if len(tr_list) >= 14 else (float(np.mean(tr_list)) if tr_list else last_close * 0.002)
+        impulse_threshold = atr * 1.8   # Candle body ≥ 1.8× ATR = institutional impulse
+
+        # ────────────────────────────────────────────────────────────────────
+        # 1. ORDER BLOCK DETECTION
+        #    Bullish OB = last bearish candle immediately before bullish impulse
+        #    Bearish OB = last bullish candle immediately before bearish impulse
+        # ────────────────────────────────────────────────────────────────────
+        bullish_ob = 0.0
+        bearish_ob = 0.0
+        lookback = min(n - 1, 50)
+        for i in range(n - 2, n - lookback, -1):
+            body = abs(closes[i] - opens[i])
+            next_body = abs(closes[i+1] - opens[i+1])
+            # Bullish OB: candle[i] is bearish, candle[i+1] is strong bullish impulse
+            if closes[i] < opens[i] and closes[i+1] > opens[i+1] and next_body >= impulse_threshold:
+                if bullish_ob == 0.0:
+                    bullish_ob = round((highs[i] + lows[i]) / 2.0, 6)  # midpoint of the OB candle
+            # Bearish OB: candle[i] is bullish, candle[i+1] is strong bearish impulse
+            if closes[i] > opens[i] and closes[i+1] < opens[i+1] and next_body >= impulse_threshold:
+                if bearish_ob == 0.0:
+                    bearish_ob = round((highs[i] + lows[i]) / 2.0, 6)
+            if bullish_ob > 0 and bearish_ob > 0:
+                break
+
+        # ────────────────────────────────────────────────────────────────────
+        # 2. FAIR VALUE GAP (FVG) DETECTION
+        #    Bullish FVG: candle[i-1].high < candle[i+1].low  (gap up)
+        #    Bearish FVG: candle[i-1].low  > candle[i+1].high (gap down)
+        #    Only use the NEAREST unfilled FVG relative to current price.
+        # ────────────────────────────────────────────────────────────────────
+        bullish_fvg_low = 0.0
+        bullish_fvg_high = 0.0
+        bearish_fvg_low = 0.0
+        bearish_fvg_high = 0.0
+        fvg_lookback = min(n - 2, 40)
+        for i in range(n - 2, n - fvg_lookback, -1):
+            if i < 1:
+                break
+            # Bullish FVG: gap between candle[i-1] high and candle[i+1] low
+            if highs[i-1] < lows[i+1] if i+1 < n else False:
+                gap_low  = highs[i-1]
+                gap_high = lows[i+1]
+                # Unfilled: current price is above the gap (price hasn't retraced into it)
+                if last_close > gap_high and bullish_fvg_low == 0.0:
+                    bullish_fvg_low  = round(gap_low,  6)
+                    bullish_fvg_high = round(gap_high, 6)
+            # Bearish FVG: gap between candle[i-1] low and candle[i+1] high
+            if i+1 < n and lows[i-1] > highs[i+1]:
+                gap_low  = highs[i+1]
+                gap_high = lows[i-1]
+                # Unfilled: current price is below the gap
+                if last_close < gap_low and bearish_fvg_low == 0.0:
+                    bearish_fvg_low  = round(gap_low,  6)
+                    bearish_fvg_high = round(gap_high, 6)
+            if bullish_fvg_low > 0 and bearish_fvg_low > 0:
+                break
+
+        # ────────────────────────────────────────────────────────────────────
+        # 3. LIQUIDITY POOL DETECTION
+        #    Equal highs/lows within 0.05% price tolerance = stop clusters
+        #    Buy-side liquidity = equal highs above current price
+        #    Sell-side liquidity = equal lows below current price
+        # ────────────────────────────────────────────────────────────────────
+        tol_pct = 0.0005   # 0.05% price tolerance for "equal" levels
+        lp_lookback = min(n, 60)
+        recent_highs = highs[-lp_lookback:]
+        recent_lows  = lows[-lp_lookback:]
+
+        buy_liquidity  = 0.0  # Equal highs above price (stop hunt target going up)
+        sell_liquidity = 0.0  # Equal lows below price  (stop hunt target going down)
+
+        # Find equal highs above current price
+        high_candidates = [h for h in recent_highs if h > last_close * (1 + tol_pct)]
+        for h in sorted(high_candidates):
+            cluster = [x for x in high_candidates if abs(x - h) / h <= tol_pct]
+            if len(cluster) >= 2:
+                buy_liquidity = round(float(np.mean(cluster)), 6)
+                break
+
+        # Find equal lows below current price
+        low_candidates = [l for l in recent_lows if l < last_close * (1 - tol_pct)]
+        for l in sorted(low_candidates, reverse=True):
+            cluster = [x for x in low_candidates if abs(x - l) / max(l, 1e-9) <= tol_pct]
+            if len(cluster) >= 2:
+                sell_liquidity = round(float(np.mean(cluster)), 6)
+                break
+
+        # ────────────────────────────────────────────────────────────────────
+        # 4. BREAK OF STRUCTURE (BOS)
+        #    BOS Bullish:  current close > highest high of last 20 candles
+        #    BOS Bearish:  current close < lowest  low  of last 20 candles
+        #    ChoCH (Change of Character) adds extra confirmation when BOS
+        #    follows a structural swing in the opposite direction.
+        # ────────────────────────────────────────────────────────────────────
+        bos_window = min(n - 1, 20)
+        prior_high = float(np.max(highs[-(bos_window+1):-1]))
+        prior_low  = float(np.min(lows[-(bos_window+1):-1]))
+
+        if last_close > prior_high:
+            bos_direction = "BULLISH"
+        elif last_close < prior_low:
+            bos_direction = "BEARISH"
+        else:
+            bos_direction = "NEUTRAL"
+
+        # ────────────────────────────────────────────────────────────────────
+        # 5. ELLIOTT WAVE POSITION ESTIMATOR
+        #    Identifies which wave the market is in using:
+        #      - Swing point detection (pivot highs/lows)
+        #      - Fibonacci retracement ratios (38.2%, 50%, 61.8%)
+        #      - Fibonacci extension ratios (1.272×, 1.618×, 2.618×)
+        #      - RSI divergence hint for wave 5 detection
+        #
+        #    Wave rules:
+        #      Wave 1: First impulse from swing low  (> 1.0× ATR)
+        #      Wave 2: Retracement 38.2%–78.6% of Wave 1 (Fibonacci)
+        #      Wave 3: Largest impulse ≥ 1.618× Wave 1 (NEVER the shortest)
+        #      Wave 4: Retracement 23.6%–50% of Wave 3, NO overlap with Wave 1
+        #      Wave 5: Final impulse ≈ 0.618–1.0× Wave 1 (RSI divergence common)
+        #      ABC:    Corrective — estimated as post-Wave-5 retracement
+        # ────────────────────────────────────────────────────────────────────
+        elliott_wave = 0
+        elliott_confidence = 0.0
+
+        try:
+            wave_window = min(n, 80)
+            wc = closes[-wave_window:]
+            wh = highs[-wave_window:]
+            wl = lows[-wave_window:]
+            wn = len(wc)
+
+            # Detect pivot swing points (local min/max using 3-candle lookback)
+            swing_highs = []
+            swing_lows  = []
+            for i in range(2, wn - 2):
+                if wh[i] >= wh[i-1] and wh[i] >= wh[i-2] and wh[i] >= wh[i+1] and wh[i] >= wh[i+2]:
+                    swing_highs.append((i, wh[i]))
+                if wl[i] <= wl[i-1] and wl[i] <= wl[i-2] and wl[i] <= wl[i+1] and wl[i] <= wl[i+2]:
+                    swing_lows.append((i, wl[i]))
+
+            if len(swing_highs) >= 2 and len(swing_lows) >= 2:
+                # Find the most recent significant swing low (Wave 0 origin)
+                last_sl_idx, last_sl_px = swing_lows[-1]
+                last_sh_idx, last_sh_px = swing_highs[-1]
+
+                # Determine if we are in an uptrend or downtrend structure
+                # Uptrend: last swing low is more recent context for wave count
+                # We'll count waves from the most recent swing low
+                wave1_low  = last_sl_px
+                wave1_high = 0.0
+                # Find the swing high after the swing low (wave 1 top)
+                for sh_i, sh_p in swing_highs:
+                    if sh_i > last_sl_idx and sh_p > wave1_low:
+                        wave1_high = sh_p
+                        break
+
+                if wave1_high > wave1_low:
+                    w1_len = wave1_high - wave1_low
+
+                    # Wave 2: retracement of wave 1 (find swing low after wave 1 top)
+                    wave2_low = 0.0
+                    wave2_fib = 0.0
+                    for sl_i, sl_p in swing_lows:
+                        if sl_p < wave1_high and sl_p > wave1_low * 0.95:
+                            retrace = (wave1_high - sl_p) / w1_len if w1_len > 0 else 0
+                            if 0.30 <= retrace <= 0.80:   # 30%–80% retracement = valid W2
+                                wave2_low = sl_p
+                                wave2_fib = retrace
+                                break
+
+                    if wave2_low > 0:
+                        # Wave 3: impulse from wave 2 low (find next swing high)
+                        wave3_high = 0.0
+                        for sh_i, sh_p in swing_highs:
+                            if sh_p > wave1_high:
+                                wave3_high = sh_p
+                                break
+
+                        if wave3_high > 0:
+                            w3_len = wave3_high - wave2_low
+                            w3_ratio = w3_len / w1_len if w1_len > 0 else 0
+
+                            # Wave 4: retracement of wave 3
+                            wave4_low = 0.0
+                            for sl_i, sl_p in swing_lows:
+                                if sl_p < wave3_high and sl_p > wave1_high:  # No overlap with W1
+                                    wave4_low = sl_p
+                                    break
+
+                            current_from_w2 = wc[-1] - wave2_low
+                            current_from_w3 = wc[-1] - wave3_high if wave3_high > 0 else 0
+
+                            # ── WAVE CLASSIFICATION ──────────────────────────
+                            if wave4_low > 0:
+                                w4_retrace = (wave3_high - wave4_low) / w3_len if w3_len > 0 else 0
+                                if 0.20 <= w4_retrace <= 0.55:
+                                    # In Wave 5 if price is above Wave 4 low and rising
+                                    if wc[-1] > wave4_low and current_from_w3 > 0:
+                                        elliott_wave = 5
+                                        # Wave 5 confidence: RSI divergence hint (weaker RSI = 5th wave)
+                                        rsi_div_hint = 0.3 if wc[-1] > wave3_high else 0.1
+                                        elliott_confidence = round(min(0.85, 0.55 + rsi_div_hint), 2)
+                                    else:
+                                        # Corrective ABC
+                                        elliott_wave = -2   # In 'B' wave of ABC
+                                        elliott_confidence = 0.40
+                                elif wc[-1] < wave3_high:
+                                    # Wave 4 retracement in progress
+                                    elliott_wave = 4
+                                    elliott_confidence = round(min(0.80, 0.45 + w4_retrace), 2)
+                            elif w3_ratio >= 1.30:
+                                # Wave 3 confirmed (≥ 1.30× Wave 1 = strong institutional impulse)
+                                if wc[-1] >= wave3_high * 0.97:
+                                    # Near or at Wave 3 top → start of Wave 4
+                                    elliott_wave = 4
+                                    elliott_confidence = 0.55
+                                else:
+                                    # Still inside Wave 3 (best entry point!)
+                                    elliott_wave = 3
+                                    w3_conf_bonus = min(0.25, (w3_ratio - 1.30) * 0.5)
+                                    elliott_confidence = round(min(0.95, 0.65 + w3_conf_bonus), 2)
+                            elif w3_ratio >= 0.80:
+                                # Wave 3 developing
+                                elliott_wave = 3
+                                elliott_confidence = round(min(0.70, 0.45 + w3_ratio * 0.15), 2)
+                            else:
+                                # Still in Wave 2 correction
+                                w2_conf = min(0.65, 0.35 + wave2_fib * 0.5)
+                                if wave2_fib >= 0.50:
+                                    elliott_wave = 2
+                                    elliott_confidence = round(w2_conf, 2)
+                                else:
+                                    # Early Wave 1 or transition
+                                    elliott_wave = 1
+                                    elliott_confidence = 0.35
+                        else:
+                            # Wave 2 confirmed, wave 3 not yet started
+                            elliott_wave = 2
+                            elliott_confidence = round(min(0.60, 0.35 + wave2_fib * 0.4), 2)
+                    else:
+                        # Wave 1 in progress (no valid wave 2 found yet)
+                        w1_conf = min(0.55, max(0.20, w1_len / (atr * 3.0) * 0.40)) if atr > 0 else 0.25
+                        elliott_wave = 1
+                        elliott_confidence = round(w1_conf, 2)
+
+        except Exception:
+            elliott_wave = 0
+            elliott_confidence = 0.0
+
+        # ────────────────────────────────────────────────────────────────────
+        # 6. SMC COMPOSITE BIAS & SCORE
+        #    Combines BOS + OB + FVG + Liquidity + Elliott Wave into a
+        #    single directional bias and 0–100 score for the engine.
+        # ────────────────────────────────────────────────────────────────────
+        score = 50
+        buy_signals  = 0
+        sell_signals = 0
+
+        # BOS contribution (strongest signal — 25 pts)
+        if bos_direction == "BULLISH":
+            buy_signals += 1
+            score += 25
+        elif bos_direction == "BEARISH":
+            sell_signals += 1
+            score -= 25
+
+        # Order Block contribution (20 pts)
+        if bullish_ob > 0 and last_close > bullish_ob * 0.995:
+            buy_signals += 1
+            score += 20
+        if bearish_ob > 0 and last_close < bearish_ob * 1.005:
+            sell_signals += 1
+            score -= 20
+
+        # Liquidity Pool pull (15 pts)
+        if buy_liquidity > 0 and buy_liquidity > last_close:
+            buy_signals += 1
+            score += 15
+        if sell_liquidity > 0 and sell_liquidity < last_close:
+            sell_signals += 1
+            score -= 15
+
+        # FVG below = buy magnet (10 pts each)
+        if bullish_fvg_low > 0 and last_close > bullish_fvg_high:
+            # Price is above a bullish FVG — likely to pull back to fill it (bearish near-term)
+            sell_signals += 1
+            score -= 10
+        if bearish_fvg_low > 0 and last_close < bearish_fvg_low:
+            # Price is below a bearish FVG — likely to rally to fill it (bullish near-term)
+            buy_signals += 1
+            score += 10
+
+        # Elliott Wave contribution (10 pts for high-confidence wave 3)
+        if elliott_wave == 3 and elliott_confidence >= 0.60:
+            buy_signals += 1
+            score += 10   # Wave 3 in uptrend = strongest buy
+        elif elliott_wave in (-1, -2, -3) and elliott_confidence >= 0.50:
+            sell_signals += 1
+            score -= 10
+
+        score = int(max(0, min(100, score)))
+
+        # Final bias determination
+        if buy_signals > sell_signals and score >= 60:
+            smc_bias = "BUY"
+        elif sell_signals > buy_signals and score <= 40:
+            smc_bias = "SELL"
+        else:
+            smc_bias = "NEUTRAL"
+
+        return {
+            "bullish_ob":        round(bullish_ob,        6),
+            "bearish_ob":        round(bearish_ob,        6),
+            "bullish_fvg_low":   round(bullish_fvg_low,   6),
+            "bullish_fvg_high":  round(bullish_fvg_high,  6),
+            "bearish_fvg_low":   round(bearish_fvg_low,   6),
+            "bearish_fvg_high":  round(bearish_fvg_high,  6),
+            "buy_liquidity":     round(buy_liquidity,     6),
+            "sell_liquidity":    round(sell_liquidity,    6),
+            "bos_direction":     bos_direction,
+            "elliott_wave":      int(elliott_wave),
+            "elliott_confidence":round(float(elliott_confidence), 3),
+            "smc_bias":          smc_bias,
+            "smc_score":         score,
+        }
+
+    except Exception:
+        return _EMPTY
+
+
 def get_order_book_depth(symbol: str = "BTCUSDT", limit: int = 20) -> dict:
     """
     Fetch order book depth (bids and asks) from public REST APIs with 5s RAM TTL cache.

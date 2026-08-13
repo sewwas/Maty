@@ -158,7 +158,8 @@ def get_global_vps_trading_engine():
         }
 
     def _vps_daemon_worker():
-        print("⚡ [Profity AI Engine] 24/7 VPS Background Daemon Started! Processing ticks 24/7...")
+        print("⚡ [Profity AI Engine] 24/7 VPS Background Daemon Started! Processing ticks 24/7 at 0.5s ultra-speed...")
+        _last_state_save = 0.0
         while True:
             try:
                 now = time.time()
@@ -179,13 +180,17 @@ def get_global_vps_trading_engine():
                         except Exception as tick_err:
                             print(f"[{sym_code}] Background tick error: {tick_err}")
 
-                save_bot_state_dict(shared_markets)
+                # Persist state every 10s to keep disk I/O light and CPU ultra-fast
+                if now - _last_state_save >= 10.0:
+                    _last_state_save = now
+                    save_bot_state_dict(shared_markets)
             except Exception as daemon_err:
                 print(f"[Profity AI Engine] Daemon loop notice: {daemon_err}")
 
-            time.sleep(2.0)
+            time.sleep(0.50)  # 500ms Ultra-Fast High-Speed VPS Tick Loop
 
     t = threading.Thread(target=_vps_daemon_worker, daemon=True)
+
     t.start()
     return shared_markets
 
@@ -919,6 +924,202 @@ with tab_desk:
                           </div>
                         </div>
                         """, unsafe_allow_html=True)
+
+                        # ══════════════════════════════════════════════════════════
+                        #  🔍 LIVE BOT AUDIT PANEL — Real-time state per pair
+                        # ══════════════════════════════════════════════════════════
+                        _now_ts = time.time()
+                        _is_deployed   = getattr(bot, 'deployed', False)
+                        _is_deploying  = getattr(bot, '_is_deploying', False)
+                        _last_deploy_t = getattr(bot, 'last_deploy_time', 0.0)
+                        _last_trig_t   = getattr(bot, '_last_trigger_time', 0.0)
+                        _deploy_err_t  = getattr(bot, '_last_deploy_error_time', 0.0)
+                        _runner_mode   = getattr(bot, 'in_runner_mode', False)
+                        _runner_peak   = getattr(bot, 'runner_peak_pnl', 0.0)
+                        _ratchet_v     = getattr(bot, 'ratchet_floor', 0.0)
+                        _tick_cnt      = getattr(bot, '_tick_counter', 0)
+                        _fg_enabled    = getattr(bot, '_fakeout_guard_enabled', True)
+                        _fg_ticks      = getattr(bot, '_fakeout_guard_ticks', 8)
+                        _fg_watches    = getattr(bot, '_fakeout_recent_fills', {})
+                        _fg_cnt        = len(_fg_watches) if isinstance(_fg_watches, dict) else 0
+                        _sev           = getattr(bot, 'last_auto_eval', {}) or {}
+                        _smc_bias      = _sev.get('smc_bias', 'NEUTRAL')
+                        _smc_score     = int(_sev.get('smc_score', 50))
+                        _ew_wave       = int(_sev.get('elliott_wave', 0))
+                        _ew_conf       = float(_sev.get('elliott_confidence', 0.0))
+                        _bos_dir       = _sev.get('bos_direction', 'NEUTRAL')
+                        _bull_ob       = float(_sev.get('bullish_ob', 0.0))
+                        _bear_ob       = float(_sev.get('bearish_ob', 0.0))
+                        _buy_liq       = float(_sev.get('buy_liquidity', 0.0))
+                        _sell_liq      = float(_sev.get('sell_liquidity', 0.0))
+                        _bull_fvg_lo   = float(_sev.get('bullish_fvg_low', 0.0))
+                        _bull_fvg_hi   = float(_sev.get('bullish_fvg_high', 0.0))
+
+                        _secs_deploy  = _now_ts - _last_deploy_t if _last_deploy_t > 0 else 9999
+                        _secs_trig    = _now_ts - _last_trig_t   if _last_trig_t  > 0 else 9999
+                        _secs_err     = _now_ts - _deploy_err_t  if _deploy_err_t > 0 else 9999
+                        _is_stuck     = is_run and _is_deployed and pend_ord == 0 and open_pos == 0 and _secs_deploy > 120
+                        _is_frozen    = is_run and _secs_deploy > 600 and pend_ord == 0 and not _runner_mode
+
+                        def _ago(s):
+                            if s > 9000: return 'never'
+                            if s < 60:   return f'{int(s)}s ago'
+                            if s < 3600: return f'{int(s//60)}m ago'
+                            return f'{int(s//3600)}h ago'
+
+                        if _is_frozen:
+                            _gbadge, _gcol = '🧊 FROZEN — No grid 10+ min', '#ef4444'
+                        elif _is_stuck:
+                            _gbadge, _gcol = '⚠️ STUCK — 0 traps & 0 positions', '#f97316'
+                        elif _is_deploying:
+                            _gbadge, _gcol = '⏳ DEPLOYING...', '#eab308'
+                        elif _deploy_err_t > 0 and _secs_err < 60:
+                            _gbadge, _gcol = '⚡ DEPLOY ERROR — retrying', '#ef4444'
+                        elif _runner_mode:
+                            _gbadge, _gcol = '🚀 RUNNER MODE — Traps wiped, trailing profit', '#a855f7'
+                        elif _is_deployed and pend_ord > 0:
+                            _gbadge, _gcol = f'✅ GRID ACTIVE — {pend_ord} traps | {open_pos} positions', '#22c55e'
+                        elif _is_deployed and open_pos > 0:
+                            _gbadge, _gcol = f'📍 POSITIONS ONLY — {open_pos} open, 0 pending', '#3b82f6'
+                        elif not is_run:
+                            _gbadge, _gcol = '⏸️ PAUSED — Standby mode', '#71717a'
+                        else:
+                            _gbadge, _gcol = '🔄 AWAITING DEPLOYMENT', '#eab308'
+
+                        _rbadge = f'🚀 ON — Peak ${_runner_peak:.2f} | Floor ${_ratchet_v:.2f}' if _runner_mode else '— OFF'
+                        _rcol   = '#a855f7' if _runner_mode else '#71717a'
+
+                        if not _fg_enabled:
+                            _fbadge, _fcol = '🔕 DISABLED', '#71717a'
+                        elif _fg_cnt > 0:
+                            _fbadge, _fcol = f'🛡️ WATCHING {_fg_cnt} POSITIONS', '#f97316'
+                        else:
+                            _fbadge, _fcol = f'🛡️ ARMED ({_fg_ticks}-tick window)', '#22c55e'
+
+                        _smc_col  = '#22c55e' if _smc_bias == 'BUY' else ('#ef4444' if _smc_bias == 'SELL' else '#71717a')
+                        _wave_lbl = {0:'?', 1:'Wave 1', 2:'Wave 2', 3:'⚡ Wave 3 (BOOST)', 4:'Wave 4', 5:'Wave 5', -1:'ABC-A', -2:'ABC-B', -3:'ABC-C'}.get(_ew_wave, f'Wave {_ew_wave}')
+                        _wave_col = '#a855f7' if _ew_wave == 3 else ('#3b82f6' if _ew_wave in (1,5) else '#71717a')
+                        _bos_col  = '#22c55e' if _bos_dir == 'BULLISH' else ('#ef4444' if _bos_dir == 'BEARISH' else '#71717a')
+                        _ob_txt   = f'Bull @ {_bull_ob:,.4f}' if _bull_ob > 0 else (f'Bear @ {_bear_ob:,.4f}' if _bear_ob > 0 else '—')
+                        _liq_txt  = f'Buy @ {_buy_liq:,.4f}' if _buy_liq > 0 else (f'Sell @ {_sell_liq:,.4f}' if _sell_liq > 0 else '—')
+                        _fvg_txt  = f'{_bull_fvg_lo:,.4f}–{_bull_fvg_hi:,.4f}' if _bull_fvg_lo > 0 else '—'
+
+                        _pos_rows = ''
+                        for _pid, _pos in list(brk.open_positions.items())[:6]:
+                            _ep   = getattr(_pos, 'entry_price', getattr(_pos, 'open_price', 0))
+                            _pt   = getattr(_pos, 'type', '?')
+                            _ppnl = getattr(_pos, 'profit', 0.0)
+                            _lot  = getattr(_pos, 'volume', getattr(_pos, 'size', 0))
+                            _pcol = '#22c55e' if _ppnl >= 0 else '#ef4444'
+                            _fgi  = '🛡️ ' if str(_pid) in _fg_watches else ''
+                            _pos_rows += f'<tr><td>{_fgi}{str(_pid)[:8]}</td><td style="color:{"#22c55e" if _pt=="BUY" else "#ef4444"}">{_pt}</td><td>${_ep:,.4f}</td><td>${sym_p:,.4f}</td><td>{_lot}</td><td style="color:{_pcol};font-weight:700">${_ppnl:+,.2f}</td></tr>'
+
+                        _pos_table_html = ''
+                        if open_pos > 0:
+                            _pos_table_html = f'<div style="margin-top:6px"><div style="font-size:0.62rem;color:#71717a;margin-bottom:3px">OPEN POSITIONS BREAKDOWN (🛡️ = Fake-Out Guard Watching)</div><table class="fast-table" style="font-size:0.73rem"><thead><tr><th>ID</th><th>Side</th><th>Entry</th><th>Now</th><th>Lot</th><th>P&L</th></tr></thead><tbody>{_pos_rows}</tbody></table></div>'
+
+                        _frozen_html = '<div style="background:#7f1d1d;border:1px solid #ef4444;border-radius:5px;padding:6px 10px;margin-top:8px;font-size:0.78rem;color:#fca5a5">🧊 <strong>BOT FROZEN:</strong> Running but no grid deployed for 10+ min. Click <strong>🔄 RESET</strong> to force re-deploy.</div>' if _is_frozen else ''
+                        _stuck_html  = '<div style="background:#431407;border:1px solid #f97316;border-radius:5px;padding:6px 10px;margin-top:8px;font-size:0.78rem;color:#fdba74">⚠️ <strong>BOT STUCK:</strong> 0 traps + 0 positions for 2+ min. Click <strong>🔄 RESET</strong> to restore.</div>' if (_is_stuck and not _is_frozen) else ''
+
+                        st.markdown(f'''
+                        <div style="background:#0d0d10;border:1px solid #3f3f46;border-radius:8px;padding:10px 12px;margin-top:6px">
+                          <div style="font-size:0.65rem;font-weight:700;color:#52525b;text-transform:uppercase;letter-spacing:.8px;margin-bottom:8px">🔍 Live Bot Audit &middot; {sym_code}</div>
+
+                          <!-- Row 1: Grid Status | Runner Mode | Fake-Out Guard -->
+                          <div style="display:grid;grid-template-columns:2fr 1fr 1fr;gap:8px;margin-bottom:8px">
+                            <div style="background:#18181b;border-radius:6px;padding:7px 10px;border:1px solid #27272a">
+                              <div style="font-size:0.60rem;color:#71717a;margin-bottom:2px">GRID STATUS</div>
+                              <div style="font-size:0.78rem;font-weight:700;color:{_gcol}">{_gbadge}</div>
+                              <div style="font-size:0.64rem;color:#3f3f46;margin-top:3px">
+                                Deploy: {_ago(_secs_deploy)} &nbsp;|&nbsp; Fill: {_ago(_secs_trig)} &nbsp;|&nbsp; Ticks: {_tick_cnt:,}
+                              </div>
+                            </div>
+                            <div style="background:#18181b;border-radius:6px;padding:7px 10px;border:1px solid #27272a">
+                              <div style="font-size:0.60rem;color:#71717a;margin-bottom:2px">🚀 RUNNER MODE</div>
+                              <div style="font-size:0.74rem;font-weight:700;color:{_rcol}">{_rbadge}</div>
+                            </div>
+                            <div style="background:#18181b;border-radius:6px;padding:7px 10px;border:1px solid #27272a">
+                              <div style="font-size:0.60rem;color:#71717a;margin-bottom:2px">FAKE-OUT GUARD</div>
+                              <div style="font-size:0.74rem;font-weight:700;color:{_fcol}">{_fbadge}</div>
+                            </div>
+                          </div>
+
+                          <!-- Row 2: SMC + Elliott Wave -->
+                          <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr 1fr;gap:6px;margin-bottom:6px">
+                            <div style="background:#18181b;border-radius:5px;padding:6px 8px;border:1px solid #27272a">
+                              <div style="font-size:0.59rem;color:#71717a">SMC BIAS</div>
+                              <strong style="font-size:0.75rem;color:{_smc_col}">{_smc_bias}</strong>
+                              <div style="font-size:0.59rem;color:#52525b">Score {_smc_score}/100</div>
+                            </div>
+                            <div style="background:#18181b;border-radius:5px;padding:6px 8px;border:1px solid #27272a">
+                              <div style="font-size:0.59rem;color:#71717a">ELLIOTT WAVE</div>
+                              <strong style="font-size:0.73rem;color:{_wave_col}">{_wave_lbl}</strong>
+                              <div style="font-size:0.59rem;color:#52525b">Conf {_ew_conf:.0%}</div>
+                            </div>
+                            <div style="background:#18181b;border-radius:5px;padding:6px 8px;border:1px solid #27272a">
+                              <div style="font-size:0.59rem;color:#71717a">BOS STRUCTURE</div>
+                              <strong style="font-size:0.75rem;color:{_bos_col}">{_bos_dir}</strong>
+                            </div>
+                            <div style="background:#18181b;border-radius:5px;padding:6px 8px;border:1px solid #27272a">
+                              <div style="font-size:0.59rem;color:#71717a">ORDER BLOCK</div>
+                              <strong style="font-size:0.70rem;color:#3b82f6">{_ob_txt}</strong>
+                              <div style="font-size:0.58rem;color:#52525b">FVG: {_fvg_txt}</div>
+                            </div>
+                            <div style="background:#18181b;border-radius:5px;padding:6px 8px;border:1px solid #27272a">
+                              <div style="font-size:0.59rem;color:#71717a">LIQUIDITY</div>
+                              <strong style="font-size:0.70rem;color:#a855f7">{_liq_txt}</strong>
+                            </div>
+                          </div>
+
+                          {_pos_table_html}
+                          {_frozen_html}
+                          {_stuck_html}
+                        </div>''', unsafe_allow_html=True)
+
+                        # ══════════════════════════════════════════════════════════
+                        #  📈 LIVE 1M CANDLESTICK & SMC STRUCTURE CHART
+                        # ══════════════════════════════════════════════════════════
+                        with st.expander(f"📈 Live 1m Interactive Chart ({sym_code})", expanded=False):
+                            try:
+                                from core.data import get_historical_klines
+                                _chart_df = get_historical_klines(sym_code, interval="1m", limit=50)
+                                if _chart_df is not None and not _chart_df.empty:
+                                    _fig = go.Figure()
+                                    _fig.add_trace(go.Candlestick(
+                                        x=_chart_df.index,
+                                        open=_chart_df['open'],
+                                        high=_chart_df['high'],
+                                        low=_chart_df['low'],
+                                        close=_chart_df['close'],
+                                        name=f'{sym_code} 1m'
+                                    ))
+                                    if 'vwap' in _chart_df.columns:
+                                        _fig.add_trace(go.Scatter(
+                                            x=_chart_df.index, y=_chart_df['vwap'],
+                                            mode='lines', line=dict(color='#06b6d4', width=1.5),
+                                            name='VWAP'
+                                        ))
+                                    if _bull_ob > 0:
+                                        _fig.add_hline(y=_bull_ob, line_dash='dash', line_color='#3b82f6',
+                                                       annotation_text=f"Bull OB ${_bull_ob:.2f}")
+                                    if _bear_ob > 0:
+                                        _fig.add_hline(y=_bear_ob, line_dash='dash', line_color='#f97316',
+                                                       annotation_text=f"Bear OB ${_bear_ob:.2f}")
+                                    _fig.add_hline(y=sym_p, line_color='#22c55e',
+                                                   annotation_text=f"Live ${sym_p:,.2f}")
+                                    _fig.update_layout(
+                                        template='plotly_dark',
+                                        paper_bgcolor='#09090b',
+                                        plot_bgcolor='#121215',
+                                        height=250,
+                                        margin=dict(l=5, r=5, t=25, b=5),
+                                        xaxis=dict(rangeslider=dict(visible=False), showgrid=False),
+                                        yaxis=dict(showgrid=True, gridcolor='#27272a'),
+                                        showlegend=False
+                                    )
+                                    st.plotly_chart(_fig, use_container_width=True, key=f"c1m_{sym_code}")
+                            except Exception as _c_err:
+                                st.markdown(f"<div style='font-size:0.72rem;color:#71717a'>Chart: {_c_err}</div>", unsafe_allow_html=True)
 
                     # ══════════════════════════════════════════════════════════
                     #  MANUAL MODE — Full Parameter Control Panel

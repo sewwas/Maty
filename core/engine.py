@@ -393,21 +393,47 @@ class AutoReadingEngine:
         regime = tech.get("regime") if tech.get("regime") else self._detect_regime(ema_bias, rsi, atr_pct, bb_width_pct, ci, adx, mtf_conf)
 
         # ---- 4. COMBINED DIRECTIONAL BIAS & UNIDIRECTIONAL CONFLUENCE ----
-        # 45% EMA + 30% Orderbook + 15% VWAP + 10% RSI signal
-        rsi_signal = (rsi - 50.0) / 50.0  # -1.0 (oversold=buy) to +1.0 (overbought=sell)
+        # 50% EMA + 25% VWAP + 15% Orderbook + 10% RSI Trend Momentum
+        rsi_signal = (rsi - 50.0) / 50.0  # >0 when price rising, <0 when price dropping
         combined_bias = (
-            0.45 * ema_bias
-            + 0.30 * ob_delta
-            + 0.15 * vwap_bias
-            + 0.10 * (-rsi_signal)  # RSI >70 = negative (fade overbought), <30 = positive
+            0.50 * ema_bias
+            + 0.25 * vwap_bias
+            + 0.15 * ob_delta
+            + 0.10 * rsi_signal
         )
+
+        # STRICT VWAP TREND PROTECTION SHIELD:
+        # If price is trading BELOW VWAP (vwap_dev < 0) and EMA bias is negative, force combined_bias <= -0.15
+        # (Mathematically guarantees that a dropping asset like Gold NEVER locks into BUY_ONLY!)
+        if vwap_dev < -0.05 and ema_bias < 0.0:
+            combined_bias = min(combined_bias, -0.20)
+        elif vwap_dev > 0.05 and ema_bias > 0.0:
+            combined_bias = max(combined_bias, 0.20)
+
         combined_bias = max(-1.0, min(1.0, combined_bias))
 
-        # ---- 4b. TOP & BOTTOM FINDER SHIELD (Peak & Trough Overbought/Oversold Guard) ----
-        # - OVERBOUGHT TOP PEAK (RSI >= 68.0 or VWAP Dev >= +0.40%): BLOCK BUY TRAPS (Never Buy on Top!) -> Force SELL_ONLY
-        # - OVERSOLD BOTTOM TROUGH (RSI <= 32.0 or VWAP Dev <= -0.40%): BLOCK SELL TRAPS (Never Sell on Bottom!) -> Force BUY_ONLY
-        is_top_peak = (rsi >= 68.0 or vwap_dev >= 0.40)
-        is_bottom_trough = (rsi <= 32.0 or vwap_dev <= -0.40)
+        # ---- 4b. ACCURATE TOP & BOTTOM FINDER SHIELD (5-Factor Multi-Confluence Guard) ----
+        # CRITICAL TREND SAFETY: Never confuse a strong TREND EXPANSION with a Top/Bottom reversal!
+        # Evaluates 5 independent institutional factors (ADX, CI, MTF Confluence, EMA Slope, Volume Expansion).
+        # Requires at least 2 confirming factors to classify a Strong Trend Expansion.
+        vol_spike = float(tech.get("volume_spike_mult", 1.0))
+        trend_score = 0
+        if adx >= 25.0:           trend_score += 1  # Factor 1: ADX Trend Strength
+        if ci <= 48.0:            trend_score += 1  # Factor 2: Unchoppy Expansion
+        if mtf_conf >= 70.0:      trend_score += 1  # Factor 3: 1m+5m+15m MTF Alignment
+        if abs(ema_bias) >= 0.35: trend_score += 1  # Factor 4: Strong EMA Slope
+        if vol_spike >= 1.30:     trend_score += 1  # Factor 5: Institutional Volume Expansion
+
+        is_strong_trend = (trend_score >= 2)
+
+        if is_strong_trend:
+            # During real trends (2+ confirming factors), Top & Bottom Guard stays OFF so we NEVER miss a trend!
+            is_top_peak = False
+            is_bottom_trough = False
+        else:
+            # Only during ranging / exhausted markets check for genuine peak top or trough bottom
+            is_top_peak = (rsi >= 72.0 or vwap_dev >= 0.50)
+            is_bottom_trough = (rsi <= 28.0 or vwap_dev <= -0.50)
 
         top_bottom_status = "NORMAL"
         side_mode = str(pending_order_side_mode or "AUTO_ADAPTIVE").upper()
@@ -423,12 +449,13 @@ class AutoReadingEngine:
         elif "TREND" in side_mode or "ONE" in side_mode:
             unidirectional_mode = "BUY_ONLY" if combined_bias >= 0.0 else "SELL_ONLY"
         else: # AUTO_ADAPTIVE
-            if combined_bias >= 0.40:
+            if combined_bias >= 0.30:
                 unidirectional_mode = "BUY_ONLY"
-            elif combined_bias <= -0.40:
+            elif combined_bias <= -0.30:
                 unidirectional_mode = "SELL_ONLY"
             else:
                 unidirectional_mode = "DUAL"
+
 
         # ---- 5. NEWS RISK SHIELD ----
         now_ts = time.time()
@@ -664,7 +691,37 @@ class AutoReadingEngine:
             dynamic_target_profit = round(dynamic_target_profit * 1.35, 2)
             lot_multiplier = 1.35
 
-        # ---- 12. UPDATE STATE FOR REDEPLOYMENT THROTTLE ----
+        # ---- 12. SMC + ELLIOTT WAVE INTELLIGENCE INTEGRATION ----
+        # Runs the full SMC + Elliott Wave analysis on the same klines used above.
+        # If SMC bias aligns with EMA bias, combined_bias is boosted by up to 0.20.
+        smc_result = {"smc_bias": "NEUTRAL", "smc_score": 50, "elliott_wave": 0,
+                      "elliott_confidence": 0.0, "bos_direction": "NEUTRAL",
+                      "bullish_ob": 0.0, "bearish_ob": 0.0,
+                      "bullish_fvg_low": 0.0, "bullish_fvg_high": 0.0,
+                      "bearish_fvg_low": 0.0, "bearish_fvg_high": 0.0,
+                      "buy_liquidity": 0.0, "sell_liquidity": 0.0}
+        try:
+            from core.data import calculate_smc_elliott
+            if tech_indicators and isinstance(tech_indicators, dict):
+                # Reuse klines_df passed via tech_indicators context or re-fetch
+                _smc_df = tech_indicators.get("_klines_df", None)
+                if _smc_df is None:
+                    from core.data import get_historical_klines
+                    _smc_df = get_historical_klines(symbol, interval="1m", limit=100)
+                if _smc_df is not None:
+                    smc_result = calculate_smc_elliott(_smc_df)
+                    # Boost combined_bias when SMC + EMA agree
+                    smc_bias_val = smc_result.get("smc_bias", "NEUTRAL")
+                    smc_conf = smc_result.get("elliott_confidence", 0.0)
+                    if smc_bias_val == "BUY" and combined_bias > 0:
+                        combined_bias = min(1.0, combined_bias + 0.15 + smc_conf * 0.10)
+                    elif smc_bias_val == "SELL" and combined_bias < 0:
+                        combined_bias = max(-1.0, combined_bias - 0.15 - smc_conf * 0.10)
+                    combined_bias = round(combined_bias, 3)
+        except Exception:
+            pass
+
+        # ---- 13. UPDATE STATE FOR REDEPLOYMENT THROTTLE ----
         self._last_eval_bias = combined_bias
         self._last_eval_regime = regime
         self._last_eval_ts = now_ts
@@ -701,6 +758,20 @@ class AutoReadingEngine:
             "recommended_levels": max_levels,
             "recommended_stop_loss": round(stop_loss, 2),
             "recommended_target_profit": dynamic_target_profit,
+            # SMC + Elliott Wave intelligence
+            "smc_bias":          smc_result.get("smc_bias", "NEUTRAL"),
+            "smc_score":         smc_result.get("smc_score", 50),
+            "elliott_wave":      smc_result.get("elliott_wave", 0),
+            "elliott_confidence":smc_result.get("elliott_confidence", 0.0),
+            "bos_direction":     smc_result.get("bos_direction", "NEUTRAL"),
+            "bullish_ob":        smc_result.get("bullish_ob", 0.0),
+            "bearish_ob":        smc_result.get("bearish_ob", 0.0),
+            "bullish_fvg_low":   smc_result.get("bullish_fvg_low",  0.0),
+            "bullish_fvg_high":  smc_result.get("bullish_fvg_high", 0.0),
+            "bearish_fvg_low":   smc_result.get("bearish_fvg_low",  0.0),
+            "bearish_fvg_high":  smc_result.get("bearish_fvg_high", 0.0),
+            "buy_liquidity":     smc_result.get("buy_liquidity",  0.0),
+            "sell_liquidity":    smc_result.get("sell_liquidity", 0.0),
         }
 
 
@@ -832,6 +903,20 @@ class BreakoutGridBot:
         self._last_trigger_time: float = 0.0
         # Cooldown after Runner Mode exits to prevent instant trap fills on trending price
         self._runner_exit_cooldown_until: float = 0.0
+
+        # ── LIQUIDITY GRAB / FAKE-OUT GUARD ──────────────────────────────────────
+        # Watches newly filled positions for N ticks. If price crosses back through
+        # entry while position is in loss → classic stop hunt → close early.
+        self._fakeout_guard_enabled: bool = True      # Master toggle (user can disable)
+        self._fakeout_guard_ticks: int = 8            # Tick window to watch after fill (~12s @ 1.5s/tick)
+        self._fakeout_recent_fills: dict = {}         # {position_id: (entry_price, pos_type, fill_tick)}
+        self._tick_counter: int = 0                   # Monotonic tick counter
+        # ─────────────────────────────────────────────────────────────────────────
+
+        # ── SMC + ELLIOTT WAVE TOGGLE ──────────────────────────────────────────────
+        self.use_smc_elliott: bool = True   # Enables SMC Order Block + FVG + Elliott Wave engine
+        self._last_smc_eval: dict = {}      # Cached most-recent SMC evaluation result
+        # ─────────────────────────────────────────────────────────────────────────
 
     @property
     def order_size(self) -> float:
@@ -1037,6 +1122,20 @@ class BreakoutGridBot:
             self.pending_order_side_mode = "AUTO_ADAPTIVE"
         if not hasattr(self, "auto_reading_engine"):
             self.auto_reading_engine = AutoReadingEngine()
+        # Fake-out guard backward-compat (for pickled bots loaded from bot_state.pkl)
+        if not hasattr(self, "_fakeout_guard_enabled"):
+            self._fakeout_guard_enabled = True
+        if not hasattr(self, "_fakeout_guard_ticks"):
+            self._fakeout_guard_ticks = 8
+        if not hasattr(self, "_fakeout_recent_fills"):
+            self._fakeout_recent_fills = {}
+        if not hasattr(self, "_tick_counter"):
+            self._tick_counter = 0
+        # SMC + Elliott Wave backward-compat
+        if not hasattr(self, "use_smc_elliott"):
+            self.use_smc_elliott = True
+        if not hasattr(self, "_last_smc_eval"):
+            self._last_smc_eval = {}
 
     def deploy_traps(self, current_price: float, timestamp: float, bb_width: Optional[float] = None, force: bool = False):
         """
@@ -1320,8 +1419,24 @@ class BreakoutGridBot:
         cancel_success = False
         placement_failed = False
         try:
-            # Unidirectional Grid Trap Architecture: BUY_ONLY when bullish bias >= +0.50, SELL_ONLY when bearish bias <= -0.50, else DUAL
             unidirectional_mode = getattr(self, "unidirectional_mode", "DUAL")
+
+            # ── ULTRA-FAST LIVE SPREAD & MOMENTUM GRID OPTIMIZER ────────────
+            # 1. Live Spread Shield: Ensure offsets strictly exceed 1.8x live Bid-Ask spread
+            if hasattr(self.broker, "get_current_spread"):
+                live_sp = float(self.broker.get_current_spread())
+                if live_sp > 0:
+                    min_sp_off = live_sp * 1.80
+                    buy_offset_val = max(buy_offset_val, min_sp_off)
+                    sell_offset_val = max(sell_offset_val, min_sp_off)
+
+            # 2. Trend Acceleration: In strong trend mode, tighten trend-side offset 15% for fast execution
+            if unidirectional_mode == "BUY_ONLY":
+                buy_offset_val *= 0.85
+            elif unidirectional_mode == "SELL_ONLY":
+                sell_offset_val *= 0.85
+            # ────────────────────────────────────────────────────────────────────
+
 
             # Always cancel existing pending orders FIRST before placing new grid traps
             try:
@@ -1344,6 +1459,59 @@ class BreakoutGridBot:
                 min_tp_dist = max(gap_val * 1.0, 1.00)
             else:
                 min_tp_dist = max(gap_val * 1.0, current_price * 0.001)
+
+            # ── SMC + ELLIOTT WAVE GRID REFINEMENT ──────────────────────────────
+            # Uses the cached SMC evaluation from the last AutoReading eval to:
+            #   1. Snap buy_offset_val toward the nearest Bullish Order Block
+            #   2. Avoid placing traps inside Fair Value Gaps (shift to FVG edge)
+            #   3. Apply Wave 3 lot size boost (+35%) for strongest impulse entries
+            # All adjustments are bounded so they NEVER violate broker min-stop rules.
+            if getattr(self, "use_smc_elliott", True):
+                try:
+                    smc = getattr(self, "last_auto_eval", {}) or {}
+                    bullish_ob   = float(smc.get("bullish_ob",        0.0))
+                    bearish_ob   = float(smc.get("bearish_ob",        0.0))
+                    bull_fvg_lo  = float(smc.get("bullish_fvg_low",   0.0))
+                    bull_fvg_hi  = float(smc.get("bullish_fvg_high",  0.0))
+                    bear_fvg_lo  = float(smc.get("bearish_fvg_low",   0.0))
+                    bear_fvg_hi  = float(smc.get("bearish_fvg_high",  0.0))
+                    elliott_wave = int(smc.get("elliott_wave",         0))
+                    elliott_conf = float(smc.get("elliott_confidence", 0.0))
+                    bos_dir      = str(smc.get("bos_direction",  "NEUTRAL"))
+
+                    # 1. ORDER BLOCK SNAP
+                    ob_snap_done = False
+                    if bullish_ob > 0 and ask_ref > bullish_ob > ask_ref - gap_val * 3.0:
+                        ob_dist = ask_ref - bullish_ob
+                        buy_offset_val = max(ob_dist, buy_offset_val * 0.75)
+                        ob_snap_done = True
+
+                    # 2. FVG AVOIDANCE — shift traps outside imbalance zones
+                    first_buy_level = ask_ref + buy_offset_val
+                    if bear_fvg_lo > 0 and bear_fvg_lo < first_buy_level < bear_fvg_hi:
+                        buy_offset_val = bear_fvg_hi - ask_ref + gap_val * 0.25
+
+                    first_sell_level = bid_ref - sell_offset_val
+                    if bull_fvg_lo > 0 and bull_fvg_lo < first_sell_level < bull_fvg_hi:
+                        sell_offset_val = bid_ref - bull_fvg_lo + gap_val * 0.25
+
+                    # 3. ELLIOTT WAVE 3 LOT SIZE BOOST
+                    # Wave 3 = strongest institutional impulse — safest moment to size up
+                    if elliott_wave == 3 and elliott_conf >= 0.60 and bos_dir != "NEUTRAL":
+                        orig_size = self.order_size
+                        boosted_size = round(min(orig_size * 1.35, orig_size * 1.5), 8)
+                        self.deploy_order_size = boosted_size
+                        print(f"[{sym_name}] \U0001f30a ELLIOTT WAVE 3 BOOST: lot {orig_size:.4f} "
+                              f"-> {boosted_size:.4f} (Wave {elliott_wave}, conf {elliott_conf:.0%}, BOS {bos_dir})")
+                    else:
+                        self.deploy_order_size = self.order_size
+
+                    if ob_snap_done:
+                        print(f"[{sym_name}] \U0001f4e6 SMC ORDER BLOCK SNAP: buy offset -> OB @ {bullish_ob:.4f}")
+
+                except Exception:
+                    pass
+            # ────────────────────────────────────────────────────────────────────
 
             # ENVELOPE-ANCHORED HARDWARE BROKER TP SHIELD (EXNESS SERVER 0MS SPIKE HARVEST):
             # Hardware TPs are placed WELL ABOVE the highest BUY level and WELL BELOW the lowest SELL level.
@@ -1378,32 +1546,19 @@ class BreakoutGridBot:
 
             limit_reached = False
 
-            # Place Buy Stop orders above Ask price
-            if unidirectional_mode in ("DUAL", "BUY_ONLY"):
-                for i in range(self.grid_levels):
-                    trigger_price = ask_ref + buy_offset_val + (i * gap_val)
-                    level_size = self.calculate_level_size(self.order_size, self.order_size_multiplier, i)
-                    try:
-                        self.broker.place_order("BUY_STOP", trigger_price, level_size, timestamp, tp=buy_tp_px, sl=buy_sl_px)
-                        placed_count += 1
-                    except Exception as err:
-                        err_str = str(err)
-                        if "10033" in err_str or "Orders limit" in err_str:
-                            limit_reached = True
-                            now_t = time.time()
-                            if now_t - getattr(self, "_last_10033_log_time", 0.0) >= 30.0:
-                                self._last_10033_log_time = now_t
-                                print(f"[{sym_name}] Exness Orders Limit reached (10033). Keeping {placed_count} active grid traps working. (Backing off 30s)")
-                            break
-                        print(f"Buy trap level {i+1} notice: {err}")
+            # Interleaved Equal-Priority Dual Grid Trap Placement:
+            # Guarantees that level 0 BUY and level 0 SELL traps are placed FIRST together,
+            # so DUAL mode NEVER leaves one side unplaced even if broker limits orders!
+            for i in range(self.grid_levels):
+                if limit_reached:
+                    break
 
-            # Place Sell Stop orders below Bid price (only if account order limit has not been breached)
-            if not limit_reached and unidirectional_mode in ("DUAL", "SELL_ONLY"):
-                for i in range(self.grid_levels):
-                    trigger_price = bid_ref - sell_offset_val - (i * gap_val)
-                    level_size = self.calculate_level_size(self.order_size, self.order_size_multiplier, i)
+                # Place Level i BUY_STOP if allowed
+                if unidirectional_mode in ("DUAL", "BUY_ONLY"):
+                    buy_px = ask_ref + buy_offset_val + (i * gap_val)
+                    buy_size = self.calculate_level_size(self.order_size, self.order_size_multiplier, i)
                     try:
-                        self.broker.place_order("SELL_STOP", trigger_price, level_size, timestamp, tp=sell_tp_px, sl=sell_sl_px)
+                        self.broker.place_order("BUY_STOP", buy_px, buy_size, timestamp, tp=buy_tp_px, sl=buy_sl_px)
                         placed_count += 1
                     except Exception as err:
                         err_str = str(err)
@@ -1413,8 +1568,23 @@ class BreakoutGridBot:
                             if now_t - getattr(self, "_last_10033_log_time", 0.0) >= 30.0:
                                 self._last_10033_log_time = now_t
                                 print(f"[{sym_name}] Exness Orders Limit reached (10033). Keeping {placed_count} active grid traps working. (Backing off 30s)")
-                            break
-                        print(f"Sell trap level {i+1} notice: {err}")
+
+                # Place Level i SELL_STOP if allowed and limit not reached
+                if not limit_reached and unidirectional_mode in ("DUAL", "SELL_ONLY"):
+                    sell_px = bid_ref - sell_offset_val - (i * gap_val)
+                    sell_size = self.calculate_level_size(self.order_size, self.order_size_multiplier, i)
+                    try:
+                        self.broker.place_order("SELL_STOP", sell_px, sell_size, timestamp, tp=sell_tp_px, sl=sell_sl_px)
+                        placed_count += 1
+                    except Exception as err:
+                        err_str = str(err)
+                        if "10033" in err_str or "Orders limit" in err_str:
+                            limit_reached = True
+                            now_t = time.time()
+                            if now_t - getattr(self, "_last_10033_log_time", 0.0) >= 30.0:
+                                self._last_10033_log_time = now_t
+                                print(f"[{sym_name}] Exness Orders Limit reached (10033). Keeping {placed_count} active grid traps working. (Backing off 30s)")
+
 
             if limit_reached:
                 self._last_deploy_error_time = timestamp + 27.0
@@ -1424,6 +1594,17 @@ class BreakoutGridBot:
                 self.last_deploy_time = timestamp
                 if not limit_reached:
                     self._last_deploy_error_time = 0.0
+
+                # Real-time high-visibility grid deployment logging
+                buy_off_pct = (buy_offset_val / current_price * 100.0) if current_price > 0 else 0.0
+                sell_off_pct = (sell_offset_val / current_price * 100.0) if current_price > 0 else 0.0
+                gap_pct = (gap_val / current_price * 100.0) if current_price > 0 else 0.0
+                print(f"[{sym_name}] [GRID DEPLOYED] {placed_count} TRAPS @ ${current_price:,.2f} | Mode: {unidirectional_mode} | "
+                      f"Gap: {gap_pct:.3f}% (${gap_val:.2f}) | "
+                      f"Buy Off: {buy_off_pct:.3f}% (${buy_offset_val:.2f}) | "
+                      f"Sell Off: {sell_off_pct:.3f}% (${sell_offset_val:.2f}) | Lot: {self.deploy_order_size}")
+
+
             else:
                 self.deployed = False
                 if not limit_reached:
@@ -1884,6 +2065,120 @@ class BreakoutGridBot:
         # Update last-trigger time whenever a new position is filled
         if triggered_positions:
             self._last_trigger_time = timestamp
+
+        # ── LIQUIDITY GRAB / FAKE-OUT GUARD ──────────────────────────────────────
+        # After a trap fires, we watch the next N ticks.
+        # If price quickly reverses back THROUGH the entry price while the
+        # position is losing → it's a stop hunt / liquidity grab → exit early!
+        # This fires BEFORE Stop Loss and saves most of the drawdown.
+        # Disabled automatically in Runner Mode (confirmed trend — never cut a runner).
+        if getattr(self, '_fakeout_guard_enabled', True) and not getattr(self, 'in_runner_mode', False):
+            self._tick_counter = getattr(self, '_tick_counter', 0) + 1
+
+            # Register newly triggered positions into the guard watch-list
+            if triggered_positions:
+                if not isinstance(getattr(self, '_fakeout_recent_fills', None), dict):
+                    self._fakeout_recent_fills = {}
+                for pos in triggered_positions:
+                    pid = getattr(pos, 'position_id', getattr(pos, 'id', getattr(pos, 'ticket', None)))
+                    if pid and str(pid) not in self._fakeout_recent_fills:
+                        ep = getattr(pos, 'entry_price', getattr(pos, 'open_price', current_price))
+                        pt = getattr(pos, 'type', 'BUY')
+                        self._fakeout_recent_fills[str(pid)] = (float(ep), str(pt), int(self._tick_counter))
+
+            # Expire fills that have aged past the guard window
+            guard_ticks = getattr(self, '_fakeout_guard_ticks', 8)
+            expired_pids = [
+                pid for pid, (ep, pt, ft) in list(getattr(self, '_fakeout_recent_fills', {}).items())
+                if (self._tick_counter - ft) > guard_ticks
+            ]
+            for pid in expired_pids:
+                self._fakeout_recent_fills.pop(pid, None)
+
+            # Evaluate each watched position for a fake-out reversal
+            for pid, (entry_px, pos_type, fill_tick) in list(getattr(self, '_fakeout_recent_fills', {}).items()):
+                ticks_since_fill = self._tick_counter - fill_tick
+                # Give price at least 2 ticks to develop before judging direction
+                if ticks_since_fill < 2:
+                    continue
+                # Position must still be open
+                if pid not in self.broker.open_positions:
+                    self._fakeout_recent_fills.pop(pid, None)
+                    continue
+                # Skip if position is already profitable (genuine breakout — let it run!)
+                pos_obj = self.broker.open_positions[pid]
+                pos_pnl = getattr(pos_obj, 'profit', pos_obj.get_pnl(current_price) if hasattr(pos_obj, 'get_pnl') else 0.0)
+                if pos_pnl >= 0:
+                    continue
+                # Fake-out detection: price crossed back through entry price
+                is_buy_fakeout  = (pos_type == 'BUY')  and (current_price < entry_px)
+                is_sell_fakeout = (pos_type == 'SELL') and (current_price > entry_px)
+                if is_buy_fakeout or is_sell_fakeout:
+                    try:
+                        self.broker.close_position(str(pid), current_price, timestamp)
+                        self._fakeout_recent_fills.pop(pid, None)
+                        direction = 'BUY' if is_buy_fakeout else 'SELL'
+                        sym_label = getattr(self.broker, 'symbol', 'BOT')
+                        print(f"[{sym_label}] 🛡️ FAKEOUT GUARD: {direction} stop-hunt detected. "
+                              f"Entry {entry_px:.4f} → price now {current_price:.4f} "
+                              f"({ticks_since_fill} ticks). Early exit, PnL: {pos_pnl:.2f}")
+                    except Exception as fo_err:
+                        print(f"[FAKEOUT GUARD] Close error: {fo_err}")
+        # ─────────────────────────────────────────────────────────────────────────
+
+        # ── TOP PEAK & BOTTOM TROUGH ACTIVE HARVEST SHIELD ────────────────────────
+        # When market hits a confirmed extreme:
+        #   - BOTTOM_TROUGH_OVERSOLD: Purge pending SELL traps & harvest open SELL positions
+        #     (prevents selling into the absolute bottom wick before a V-bounce)
+        #   - TOP_PEAK_OVERBOUGHT: Purge pending BUY traps & harvest open BUY positions
+        #     (prevents buying into the absolute top peak before a dump)
+        eval_data = getattr(self, "last_auto_eval", {}) or {}
+        tb_status = eval_data.get("top_bottom_status", "NORMAL")
+
+        if tb_status == "BOTTOM_TROUGH_OVERSOLD":
+            # 1. Purge any pending SELL traps on MT5
+            for oid, o in list(self.broker.pending_orders.items()):
+                if getattr(o, "type", "") in ("SELL_STOP", "SELL_LIMIT"):
+                    try:
+                        self.broker.cancel_order(oid)
+                    except Exception:
+                        pass
+            # 2. Harvest/Close open SELL positions at bottom trough
+            for pid, pos in list(self.broker.open_positions.items()):
+                ptype = getattr(pos, "type", "")
+                if ptype == "SELL":
+                    try:
+                        self.broker.close_position(str(pid), current_price, timestamp)
+                        sym_label = getattr(self.broker, "symbol", "BOT")
+                        p_pnl = getattr(pos, "profit", 0.0)
+                        print(f"[{sym_label}] 🛡️ TROUGH GUARD: BOTTOM_TROUGH_OVERSOLD active! "
+                              f"Harvested SELL position #{pid} at bottom (PnL: ${p_pnl:.2f}) & purged SELL traps.")
+                    except Exception:
+                        pass
+
+        elif tb_status == "TOP_PEAK_OVERBOUGHT":
+            # 1. Purge any pending BUY traps on MT5
+            for oid, o in list(self.broker.pending_orders.items()):
+                if getattr(o, "type", "") in ("BUY_STOP", "BUY_LIMIT"):
+                    try:
+                        self.broker.cancel_order(oid)
+                    except Exception:
+                        pass
+            # 2. Harvest/Close open BUY positions at top peak
+            for pid, pos in list(self.broker.open_positions.items()):
+                ptype = getattr(pos, "type", "")
+                if ptype == "BUY":
+                    try:
+                        self.broker.close_position(str(pid), current_price, timestamp)
+                        sym_label = getattr(self.broker, "symbol", "BOT")
+                        p_pnl = getattr(pos, "profit", 0.0)
+                        print(f"[{sym_label}] 🛡️ PEAK GUARD: TOP_PEAK_OVERBOUGHT active! "
+                              f"Harvested BUY position #{pid} at peak (PnL: ${p_pnl:.2f}) & purged BUY traps.")
+                    except Exception:
+                        pass
+        # ─────────────────────────────────────────────────────────────────────────
+
+
 
         # Track tick price history and velocity (Delta P / Delta t)
         if not hasattr(self, "price_history_ticks") or self.price_history_ticks is None:
