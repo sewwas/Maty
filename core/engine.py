@@ -1536,8 +1536,11 @@ class BreakoutGridBot:
             min_sl_dist = (current_price * 0.05) if "BTC" in sym_name else ((current_price * 0.03) if "ETH" in sym_name else (current_price * 0.025 if current_price > 0 else gap_val * 15.0))
             sl_buffer = max(spike_buffer * 3.50, min_sl_dist)
 
-            buy_tp_px = round(top_buy_level + spike_buffer, digits)
-            sell_tp_px = round(bottom_sell_level - spike_buffer, digits)
+            # Server Hardware TP Buffer: Add 1.5-pip buffer towards live price so MT5 server hardware TP fills 100% reliably
+            tp_fill_buffer = (current_price * 0.00015) if "BTC" not in sym_name else 1.50
+            buy_tp_px = round(top_buy_level + spike_buffer - tp_fill_buffer, digits)
+            sell_tp_px = round(bottom_sell_level - spike_buffer + tp_fill_buffer, digits)
+
 
             # ENVELOPE-ANCHORED HARDWARE BROKER STOP-LOSS (SL) SHIELD:
             # Hardware SL is placed far below the grid for BUYs and far above for SELLs on Exness MT5 server for black swan catastrophic safety!
@@ -2514,8 +2517,24 @@ class BreakoutGridBot:
                     is_price_in_profit_direction = (current_price < avg_sell_px)
                     min_dist_met = ((avg_sell_px - current_price) / avg_sell_px * 100.0) >= min_move_pct
 
-                if float_pnl >= effective_target_profit and float_pnl >= friction_floor + 1.00:
+                # ── NEAR-TP SMART HARVEST GUARD (85% Target + Micro Pullback) ──
+                # When floating profit reaches >= 85% of target AND price starts pulling back by 1 tick,
+                # HARVEST IMMEDIATELY! Prevents near-winning trades from turning into pullbacks!
+                near_tp_threshold = effective_target_profit * 0.85
+                recent_deltas = [self.price_history_ticks[i] - self.price_history_ticks[i-1] for i in range(1, len(self.price_history_ticks))] if len(getattr(self, "price_history_ticks", [])) >= 2 else []
+                is_pullback_tick = False
+                if buy_pos_list and not sell_pos_list:
+                    is_pullback_tick = (recent_deltas and recent_deltas[-1] < 0) or (avg_delta < 0)
+                elif sell_pos_list and not buy_pos_list:
+                    is_pullback_tick = (recent_deltas and recent_deltas[-1] > 0) or (avg_delta > 0)
+
+                if (float_pnl >= effective_target_profit or (float_pnl >= near_tp_threshold and is_pullback_tick)) and float_pnl >= friction_floor + 1.00:
                     target_hit = True
+                    if float_pnl < effective_target_profit:
+                        print(f"[{getattr(self.broker, 'symbol', 'BOT')}] 🎯 NEAR-TP SMART HARVEST: "
+                              f"PnL ${float_pnl:.2f} reached 85%+ of target (${effective_target_profit:.2f}) "
+                              f"& micro-pullback detected. Harvested to secure cash profit!")
+
 
             # 2. MULTI-STAGE RATCHETED BREAKEVEN & UNLOSABLE EQUITY LOCK SHIELD
             if self.use_breakeven:
