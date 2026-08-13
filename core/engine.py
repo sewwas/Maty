@@ -2799,13 +2799,18 @@ class BreakoutGridBot:
                 # ──────────────────────────────────────────────────────────────────
 
 
-            # 9. INSTANT TOP/BOTTOM REVERSAL PROFIT EXIT & NEAR-MISS 85%+ TP HARVEST
+            # 9. INSTANT 1M REVERSAL & TOP/BOTTOM PROFIT HARVEST SHIELD
+            # As soon as a 1m reversal wick is detected on open positions with ANY net positive profit (>= +$0.10 USD),
+            # CLOSE ALL POSITIONS IMMEDIATELY, bank cash profit, and deploy a fresh clean grid!
             top_bottom_reversal_hit = False
-            min_solid_profit = max(100.0 if is_cent else 1.00, volume_friction_target)
+            reversal_pnl_floor = (10.0 if is_cent else 0.10)
             near_miss_target = effective_target_profit * 0.85
             if len(self.broker.open_positions) > 0 and not self.in_runner_mode:
-                if (is_reversing or float_pnl >= near_miss_target) and float_pnl >= min_solid_profit:
+                if (is_reversing and float_pnl >= reversal_pnl_floor) or (float_pnl >= near_miss_target and float_pnl >= (100.0 if is_cent else 1.00)):
                     top_bottom_reversal_hit = True
+                    print(f"[{getattr(self.broker, 'symbol', 'BOT')}] ⚡ 1M REVERSAL AUTO-HARVEST: "
+                          f"PnL ${float_pnl:.2f} harvested on 1m reversal signal. Secured cash profit!")
+
 
         # 100% UNBREAKABLE MASTER NET-POSITIVE PROFIT GUARD:
         # Guarantees that ALL profit-taking exit shields strictly require float_pnl >= +$0.10 USD (strictly net positive cash profit)!
