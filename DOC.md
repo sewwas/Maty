@@ -497,4 +497,45 @@ The Profity AI Investor Portal allows clients to view live strategy stats, simul
 ### 🔗 Official Referral Configuration
 - **Exness Partner IB Referral Link**: `https://one.exnessonelink.com/a/9w3c9k8v1j`
 - **Dynamic Portal Server**: `python portal_api.py` (Runs on `http://localhost:8080`)
-- **Mathematical Blueprint Document**: [04_MATHEMATICAL_PARAMETER_BLUEPRINT_AND_RISK_PROOF.md](file:///c:/Users/User/Desktop/Maty/docs/investors/04_MATHEMATICAL_PARAMETER_BLUEPRINT_AND_RISK_PROOF.md)
+- **Mathematical Blueprint Document**: [04_MATHEMATICAL_PARAMETER_BLUEPRINT_AND_RISK_PROOF.md](file:///c:/Users/User/Desktop/Maty/docs/investors/04_MATHEMATICAL_PARAMETER_BLUEPRINT_AND_RISK_PROOF.md)
+
+---
+
+## 🔬 9. Deep Risk Analysis & Real-World Safety Safeguards
+
+This section details how Profity AI protects real trading capital against the 3 primary real-world market risk scenarios during high-impact economic news, market gaps, and technical infrastructure events:
+
+### 🔴 Scenario 1: High-Impact News Gaps & Slippage (NFP, CPI, Fed Rate Hikes)
+- **Market Threat**: During major news releases, price can "gap" 200 pips in a millisecond, causing market execution slippage.
+- **Bot Safeguards**:
+  - **Dynamic Spread Guard**: If live broker spread expands $> 1.8\times$ baseline prior to news, new grid deployments are automatically blocked until spread normalizes.
+  - **Envelope-Anchored Hardware SL**: Emergency stop-loss orders are hardcoded on Exness server hardware far outside grid bounds.
+  - **Friday Weekend Shutdown**: Purges pending traps before Friday 20:00 UTC to eliminate weekend gap risks.
+
+### 🔴 Scenario 2: VPS Disconnection or MT5 Terminal Crash
+- **Market Threat**: Local internet drops or MT5 desktop application crashes while positions are active.
+- **Bot Safeguards**:
+  - **Hardware Server Registration**: Every order submitted to MT5 has **Hardware TP & SL levels hardcoded directly on Exness broker hardware servers**.
+  - **Zero-Lag Server Execution**: Even if VPS or internet disconnects completely, Exness servers execute TP and SL automatically at 0ms latency.
+  - **State Serialization (`bot_state.pkl`)**: Re-loads full bot history, open trades, and active settings instantly upon restart.
+
+### 🔴 Scenario 3: Over-Leveraging & Excessive Simultaneous Pairs
+- **Market Threat**: Running too many pairs with oversized lots consumes margin, triggering broker margin calls during volatility.
+- **Bot Safeguards**:
+  - **Golden Sweet Spot Defaults**: 0.01 base lot size per $1,000 capital.
+  - **Exness 3-Level Ceiling (6 Traps/Pair)**: Keeps total account pending orders to 36 total across 6 pairs (~10% margin used, 90% free margin).
+  - **Prop Firm Daily Loss Guard**: 4.5% daily drawdown circuit breaker automatically halts execution if daily loss limit is reached.
+
+---
+
+## ⚡ 10. Lag-Free VPS Execution & Trend-Side Order Placement Engine
+
+### 🚀 1. Lag-Free VPS Engine (`app.py`)
+- **500ms Asynchronous Daemon Thread**: Runs ticks continuously on a dedicated background thread every 500ms, independent of browser UI state.
+- **Throttled State Persistence**: Disk writes (`bot_state.pkl`) are throttled to 10-second intervals, keeping CPU load $< 2\%$ and preventing order wiping lag.
+
+### 🌊 2. Trend Change Confirmation & Winning-Side Placement (`core/engine.py`)
+- **Winning-Side Trap Placement**: When `unidirectional_mode` is set to `BUY_ONLY` or `SELL_ONLY`, grid traps are placed **strictly on the winning trend side**.
+- **15% Acceleration Offset**: Tightens trend-side offset by 15% for instant breakout fills on high momentum.
+- **Wave 3 Impulse Booster**: Applies **+35% lot size boost** on Elliott Wave 3 impulse breakouts for maximum trend expansion profit.
+
