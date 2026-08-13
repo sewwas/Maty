@@ -2573,6 +2573,27 @@ class BreakoutGridBot:
                 if active_ratchet > 0 and float_pnl <= active_ratchet and float_pnl >= net_cash_floor:
                     breakeven_hit = True
 
+                # Zero-Lag MT5 Broker Hardware Trailing SL Sync (Throttled 5s for 0% API lag)
+                if hasattr(self.broker, "modify_order") and active_ratchet > 0:
+                    now_t = time.time()
+                    if now_t - getattr(self, "_last_hw_trail_sync_time", 0.0) >= 5.0:
+                        self._last_hw_trail_sync_time = now_t
+                        sym_n = str(getattr(self.broker, "symbol", "")).upper()
+                        digits = 4 if any(x in sym_n for x in ["DOGE", "GBP", "EUR"]) else 2
+                        for pos_id, pos in list(self.broker.open_positions.items()):
+                            e_px = getattr(pos, 'open_price', getattr(pos, 'price', getattr(pos, 'entry_price', current_price)))
+                            if pos.type == "BUY" and current_price > e_px:
+                                new_hw_sl = round(e_px + ((current_price - e_px) * 0.50), digits)
+                                if new_hw_sl > getattr(pos, 'sl', 0.0):
+                                    try: self.broker.modify_order(pos_id, sl=new_hw_sl)
+                                    except Exception: pass
+                            elif pos.type == "SELL" and current_price < e_px:
+                                new_hw_sl = round(e_px - ((e_px - current_price) * 0.50), digits)
+                                if getattr(pos, 'sl', 0.0) == 0.0 or new_hw_sl < getattr(pos, 'sl', float('inf')):
+                                    try: self.broker.modify_order(pos_id, sl=new_hw_sl)
+                                    except Exception: pass
+
+
             # 3. TRAILING STOP (when not in runner mode)
             if self.use_trailing_stop and not self.in_runner_mode:
                 ts_dist = (self.trailing_stop_distance * 100.0) if is_cent else self.trailing_stop_distance
