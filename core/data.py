@@ -726,7 +726,8 @@ def calculate_smc_elliott(df) -> dict:
         tr_list = [max(highs[i]-lows[i], abs(highs[i]-closes[i-1]), abs(lows[i]-closes[i-1]))
                    for i in range(1, n)]
         atr = float(np.mean(tr_list[-14:])) if len(tr_list) >= 14 else (float(np.mean(tr_list)) if tr_list else last_close * 0.002)
-        impulse_threshold = atr * 1.8   # Candle body ≥ 1.8× ATR = institutional impulse
+        impulse_threshold = atr * 1.25   # Candle body ≥ 1.25× ATR = institutional impulse
+
 
         # ────────────────────────────────────────────────────────────────────
         # 1. ORDER BLOCK DETECTION
@@ -972,8 +973,22 @@ def calculate_smc_elliott(df) -> dict:
                         elliott_confidence = round(w1_conf, 2)
 
         except Exception:
-            elliott_wave = 0
-            elliott_confidence = 0.0
+            pass
+
+        # Micro-Trend Momentum Fallback Classifier for Elliott Wave
+        if elliott_wave == 0 and len(closes) >= 20:
+            ema5 = float(np.mean(closes[-5:]))
+            ema20 = float(np.mean(closes[-20:]))
+            if ema5 > ema20 and last_close >= ema5:
+                elliott_wave = 1
+                elliott_confidence = 0.45
+            elif ema5 < ema20 and last_close <= ema5:
+                elliott_wave = -1
+                elliott_confidence = 0.45
+            else:
+                elliott_wave = 2
+                elliott_confidence = 0.50
+
 
         # ────────────────────────────────────────────────────────────────────
         # 6. SMC COMPOSITE BIAS & SCORE
