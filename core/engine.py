@@ -2361,6 +2361,14 @@ class BreakoutGridBot:
             return None  # No cycle exit, just a silent recenter
         # ─────────────────────────────────────────────────────────────────────────
 
+        # ── FRICTION FLOOR CALCULATION ─────────────────────────────────────────
+        num_pos = len(self.broker.open_positions)
+        accumulated_swaps = sum(getattr(p, 'swap', 0.0) for p in self.broker.open_positions.values()) if num_pos > 0 else 0.0
+        duration_hours = max(0.0, (timestamp - getattr(self, "cycle_start_time", timestamp)) / 3600.0) if self.cycle_start_time > 0 else 0.0
+        duration_swap_buffer = num_pos * min(2.0, duration_hours * 0.20)
+        friction_floor = max(1.00, 1.00 + (num_pos * 0.50) + accumulated_swaps + duration_swap_buffer)
+        # ─────────────────────────────────────────────────────────────────────────
+
         # Check exit conditions
         target_hit = False
         runner_hit = False
@@ -2439,7 +2447,8 @@ class BreakoutGridBot:
             volume_scale_mult = min(2.2, max(1.0, total_basket_lots / base_size))
             base_tp = (self.target_profit * 100.0) if is_cent else self.target_profit
             friction_floor_adjusted = (friction_floor * 100.0) if is_cent else friction_floor
-            effective_target_profit = max(base_tp * volume_scale_mult, friction_floor_adjusted + (100.0 if is_cent else 1.00))
+            effective_target_profit = max(base_tp * volume_scale_mult, friction_floor_adjusted + (50.0 if is_cent else 0.50))
+
 
             buy_pos_list = [p for p in self.broker.open_positions.values() if p.type == "BUY"]
             sell_pos_list = [p for p in self.broker.open_positions.values() if p.type == "SELL"]
@@ -2519,12 +2528,13 @@ class BreakoutGridBot:
                 elif sell_pos_list and not buy_pos_list:
                     is_pullback_tick = (recent_deltas and recent_deltas[-1] > 0) or (avg_delta > 0)
 
-                if (float_pnl >= effective_target_profit or (float_pnl >= near_tp_threshold and is_pullback_tick)) and float_pnl >= friction_floor + 1.00:
+                if (float_pnl >= effective_target_profit or (float_pnl >= near_tp_threshold and is_pullback_tick)) and float_pnl >= (friction_floor_adjusted if is_cent else friction_floor):
                     target_hit = True
                     if float_pnl < effective_target_profit:
                         print(f"[{getattr(self.broker, 'symbol', 'BOT')}] 🎯 NEAR-TP SMART HARVEST: "
                               f"PnL ${float_pnl:.2f} reached 85%+ of target (${effective_target_profit:.2f}) "
                               f"& micro-pullback detected. Harvested to secure cash profit!")
+
 
 
             # 2. MULTI-STAGE RATCHETED BREAKEVEN & UNLOSABLE EQUITY LOCK SHIELD
