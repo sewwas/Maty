@@ -2517,15 +2517,22 @@ class BreakoutGridBot:
                     is_price_in_profit_direction = (current_price < avg_sell_px)
                     min_dist_met = ((avg_sell_px - current_price) / avg_sell_px * 100.0) >= min_move_pct
 
-                # ── HIGH PNL HARVEST GUARD (+ $15.00+ USD PnL + Micro Pullback) ──
-                # When floating profit reaches >= $15.00 USD (e.g. +$24.00) AND price starts pulling back by 1 tick,
-                # HARVEST IMMEDIATELY to lock in massive cash profits before price reverses!
+                # ── NEAR-TP & HIGH PNL SMART HARVEST GUARD ──
+                near_tp_threshold = effective_target_profit * 0.85
                 high_pnl_floor = (1500.0 if is_cent else 15.00)
+                recent_deltas = [self.price_history_ticks[i] - self.price_history_ticks[i-1] for i in range(1, len(self.price_history_ticks))] if len(getattr(self, "price_history_ticks", [])) >= 2 else []
+                is_pullback_tick = False
+                if buy_pos_list and not sell_pos_list:
+                    is_pullback_tick = (recent_deltas and recent_deltas[-1] < 0) or (avg_delta < 0)
+                elif sell_pos_list and not buy_pos_list:
+                    is_pullback_tick = (recent_deltas and recent_deltas[-1] > 0) or (avg_delta > 0)
+
                 if (float_pnl >= effective_target_profit or (float_pnl >= near_tp_threshold and is_pullback_tick) or (float_pnl >= high_pnl_floor and is_pullback_tick)) and float_pnl >= (friction_floor_adjusted if is_cent else friction_floor):
                     target_hit = True
                     if float_pnl < effective_target_profit:
                         print(f"[{getattr(self.broker, 'symbol', 'BOT')}] 🎯 HIGH-PNL SMART HARVEST: "
                               f"PnL ${float_pnl:.2f} reached high profit floor & micro-pullback detected. Harvested cash profit!")
+
 
             # 2. MULTI-STAGE RATCHETED BREAKEVEN & UNLOSABLE EQUITY LOCK SHIELD
             if self.use_breakeven:
