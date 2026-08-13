@@ -25,6 +25,7 @@ import core.pamm
 import core.license
 import core.signals
 
+import threading
 from core.mt5_broker import MT5Broker, SimulatedBroker, MT5_AVAILABLE, get_symbol_magic_number
 from core.engine import BreakoutGridBot, get_pip_size, sanitize_order_size
 from core.pamm import PAMMMasterPool
@@ -32,21 +33,40 @@ from core.license import LicenseManager, LicenseTier
 from core.signals import send_telegram_alert, dispatch_trade_exit_signal
 from core.data import get_live_price, get_default_price, get_historical_klines, get_24h_market_stats
 
-def save_bot_state(force: bool = False):
-    """Serializes active markets state to bot_state.pkl for Investor Portal dynamic API. Throttled to 10s for minimum RAM & disk I/O."""
-    if "markets" not in st.session_state:
-        return
+_symbols = ["PAXGUSDT", "GBPUSD", "EURUSD", "USDJPY", "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "DOGEUSDT"]
+_symbol_labels = {
+    "PAXGUSDT": "XAUUSD (Gold — 🛡️ Mon-Fri Shield)",
+    "GBPUSD":   "GBPUSD (Pound / Dollar — 🛡️ Mon-Fri Shield)",
+    "EURUSD":   "EURUSD (Euro / Dollar — 🛡️ Mon-Fri Shield)",
+    "USDJPY":   "USDJPY (Dollar / Yen — 🛡️ Mon-Fri Shield)",
+    "BTCUSDT":  "BTCUSD (Bitcoin — ⚡ 24/7 Crypto)",
+    "ETHUSDT":  "ETHUSD (Ethereum — ⚡ 24/7 Crypto)",
+    "SOLUSDT":  "SOLUSD (Solana — ⚡ 24/7 Crypto)",
+    "BNBUSDT":  "BNBUSD (Binance Coin — ⚡ 24/7 Crypto)",
+    "DOGEUSDT": "DOGEUSD (Dogecoin — ⚡ 24/7 Crypto)"
+}
+
+_golden_sweet_spots = {
+    "PAXGUSDT": {"gap": 0.07, "offset": 0.07, "size": 0.01,  "tp": 10.0, "mult": 1.5},
+    "GBPUSD":   {"gap": 0.05, "offset": 0.05, "size": 0.02,  "tp": 9.0,  "mult": 1.5},
+    "EURUSD":   {"gap": 0.05, "offset": 0.05, "size": 0.02,  "tp": 8.0,  "mult": 1.5},
+    "USDJPY":   {"gap": 0.05, "offset": 0.05, "size": 0.02,  "tp": 9.0,  "mult": 1.5},
+    "BTCUSDT":  {"gap": 0.10, "offset": 0.10, "size": 0.001, "tp": 10.0, "mult": 1.5},
+    "ETHUSDT":  {"gap": 0.07, "offset": 0.07, "size": 0.05,  "tp": 10.0, "mult": 1.5},
+    "SOLUSDT":  {"gap": 0.07, "offset": 0.07, "size": 0.50,  "tp": 10.0, "mult": 1.5},
+    "BNBUSDT":  {"gap": 0.07, "offset": 0.07, "size": 0.05,  "tp": 10.0, "mult": 1.5},
+    "DOGEUSDT": {"gap": 0.07, "offset": 0.07, "size": 100.0, "tp": 10.0, "mult": 1.5},
+}
+
+def save_bot_state_dict(markets_dict: dict, force: bool = False):
+    """Serializes active markets state to bot_state.pkl continuously from background daemon thread."""
     now = time.time()
-    last_save = st.session_state.get("_last_bot_state_save_time", 0.0)
-    if not force and (now - last_save < 10.0):
-        return
-    st.session_state["_last_bot_state_save_time"] = now
     try:
         state_data = {
             "timestamp": now,
             "markets": {}
         }
-        for sym_code, m_data in st.session_state.markets.items():
+        for sym_code, m_data in markets_dict.items():
             brk = m_data.get("broker")
             bot = m_data.get("bot")
             trade_hist = list(getattr(brk, "closed_trades", [])) if brk else []
@@ -65,6 +85,11 @@ def save_bot_state(force: bool = False):
     except Exception as e:
         print(f"Notice: bot_state.pkl save notice: {e}")
 
+def save_bot_state(force: bool = False):
+    """Bridge for Streamlit session state serialization."""
+    if "markets" in st.session_state:
+        save_bot_state_dict(st.session_state.markets, force=force)
+
 def load_saved_bot_full_state() -> Dict[str, dict]:
     """Loads saved bot state (running status, cycle history, trade history) from bot_state.pkl across session refreshes."""
     saved_state = {}
@@ -77,6 +102,92 @@ def load_saved_bot_full_state() -> Dict[str, dict]:
     except Exception as e:
         print(f"Notice: bot_state.pkl load notice: {e}")
     return saved_state
+
+@st.cache_resource
+def get_global_vps_trading_engine():
+    """
+    Spawns 24/7 VPS Background Daemon Worker Thread when app starts.
+    Runs ticks continuously in background 24/7 regardless of browser state.
+    """
+    shared_markets = {}
+    saved_state_map = load_saved_bot_full_state()
+    use_mt5 = MT5_AVAILABLE
+
+    for sym in _symbols:
+        magic = get_symbol_magic_number(sym)
+        brk = MT5Broker(symbol=sym, magic_number=magic) if use_mt5 else SimulatedBroker(symbol=sym, magic_number=magic)
+        g_cfg = _golden_sweet_spots.get(sym, {"gap": 0.07, "offset": 0.07, "size": 0.01, "tp": 10.0, "mult": 1.5})
+        bot = BreakoutGridBot(
+            broker=brk,
+            symbol=sym,
+            grid_gap=g_cfg["gap"],
+            trap_offset=g_cfg["offset"],
+            grid_levels=5,
+            order_size=g_cfg["size"],
+            order_size_multiplier=g_cfg["mult"],
+            target_profit=g_cfg["tp"],
+            is_percent=True,
+            max_cycle_duration=float("inf"),
+            auto_restart=True,
+            use_auto_reading=True
+        )
+        bot.max_cycle_duration = float("inf")
+        init_px = get_default_price(sym)
+        
+        m_info_saved = saved_state_map.get(sym, {})
+        if isinstance(m_info_saved, dict):
+            if m_info_saved.get("cycle_history"):
+                bot.cycle_history = list(m_info_saved["cycle_history"])
+            if m_info_saved.get("trade_history") and hasattr(brk, "closed_trades"):
+                brk.closed_trades = list(m_info_saved["trade_history"])
+
+        has_active_orders = bool(brk and (len(getattr(brk, "open_positions", {})) > 0 or len(getattr(brk, "pending_orders", {})) > 0))
+        is_running = bool(m_info_saved.get("running", False)) if isinstance(m_info_saved, dict) else has_active_orders
+        
+        if is_running:
+            bot.auto_restart = True
+            if has_active_orders:
+                bot.deployed = True
+
+        shared_markets[sym] = {
+            "broker": brk,
+            "bot": bot,
+            "running": is_running,
+            "last_price": init_px,
+            "price_history": [(time.time(), init_px)]
+        }
+
+    def _vps_daemon_worker():
+        print("⚡ [Profity AI Engine] 24/7 VPS Background Daemon Started! Processing ticks 24/7...")
+        while True:
+            try:
+                now = time.time()
+                for sym_code, m_data in shared_markets.items():
+                    live_p = get_live_price(sym_code)
+                    if live_p and live_p > 0:
+                        m_data["last_price"] = live_p
+                        m_data["price_history"].append((now, live_p))
+                        if len(m_data["price_history"]) > 100:
+                            m_data["price_history"] = m_data["price_history"][-100:]
+
+                    if m_data.get("running", False):
+                        try:
+                            cur_p = m_data["last_price"]
+                            hist = m_data["price_history"]
+                            prev_p = hist[-2][1] if len(hist) >= 2 else cur_p
+                            m_data["bot"].process_tick(prev_p, cur_p, now)
+                        except Exception as tick_err:
+                            print(f"[{sym_code}] Background tick error: {tick_err}")
+
+                save_bot_state_dict(shared_markets)
+            except Exception as daemon_err:
+                print(f"[Profity AI Engine] Daemon loop notice: {daemon_err}")
+
+            time.sleep(2.0)
+
+    t = threading.Thread(target=_vps_daemon_worker, daemon=True)
+    t.start()
+    return shared_markets
 
 # ==============================================================================
 #  1. IMPORTS & STREAMLIT PAGE CONFIGURATION
@@ -91,100 +202,15 @@ st.set_page_config(
 # ==============================================================================
 #  2. SESSION STATE INITIALIZATION & BROKER FACTORY
 # ==============================================================================
-# In-memory Class Re-binding for Session State Persistence
-if "markets" in st.session_state:
-    for _m in st.session_state.markets.values():
-        if _m.get("bot"):
-            _m["bot"].__class__ = BreakoutGridBot
-        if _m.get("broker") and hasattr(_m["broker"], "ensure_connected"):
-            _m["broker"].__class__ = MT5Broker
-
 if "use_mt5" not in st.session_state:
     st.session_state.use_mt5 = MT5_AVAILABLE
-
-if "markets" not in st.session_state:
-    st.session_state.markets = {}
 
 if "pair_filter" not in st.session_state:
     st.session_state.pair_filter = "ALL"
 
-_symbols = ["PAXGUSDT", "GBPUSD", "EURUSD", "USDJPY", "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "DOGEUSDT"]
-_symbol_labels = {
-    "PAXGUSDT": "XAUUSD (Gold — 🛡️ Mon-Fri Shield)",
-    "GBPUSD":   "GBPUSD (Pound / Dollar — 🛡️ Mon-Fri Shield)",
-    "EURUSD":   "EURUSD (Euro / Dollar — 🛡️ Mon-Fri Shield)",
-    "USDJPY":   "USDJPY (Dollar / Yen — 🛡️ Mon-Fri Shield)",
-    "BTCUSDT":  "BTCUSD (Bitcoin — ⚡ 24/7 Crypto)",
-    "ETHUSDT":  "ETHUSD (Ethereum — ⚡ 24/7 Crypto)",
-    "SOLUSDT":  "SOLUSD (Solana — ⚡ 24/7 Crypto)",
-    "BNBUSDT":  "BNBUSD (Binance Coin — ⚡ 24/7 Crypto)",
-    "DOGEUSDT": "DOGEUSD (Dogecoin — ⚡ 24/7 Crypto)"
-}
-
-_golden_sweet_spots = {
-    "PAXGUSDT": {"gap": 0.07, "offset": 0.07, "size": 0.01,  "tp": 10.0, "mult": 1.5},  # Gold 0.07% Ultra-Aggressive (100% Win Rate)
-    "GBPUSD":   {"gap": 0.05, "offset": 0.05, "size": 0.02,  "tp": 9.0,  "mult": 1.5},  # Forex 0.05% High-Frequency (100% Win Rate)
-    "EURUSD":   {"gap": 0.05, "offset": 0.05, "size": 0.02,  "tp": 8.0,  "mult": 1.5},  # Forex 0.05% High-Frequency (100% Win Rate)
-    "USDJPY":   {"gap": 0.05, "offset": 0.05, "size": 0.02,  "tp": 9.0,  "mult": 1.5},  # Forex 0.05% High-Frequency (100% Win Rate / 27 Trades)
-    "BTCUSDT":  {"gap": 0.10, "offset": 0.10, "size": 0.001, "tp": 10.0, "mult": 1.5},  # BTC 0.10% Max Trade Velocity (40 Trades / 100% Win Rate)
-    "ETHUSDT":  {"gap": 0.07, "offset": 0.07, "size": 0.05,  "tp": 10.0, "mult": 1.5},  # ETH 0.07% Min 100% Win Rate Threshold
-    "SOLUSDT":  {"gap": 0.07, "offset": 0.07, "size": 0.50,  "tp": 10.0, "mult": 1.5},  # SOL 0.07% Ultra-Aggressive (100% Win Rate)
-    "BNBUSDT":  {"gap": 0.07, "offset": 0.07, "size": 0.05,  "tp": 10.0, "mult": 1.5},  # BNB 0.07% Min 100% Win Rate Threshold
-    "DOGEUSDT": {"gap": 0.07, "offset": 0.07, "size": 100.0, "tp": 10.0, "mult": 1.5},  # DOGE 0.07% Ultra-Aggressive (100% Win Rate)
-}
-
-_saved_state_map = load_saved_bot_full_state()
-
-for sym in _symbols:
-    if sym not in st.session_state.markets:
-        magic = get_symbol_magic_number(sym)
-        if st.session_state.use_mt5:
-            brk = MT5Broker(symbol=sym, magic_number=magic)
-        else:
-            brk = SimulatedBroker(symbol=sym, magic_number=magic)
-        
-        g_cfg = _golden_sweet_spots.get(sym, {"gap": 0.07, "offset": 0.07, "size": 0.01, "tp": 10.0, "mult": 1.5})
-        bot = BreakoutGridBot(
-            broker=brk,
-            symbol=sym,
-            grid_gap=g_cfg["gap"],
-            trap_offset=g_cfg["offset"],
-            grid_levels=5,
-            order_size=g_cfg["size"],
-            order_size_multiplier=g_cfg["mult"],
-            target_profit=g_cfg["tp"],
-            is_percent=True,
-            max_cycle_duration=float("inf"),
-            auto_restart=True,
-            use_auto_reading=True  # Golden Sweet Spot Auto Mode ENABLED by default
-        )
-        bot.max_cycle_duration = float("inf")
-        init_px = get_default_price(sym)
-        
-        # Restore saved cycle history and closed trades from bot_state.pkl if present
-        m_info_saved = _saved_state_map.get(sym, {})
-        if isinstance(m_info_saved, dict):
-            if m_info_saved.get("cycle_history"):
-                bot.cycle_history = list(m_info_saved["cycle_history"])
-            if m_info_saved.get("trade_history") and hasattr(brk, "closed_trades"):
-                brk.closed_trades = list(m_info_saved["trade_history"])
-
-        # Auto-detect if pair has saved running state OR active positions/pending orders on MT5 broker
-        has_active_orders = bool(brk and (len(getattr(brk, "open_positions", {})) > 0 or len(getattr(brk, "pending_orders", {})) > 0))
-        is_running = bool(m_info_saved.get("running", False)) if isinstance(m_info_saved, dict) else has_active_orders
-        
-        if is_running:
-            bot.auto_restart = True
-            if has_active_orders:
-                bot.deployed = True
-
-        st.session_state.markets[sym] = {
-            "broker": brk,
-            "bot": bot,
-            "running": is_running,
-            "last_price": init_px,
-            "price_history": [(time.time(), init_px)]
-        }
+# Initialize 24/7 VPS Engine Singleton (Runs daemon worker thread on startup)
+shared_vps_markets = get_global_vps_trading_engine()
+st.session_state.markets = shared_vps_markets
 
 # ==============================================================================
 #  3. CSS DESIGN SYSTEM & MODERN DARK THEME STYLING
@@ -323,42 +349,49 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+# ── JS KEEP-ALIVE ANTI-SLEEP HEARTBEAT (Prevents Browser Background Tab Freezing) ──
+import streamlit.components.v1 as components
+components.html("""
+<script>
+(function() {
+    if (window._profity_keepalive) return;
+    window._profity_keepalive = true;
+    // Web Worker keeps dispatching ticks even when browser tab is inactive / backgrounded
+    const blob = new Blob([`
+        setInterval(function() {
+            postMessage('ping');
+        }, 3000);
+    `], { type: 'text/javascript' });
+    const worker = new Worker(URL.createObjectURL(blob));
+    worker.onmessage = function() {
+        window.dispatchEvent(new Event('focus'));
+    };
+})();
+</script>
+""", height=0, width=0)
+
 # ==============================================================================
-#  4. REAL-TIME TICK FETCHING & TICK ENGINE EVALUATION LOOP
+#  4. LIVE PRICE REFRESH (UI Display Only — Ticks run in 24/7 background daemon)
 # ==============================================================================
+# The background daemon thread (started via get_global_vps_trading_engine) handles all
+# process_tick() calls 24/7. This section only refreshes prices for the UI display.
 for sym_code in _symbols:
-    m_data = st.session_state.markets[sym_code]
+    m_data = st.session_state.markets.get(sym_code)
+    if m_data is None:
+        continue
     live_p = get_live_price(sym_code)
-    if live_p > 0:
+    if live_p and live_p > 0:
         m_data["last_price"] = live_p
-        m_data["price_history"].append((time.time(), live_p))
-        if len(m_data["price_history"]) > 100:
-            m_data["price_history"] = m_data["price_history"][-100:]
-            
-    # Execute Background Tick Pass if running
-    if m_data.get("running", False):
-        try:
-            cur_p  = m_data["last_price"]
-            hist   = m_data["price_history"]
-            # Use the previous recorded price so engine can detect direction
-            prev_p = hist[-2][1] if len(hist) >= 2 else cur_p
-            ts     = time.time()
 
-            # ── ENGINE TICK: handles broker fills + all exit logic internally ──
-            # DO NOT call broker.process_tick separately — engine already does it
-            cycle_summary = m_data["bot"].process_tick(prev_p, cur_p, ts)
-
-        except Exception as tick_err:
-            print(f"[{sym_code}] Tick notice: {tick_err}")
-
-# Synchronize live bot state to bot_state.pkl
-save_bot_state()
+# Service is always active — the daemon thread is embedded inside this process
+_is_vps_service_active = True
 
 # ==============================================================================
 #  5. TOP HEADER & EXECUTIVE TELEMETRY BOARD
 # ==============================================================================
 first_broker = list(st.session_state.markets.values())[0]["broker"]
-conn_status = "🟢 CONNECTED (Exness MT5)" if (st.session_state.use_mt5 and first_broker.ensure_connected()) else "🟡 SIMULATION MODE"
+base_conn = "🟢 CONNECTED (Exness MT5)" if (st.session_state.use_mt5 and first_broker.ensure_connected()) else "🟡 SIMULATION MODE"
+conn_status = f"{base_conn} (⚡ 24/7 VPS DAEMON)" if _is_vps_service_active else base_conn
 acc_num = getattr(first_broker, "login", "279696908")
 equity_val = first_broker.get_equity(first_broker.current_price if hasattr(first_broker, "current_price") else 0)
 
@@ -1621,6 +1654,13 @@ with tab_myfxbook:
 
 
 # VPS High-Speed Non-Blocking Execution & Ultra-Smooth UI Engine
-if any(m.get("running", False) for m in st.session_state.markets.values()):
+try:
+    if any(m.get("running", False) for m in st.session_state.markets.values()):
+        time.sleep(2.0)
+        st.rerun()
+except Exception as rerun_err:
     time.sleep(2.0)
-    st.rerun()
+    try:
+        st.rerun()
+    except Exception:
+        pass
