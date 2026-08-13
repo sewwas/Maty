@@ -2760,16 +2760,24 @@ class BreakoutGridBot:
                 else:
                     move_pct = 0.0
                     is_pos_trend = False
-                
-                # Single-fill ultra-fast exit at +$1.00 USD cash profit or 0.06% move
-                fast_single_target = (100.0 if is_cent else 1.00)
-                target_move_threshold = max(0.06, getattr(self, "trap_offset", 0.08) * 0.70)
-                if (move_pct >= target_move_threshold or float_pnl >= fast_single_target) and float_pnl >= fast_single_target:
+
+                # ── 1M MICRO-TREND FAST SCALP HARVEST SHIELD ──────────────────────
+                # Single-fill fast harvest: as soon as net float_pnl >= +$0.25 USD AND move_pct >= 0.03%:
+                # Harvest immediately! Lock in fast scalping cash and restart fresh.
+                fast_single_target = (25.0 if is_cent else 0.25)
+                target_move_threshold = 0.03  # 0.03% micro-trend move
+
+                if float_pnl >= fast_single_target and move_pct >= target_move_threshold:
                     single_fill_scalp_hit = True
-                
-                target_move_threshold = max(0.08, getattr(self, "trap_offset", 0.08) * 0.90)
-                if move_pct >= target_move_threshold and float_pnl >= fast_single_target and not is_pos_trend:
+
+                # Micro-reversal after profit: if price moved into profit and starts to reverse 1 tick
+                recent_deltas = [self.price_history_ticks[i] - self.price_history_ticks[i-1] for i in range(1, len(self.price_history_ticks))] if len(getattr(self, "price_history_ticks", [])) >= 2 else []
+                is_micro_reversal = (open_pos.type == "BUY" and recent_deltas and recent_deltas[-1] < 0) or (open_pos.type == "SELL" and recent_deltas and recent_deltas[-1] > 0)
+
+                if float_pnl >= (15.0 if is_cent else 0.15) and is_micro_reversal and move_pct >= 0.02:
                     single_fill_scalp_hit = True
+                # ──────────────────────────────────────────────────────────────────
+
 
             # 9. INSTANT TOP/BOTTOM REVERSAL PROFIT EXIT & NEAR-MISS 85%+ TP HARVEST
             top_bottom_reversal_hit = False
