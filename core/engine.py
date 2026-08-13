@@ -1549,10 +1549,12 @@ class BreakoutGridBot:
 
             limit_reached = False
 
-            # Interleaved Equal-Priority Dual Grid Trap Placement:
-            # Guarantees that level 0 BUY and level 0 SELL traps are placed FIRST together,
-            # so DUAL mode NEVER leaves one side unplaced even if broker limits orders!
-            for i in range(self.grid_levels):
+            # Exness Account Order Cap Protection:
+            # Cap levels per pair to max 3 levels (3 BUY + 3 SELL = 6 traps total) on live MT5 accounts
+            # to keep total account-wide pending orders (36 total across 6 pairs) well below Exness 100 limit.
+            effective_levels = min(self.grid_levels, 3) if hasattr(self.broker, "account_info") or hasattr(self.broker, "symbol") else self.grid_levels
+
+            for i in range(effective_levels):
                 if limit_reached:
                     break
 
@@ -1567,10 +1569,6 @@ class BreakoutGridBot:
                         err_str = str(err)
                         if "10033" in err_str or "Orders limit" in err_str:
                             limit_reached = True
-                            now_t = time.time()
-                            if now_t - getattr(self, "_last_10033_log_time", 0.0) >= 30.0:
-                                self._last_10033_log_time = now_t
-                                print(f"[{sym_name}] Exness Orders Limit reached (10033). Keeping {placed_count} active grid traps working. (Backing off 30s)")
 
                 # Place Level i SELL_STOP if allowed and limit not reached
                 if not limit_reached and unidirectional_mode in ("DUAL", "SELL_ONLY"):
@@ -1583,29 +1581,22 @@ class BreakoutGridBot:
                         err_str = str(err)
                         if "10033" in err_str or "Orders limit" in err_str:
                             limit_reached = True
-                            now_t = time.time()
-                            if now_t - getattr(self, "_last_10033_log_time", 0.0) >= 30.0:
-                                self._last_10033_log_time = now_t
-                                print(f"[{sym_name}] Exness Orders Limit reached (10033). Keeping {placed_count} active grid traps working. (Backing off 30s)")
-
-
-            if limit_reached:
-                self._last_deploy_error_time = timestamp + 27.0
 
             if placed_count > 0 or len(self.broker.pending_orders) > 0:
                 self.deployed = True
                 self.last_deploy_time = timestamp
-                if not limit_reached:
-                    self._last_deploy_error_time = 0.0
+                self._last_deploy_error_time = 0.0
 
                 # Real-time high-visibility grid deployment logging
                 buy_off_pct = (buy_offset_val / current_price * 100.0) if current_price > 0 else 0.0
                 sell_off_pct = (sell_offset_val / current_price * 100.0) if current_price > 0 else 0.0
                 gap_pct = (gap_val / current_price * 100.0) if current_price > 0 else 0.0
-                print(f"[{sym_name}] [GRID DEPLOYED] {placed_count} TRAPS @ ${current_price:,.2f} | Mode: {unidirectional_mode} | "
+                limit_tag = " (Exness Order Limit Active)" if limit_reached else ""
+                print(f"[{sym_name}] [GRID DEPLOYED] {placed_count} TRAPS @ ${current_price:,.2f} | Mode: {unidirectional_mode}{limit_tag} | "
                       f"Gap: {gap_pct:.3f}% (${gap_val:.2f}) | "
                       f"Buy Off: {buy_off_pct:.3f}% (${buy_offset_val:.2f}) | "
                       f"Sell Off: {sell_off_pct:.3f}% (${sell_offset_val:.2f}) | Lot: {self.deploy_order_size}")
+
 
 
             else:
