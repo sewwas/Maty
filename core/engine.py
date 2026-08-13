@@ -1,6 +1,7 @@
 import uuid
 import time
 import datetime
+import numpy as np
 from typing import Dict, List, Optional, Any, Tuple, TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -2816,7 +2817,7 @@ class BreakoutGridBot:
             if len(self.broker.open_positions) > 0 and not self.in_runner_mode:
                 if (is_reversing and float_pnl >= reversal_pnl_floor) or (float_pnl >= near_miss_target and float_pnl >= (100.0 if is_cent else 1.00)):
                     top_bottom_reversal_hit = True
-                    print(f"[{getattr(self.broker, 'symbol', 'BOT')}] ⚡ 1M REVERSAL AUTO-HARVEST: "
+                    print(f"[{getattr(self.broker, 'symbol', 'BOT')}] [FAST REVERSAL] 1M REVERSAL AUTO-HARVEST: "
                           f"PnL ${float_pnl:.2f} harvested on 1m reversal signal. Secured cash profit!")
 
 
