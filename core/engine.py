@@ -2918,10 +2918,12 @@ class BreakoutGridBot:
 
             self.current_cycle_id += 1
 
-            # Clear runner mode, exit cooldown & error timestamp BEFORE calling deploy_traps so fresh grid is deployed INSTANTLY
+            # Clear runner mode, exit cooldown, error timestamp & position memory BEFORE calling deploy_traps
+            # Prevents next tick from triggering duplicate MT5 order wipe & re-deployment cycle!
             self.in_runner_mode = False
             self._runner_exit_cooldown_until = 0.0
             self._last_deploy_error_time = 0.0
+            self._prev_open_pos_count = 0
 
             if self.auto_restart:
                 # Instantly deploy new traps at the new current price
