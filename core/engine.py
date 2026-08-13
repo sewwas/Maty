@@ -1967,12 +1967,13 @@ class BreakoutGridBot:
         # ─────────────────────────────────────────────────────────────────────────
         # ── ULTRA-FAST 0.5s AUTOMATIC NEW CYCLE REDEPLOYMENT ─────────────────────
         if not self.deployed and self.auto_restart:
-            # 500ms Ultra-Fast Restart Cooldown
-            if (timestamp - getattr(self, "last_deploy_time", 0.0)) >= 0.50 and timestamp >= getattr(self, "_last_deploy_error_time", 0.0) + 3.0:
+            # 500ms Ultra-Fast Instant Deployment Trigger
+            if (timestamp - getattr(self, "last_deploy_time", 0.0)) >= 0.50 and timestamp >= getattr(self, "_last_deploy_error_time", 0.0) + 0.50:
                 try:
                     self.deploy_traps(current_price, timestamp, bb_width, force=True)
                 except Exception as dep_err:
                     self._last_deploy_error_time = timestamp
+
         # ── MT5 EXTERNAL TP / SL CYCLE COMPLETION SHIELD ────────────────────────
         # If open positions existed on previous tick and are now 0 (closed via MT5 Broker TP/SL):
         # Automatically cancel stale pending traps, clear cooldowns, and deploy a fresh grid INSTANTLY!
