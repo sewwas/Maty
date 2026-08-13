@@ -2235,18 +2235,17 @@ class BreakoutGridBot:
                     recent_deltas = [self.price_history_ticks[i] - self.price_history_ticks[i-1] for i in range(1, len(self.price_history_ticks))] if len(getattr(self, "price_history_ticks", [])) >= 2 else []
                     is_pullback = (recent_deltas and recent_deltas[-1] < 0) or (avg_delta < 0)
                     bias_val = getattr(self, "_last_eval_bias", 0.50)
-                    profit_trigger  = 10.0 if is_cent else 0.10
-                    min_loss_floor  = -(30.0 if is_cent else 0.30)
+                    pos_profit_floor = 5.0 if is_cent else 0.05  # +$0.05 Positive Cash Trigger
                     base_tp_raw     = (self.target_profit * 100.0) if is_cent else self.target_profit
                     runner_threshold = base_tp_raw * 0.75  # 75% of target = confirmed best runner
                     for p in sell_pos_active:
                         p_pnl = getattr(p, 'profit', 0.0)
                         # BEST RUNNER PROTECTION: this SELL is already a big winner — let it run!
-                        # It's on the right trend path for its own direction. Never cut a runner.
                         if p_pnl >= runner_threshold and runner_threshold > 0:
                             continue  # Skip — protect the runner, let it hit hardware TP
-                        # Normal tight individual exit for non-runner counter-trend positions
-                        if p_pnl >= profit_trigger or is_pullback or p_pnl >= min_loss_floor or bias_val >= 0.65:
+                        # POSITIVE-FIRST HARVEST: Close if in positive profit (>= +$0.05), or breakeven (>= $0.00) on pullback
+                        should_exit = (p_pnl >= pos_profit_floor) or (is_pullback and p_pnl >= 0.0) or (bias_val >= 0.75 and p_pnl <= -(200.0 if is_cent else 2.00))
+                        if should_exit:
                             pid = getattr(p, 'id', getattr(p, 'ticket', None))
                             if pid:
                                 try: self.broker.close_position(str(pid), current_price, timestamp)
@@ -2263,29 +2262,27 @@ class BreakoutGridBot:
                 # If a BUY position is open during a confirmed Bearish Trend (SELL_ONLY),
                 # EACH position is checked INDIVIDUALLY:
                 #   - If it is a BEST RUNNER (profit >= 75% of target_profit), NEVER close it.
-                #     Think like an options trader: a winning position on its own trend path runs to full TP!
-                #   - Otherwise: close if in small profit (>= +$0.10), minimal loss (>= -$0.30),
-                #     micro rally, or strong bearish bias.
+                #   - Otherwise: close at Positive Profit (>= +$0.05) or Breakeven ($0.00) on pullback.
                 if buy_pos_active:
                     recent_deltas = [self.price_history_ticks[i] - self.price_history_ticks[i-1] for i in range(1, len(self.price_history_ticks))] if len(getattr(self, "price_history_ticks", [])) >= 2 else []
                     is_pullback = (recent_deltas and recent_deltas[-1] > 0) or (avg_delta > 0)
                     bias_val = getattr(self, "_last_eval_bias", -0.50)
-                    profit_trigger  = 10.0 if is_cent else 0.10
-                    min_loss_floor  = -(30.0 if is_cent else 0.30)
+                    pos_profit_floor = 5.0 if is_cent else 0.05  # +$0.05 Positive Cash Trigger
                     base_tp_raw     = (self.target_profit * 100.0) if is_cent else self.target_profit
                     runner_threshold = base_tp_raw * 0.75  # 75% of target = confirmed best runner
                     for p in buy_pos_active:
                         p_pnl = getattr(p, 'profit', 0.0)
                         # BEST RUNNER PROTECTION: this BUY is already a big winner — let it run!
-                        # It's on the right trend path for its own direction. Never cut a runner.
                         if p_pnl >= runner_threshold and runner_threshold > 0:
                             continue  # Skip — protect the runner, let it hit hardware TP
-                        # Normal tight individual exit for non-runner counter-trend positions
-                        if p_pnl >= profit_trigger or is_pullback or p_pnl >= min_loss_floor or bias_val <= -0.65:
+                        # POSITIVE-FIRST HARVEST: Close if in positive profit (>= +$0.05), or breakeven (>= $0.00) on pullback
+                        should_exit = (p_pnl >= pos_profit_floor) or (is_pullback and p_pnl >= 0.0) or (bias_val <= -0.75 and p_pnl <= -(200.0 if is_cent else 2.00))
+                        if should_exit:
                             pid = getattr(p, 'id', getattr(p, 'ticket', None))
                             if pid:
                                 try: self.broker.close_position(str(pid), current_price, timestamp)
                                 except Exception: pass
+
 
 
         # Calculate floating profit/loss
