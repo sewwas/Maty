@@ -1532,20 +1532,19 @@ class BreakoutGridBot:
                     vol_multiplier = 0.85
 
             spike_buffer = max(gap_val * 4.0 * vol_multiplier, min_tp_dist * 3.0 * vol_multiplier)
-            # Hardware SL Buffer: Generous 2.5% - 5.0% distance so normal wicks & spikes don't trigger SL on MT5 server
-            min_sl_dist = (current_price * 0.05) if "BTC" in sym_name else ((current_price * 0.03) if "ETH" in sym_name else (current_price * 0.025 if current_price > 0 else gap_val * 15.0))
-            sl_buffer = max(spike_buffer * 3.50, min_sl_dist)
+            # Hardware SL Buffer: Tightened 1.0% - 2.5% distance so initial hardware SL is placed close to grid bounds
+            min_sl_dist = (current_price * 0.025) if "BTC" in sym_name else ((current_price * 0.015) if "ETH" in sym_name else (current_price * 0.010 if current_price > 0 else gap_val * 6.0))
+            sl_buffer = max(spike_buffer * 2.0, min_sl_dist)
 
             # Server Hardware TP Buffer: Add 1.5-pip buffer towards live price so MT5 server hardware TP fills 100% reliably
             tp_fill_buffer = (current_price * 0.00015) if "BTC" not in sym_name else 1.50
             buy_tp_px = round(top_buy_level + spike_buffer - tp_fill_buffer, digits)
             sell_tp_px = round(bottom_sell_level - spike_buffer + tp_fill_buffer, digits)
 
-
             # ENVELOPE-ANCHORED HARDWARE BROKER STOP-LOSS (SL) SHIELD:
-            # Hardware SL is placed far below the grid for BUYs and far above for SELLs on Exness MT5 server for black swan catastrophic safety!
             buy_sl_px = round(bottom_sell_level - sl_buffer, digits)
             sell_sl_px = round(top_buy_level + sl_buffer, digits)
+
 
             limit_reached = False
 
