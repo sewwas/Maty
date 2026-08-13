@@ -1011,8 +1011,9 @@ with tab_desk:
                             _ppnl = getattr(_pos, 'profit', 0.0)
                             _lot  = getattr(_pos, 'volume', getattr(_pos, 'size', 0))
                             if _ppnl == 0.0 and _ep > 0 and sym_p > 0:
-                                _cmult = 100.0 if any(x in str(sym).upper() for x in ["XAU", "PAXG", "GOLD"]) else 1.0
+                                _cmult = 100.0 if any(x in str(sym_code).upper() for x in ["XAU", "PAXG", "GOLD"]) else 1.0
                                 _ppnl = (sym_p - _ep) * _lot * _cmult if _pt == "BUY" else (_ep - sym_p) * _lot * _cmult
+
                             _pcol = '#22c55e' if _ppnl >= 0 else '#ef4444'
                             _fgi  = '🛡️ ' if str(_pid) in _fg_watches else ''
                             _pos_rows += f'<tr><td>{_fgi}{str(_pid)[:8]}</td><td style="color:{"#22c55e" if _pt=="BUY" else "#ef4444"}">{_pt}</td><td>${_ep:,.4f}</td><td>${sym_p:,.4f}</td><td>{_lot}</td><td style="color:{_pcol};font-weight:700">${_ppnl:+,.2f}</td></tr>'
