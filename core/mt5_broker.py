@@ -783,10 +783,14 @@ class SimulatedBroker:
 
     def get_floating_pnl(self, current_price: float) -> float:
         total = 0.0
+        sym_u = str(getattr(self, "symbol", "")).upper()
+        contract_mult = 100.0 if ("XAU" in sym_u or "PAXG" in sym_u or "GOLD" in sym_u) else 1.0
         for pos in self.open_positions.values():
-            pnl = (current_price - pos.entry_price) * pos.size if pos.type == "BUY" else (pos.entry_price - current_price) * pos.size
+            pnl = ((current_price - pos.entry_price) * pos.size * contract_mult) if pos.type == "BUY" else ((pos.entry_price - current_price) * pos.size * contract_mult)
+            pos.profit = pnl
             total += pnl
         return total
+
 
     def sync(self):
         pass
