@@ -701,13 +701,15 @@ class MT5Broker:
             "position": ticket,
             "sl": final_sl,
             "tp": final_tp,
-            "magic": getattr(pos, "magic", self.magic_number),
         }
 
         res = mt5.order_send(req)
         if res is not None and res.retcode in [mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_PLACED]:
             return True
         else:
+            req["magic"] = getattr(pos, "magic", self.magic_number)
+            res = mt5.order_send(req)
+            return res is not None and res.retcode in [mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_PLACED]
             ret_code = getattr(res, 'retcode', 'N/A')
             ret_comment = getattr(res, 'comment', 'N/A')
             print(f"[{pos.symbol}] [SL/TP MODIFY NOTICE] Ticket {ticket} SL/TP modification notice: {ret_comment} (Retcode: {ret_code})")
