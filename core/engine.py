@@ -2793,20 +2793,16 @@ class BreakoutGridBot:
                     move_pct = 0.0
                     is_pos_trend = False
 
-                # ── 1M MICRO-TREND FAST SCALP HARVEST SHIELD ──────────────────────
-                # Single-fill fast harvest: as soon as net float_pnl >= +$0.25 USD AND move_pct >= 0.03%:
-                # Harvest immediately! Lock in fast scalping cash and restart fresh.
-                fast_single_target = (25.0 if is_cent else 0.25)
-                target_move_threshold = 0.03  # 0.03% micro-trend move
+                # ── 1M MICRO-TREND & UNCONFIRMED TREND FAST HARVEST SHIELD ───────
+                # Fast scalp harvest: As soon as float_pnl >= +$0.10 USD during non-trending markets or micro-reversals,
+                # HARVEST IMMEDIATELY! Never hold unconfirmed trend positions long in uncertainty.
+                fast_single_target = (10.0 if is_cent else 0.10)
 
-                if float_pnl >= fast_single_target and move_pct >= target_move_threshold:
-                    single_fill_scalp_hit = True
-
-                # Micro-reversal after profit: if price moved into profit and starts to reverse 1 tick
+                # Micro-reversal after profit: if price touched profit (>= +$0.10) and starts to reverse 1 tick
                 recent_deltas = [self.price_history_ticks[i] - self.price_history_ticks[i-1] for i in range(1, len(self.price_history_ticks))] if len(getattr(self, "price_history_ticks", [])) >= 2 else []
                 is_micro_reversal = (open_pos.type == "BUY" and recent_deltas and recent_deltas[-1] < 0) or (open_pos.type == "SELL" and recent_deltas and recent_deltas[-1] > 0)
 
-                if float_pnl >= (15.0 if is_cent else 0.15) and is_micro_reversal and move_pct >= 0.02:
+                if float_pnl >= fast_single_target and (not is_strong_trend or is_micro_reversal or move_pct >= 0.02):
                     single_fill_scalp_hit = True
                 # ──────────────────────────────────────────────────────────────────
 
