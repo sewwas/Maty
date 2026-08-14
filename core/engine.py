@@ -2726,13 +2726,15 @@ class BreakoutGridBot:
                     lot_v = float(getattr(pos, "volume", getattr(pos, "size", 0.01)) or 0.01)
                     c_mult = 100.0 if any(x in sym_name for x in ["XAU", "PAXG", "GOLD"]) else 1.0
 
+                    is_buy_pos = (pos.type == "BUY" or pos.type == 0 or str(pos.type).upper() in ("BUY", "0", "POSITION_TYPE_BUY"))
+
                     # Compute required hardware TP level if cur_tp == 0.0 (shifted 10 pips closer for instant fill)
                     target_tp = cur_tp
                     if target_tp == 0.0 and entry_px > 0:
                         tp_usd = (self.target_profit * 100.0) if is_cent else self.target_profit
                         tp_dist = tp_usd / max(0.001, lot_v * c_mult)
                         tp_dist_buffered = max(pip_sz * 5.0, tp_dist - (10.0 * pip_sz))
-                        if pos.type == "BUY":
+                        if is_buy_pos:
                             target_tp = round(entry_px + tp_dist_buffered, digits)
                         else:
                             target_tp = round(entry_px - tp_dist_buffered, digits)
@@ -2741,7 +2743,7 @@ class BreakoutGridBot:
                     ratchet_pnl = float(getattr(self, "ratchet_floor", 0.0))
                     r_usd = (ratchet_pnl / 100.0) if is_cent else ratchet_pnl
 
-                    if pos.type == "BUY":
+                    if is_buy_pos:
                         base_sl = entry_px - min_sl_dist
                         if r_usd > 0 and current_price > 0:
                             lock_dist = r_usd / max(0.001, lot_v * c_mult)
