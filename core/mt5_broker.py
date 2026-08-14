@@ -241,6 +241,21 @@ class MT5Broker:
         if getattr(symbol_info, "trade_mode", 4) == 0:
             raise TradeDisabledError(f"Exness server has disabled trading for {exness_symbol} on this account (retcode 10017 / trade_mode=0).")
 
+        # SINGLE CENTRALIZED BOTTLENECK ENFORCEMENT SHIELD:
+        # Before sending ANY new pending order to MetaTrader 5, inspect live pending orders on MT5 server.
+        # If 3 or more pending orders of this order_type already exist for this symbol on MT5,
+        # REJECT the placement attempt instantly! Only 1 single grid (max 3 traps per side) can EVER exist!
+        if order_type in ("BUY_STOP", "SELL_STOP"):
+            existing_mt5_orders = mt5.orders_get(symbol=exness_symbol) if exness_symbol else None
+            if existing_mt5_orders:
+                target_type = mt5.ORDER_TYPE_BUY_STOP if order_type == "BUY_STOP" else mt5.ORDER_TYPE_SELL_STOP
+                same_side_count = sum(1 for o in existing_mt5_orders if o.type in (target_type, 4 if order_type == "BUY_STOP" else 5))
+                if same_side_count >= 3:
+                    print(f"[{exness_symbol}] [SINGLE-GRID BOTTLENECK] Blocked extra {order_type} placement: {same_side_count} already active on MT5 server.")
+                    dummy_ord = Order(order_type, price, size, timestamp)
+                    dummy_ord.order_id = f"blocked_{int(time.time()*1000)}"
+                    return dummy_ord
+
         # Minimum stop distance calculation
         point = symbol_info.point
         stops_level = getattr(symbol_info, "trade_stops_level", 0) or 0
