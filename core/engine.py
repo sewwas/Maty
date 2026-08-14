@@ -2716,7 +2716,7 @@ class BreakoutGridBot:
             if len(self.broker.open_positions) >= 1 and hasattr(self.broker, "modify_position_sl_tp"):
                 sym_name = str(getattr(self.broker, "symbol", "")).upper()
                 digits = 4 if any(x in sym_name for x in ["DOGE", "GBP", "EUR"]) else 2
-                min_sl_dist = (current_price * 0.025) if "BTC" in sym_name else ((current_price * 0.015) if "ETH" in sym_name else (current_price * 0.010 if current_price > 0 else 5.0))
+                min_sl_dist = 150.0 if "BTC" in sym_name else (10.0 if "ETH" in sym_name else (3.0 if any(x in sym_name for x in ["XAU", "PAXG", "GOLD"]) else (get_pip_size(sym_name, current_price) * 15.0)))
                 
                 for pos in list(self.broker.open_positions.values()):
                     cur_sl = float(getattr(pos, "sl", getattr(pos, "stop_loss", 0.0)) or 0.0)
