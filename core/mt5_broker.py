@@ -381,9 +381,15 @@ class MT5Broker:
                 sell_orders.append(o)
 
         purged_count = 0
+        max_allowed_per_side = 3
+
         for group in [buy_orders, sell_orders]:
+            sorted_group = sorted(group, key=lambda x: x.ticket)
             seen_prices = []
-            for o in sorted(group, key=lambda x: x.price_open):
+            valid_orders = []
+
+            # Step 1: Purge exact price match duplicates
+            for o in sorted_group:
                 p = float(o.price_open)
                 if any(abs(p - sp) < tolerance for sp in seen_prices):
                     req = {"action": mt5.TRADE_ACTION_REMOVE, "order": o.ticket}
@@ -395,6 +401,19 @@ class MT5Broker:
                             self.pending_orders.pop(oid, None)
                 else:
                     seen_prices.append(p)
+                    valid_orders.append(o)
+
+            # Step 2: If excess duplicate grid levels exist (>3 per side), purge oldest duplicate grid set
+            if len(valid_orders) > max_allowed_per_side:
+                excess_orders = valid_orders[:-max_allowed_per_side]
+                for o in excess_orders:
+                    req = {"action": mt5.TRADE_ACTION_REMOVE, "order": o.ticket}
+                    mt5.order_send(req)
+                    purged_count += 1
+                    if o.ticket in self.ticket_to_order_id:
+                        oid = self.ticket_to_order_id.pop(o.ticket, None)
+                        if oid:
+                            self.pending_orders.pop(oid, None)
 
         return purged_count
 
