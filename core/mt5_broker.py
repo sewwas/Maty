@@ -417,6 +417,48 @@ class MT5Broker:
 
         return purged_count
 
+    def purge_duplicate_mt5_positions(self) -> int:
+        if not self.ensure_connected():
+            return 0
+        
+        exness_symbol = self.get_exness_symbol(self.symbol)
+        mt5_positions = mt5.positions_get(symbol=exness_symbol) if exness_symbol else None
+        if not mt5_positions:
+            return 0
+
+        sym_name = str(exness_symbol).upper()
+        tolerance = 5.0 if "BTC" in sym_name else (0.50 if any(x in sym_name for x in ["XAU", "GOLD", "PAXG"]) else 0.50)
+
+        buy_pos = sorted([p for p in mt5_positions if p.type == 0 or getattr(p, "type", "") == "BUY"], key=lambda x: x.ticket)
+        sell_pos = sorted([p for p in mt5_positions if p.type == 1 or getattr(p, "type", "") == "SELL"], key=lambda x: x.ticket)
+
+        purged_count = 0
+        for group in [buy_pos, sell_pos]:
+            seen_prices = []
+            for p in group:
+                price_val = float(p.price_open)
+                if any(abs(price_val - sp) < tolerance for sp in seen_prices):
+                    close_type = mt5.ORDER_TYPE_SELL if (p.type == 0 or getattr(p, "type", "") == "BUY") else mt5.ORDER_TYPE_BUY
+                    tick = mt5.symbol_info_tick(exness_symbol)
+                    if tick:
+                        c_price = tick.bid if close_type == mt5.ORDER_TYPE_SELL else tick.ask
+                        req = {
+                            "action": mt5.TRADE_ACTION_DEAL,
+                            "position": p.ticket,
+                            "symbol": exness_symbol,
+                            "volume": p.volume,
+                            "type": close_type,
+                            "price": c_price,
+                            "deviation": 50,
+                            "magic": getattr(p, "magic", self.magic_number)
+                        }
+                        mt5.order_send(req)
+                        purged_count += 1
+                else:
+                    seen_prices.append(price_val)
+
+        return purged_count
+
     def cancel_order(self, order_id: str) -> Optional[Order]:
         if not self.ensure_connected():
             return None
@@ -680,8 +722,9 @@ class MT5Broker:
         sym = symbol or self.symbol
         exness_symbol = self.get_exness_symbol(sym)
 
-        # 1. Active pending orders from MT5
+        # 1. Active pending orders & duplicate open position purge from MT5
         self.purge_duplicate_mt5_orders()
+        self.purge_duplicate_mt5_positions()
         mt5_orders = mt5.orders_get(symbol=exness_symbol) if exness_symbol else None
         active_order_tickets = set()
         if mt5_orders:
