@@ -137,6 +137,7 @@ def get_global_vps_trading_engine():
             use_auto_reading=True
         )
         bot.max_cycle_duration = float("inf")
+        bot.pending_order_side_mode = "AUTO_ADAPTIVE"
         init_px = get_default_price(sym)
         
         m_info_saved = saved_state_map.get(sym, {})
