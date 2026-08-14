@@ -1422,20 +1422,28 @@ class BreakoutGridBot:
         try:
             unidirectional_mode = getattr(self, "unidirectional_mode", "DUAL")
 
-            # ── ULTRA-FAST LIVE SPREAD & 1M MICRO-WICK GRID OPTIMIZER ────────────
-            # 1. Live Spread Shield: Ensure offsets strictly exceed 2.5x live Bid-Ask spread
+            # ── ULTRA-FAST LIVE SPREAD & TREND ROLLOVER GRID OPTIMIZER ────────────
+            # 1. Live Spread Shield: Ensure offsets strictly exceed 2.0x live Bid-Ask spread
+            live_sp = 0.0
             if hasattr(self.broker, "get_current_spread"):
                 live_sp = float(self.broker.get_current_spread())
                 if live_sp > 0:
-                    min_sp_off = live_sp * 2.50
+                    min_sp_off = live_sp * 2.00
                     buy_offset_val = max(buy_offset_val, min_sp_off)
                     sell_offset_val = max(sell_offset_val, min_sp_off)
 
-            # 2. 1M Micro-Wick Filter: Prevent buying top wicks (RSI >= 70) or selling bottom wicks (RSI <= 30)
+            # 2. Trend Rollover Optimization: When market is selling/dropping (SELL_ONLY),
+            # place SELL traps 30% closer (1.5x live spread) right at top of rollover for instant SELL fills!
+            if unidirectional_mode == "SELL_ONLY":
+                sell_offset_val = max(sell_offset_val * 0.70, live_sp * 1.50 if live_sp > 0 else sell_offset_val)
+            elif unidirectional_mode == "BUY_ONLY":
+                buy_offset_val = max(buy_offset_val * 0.70, live_sp * 1.50 if live_sp > 0 else buy_offset_val)
+
+            # 3. 1M Micro-Wick Filter: Prevent buying top wicks (RSI >= 70) or selling bottom wicks (RSI <= 30)
             rsi_1m = float(getattr(self.last_auto_eval, "get", lambda k, d: d)("rsi", 50.0)) if hasattr(self, "last_auto_eval") and isinstance(self.last_auto_eval, dict) else 50.0
-            if rsi_1m >= 70.0:  # Micro-top overbought: expand buy offset +25% above top wick
+            if rsi_1m >= 70.0 and unidirectional_mode != "SELL_ONLY":
                 buy_offset_val *= 1.25
-            elif rsi_1m <= 30.0: # Micro-bottom oversold: expand sell offset +25% below bottom wick
+            elif rsi_1m <= 30.0 and unidirectional_mode != "BUY_ONLY":
                 sell_offset_val *= 1.25
             # ────────────────────────────────────────────────────────────────────
 
@@ -2835,7 +2843,8 @@ class BreakoutGridBot:
                 recent_deltas = [self.price_history_ticks[i] - self.price_history_ticks[i-1] for i in range(1, len(self.price_history_ticks))] if len(getattr(self, "price_history_ticks", [])) >= 2 else []
                 is_micro_reversal = (open_pos.type == "BUY" and recent_deltas and recent_deltas[-1] < 0) or (open_pos.type == "SELL" and recent_deltas and recent_deltas[-1] > 0)
 
-                if float_pnl >= fast_single_target and (pos_dur >= 45.0 or not is_strong_trend or is_micro_reversal or move_pct >= 0.01):
+                half_tp_target = effective_target_profit * 0.50
+                if float_pnl >= fast_single_target and (pos_dur >= 10.0 or float_pnl >= half_tp_target or not is_strong_trend or is_micro_reversal or move_pct >= 0.01):
                     single_fill_scalp_hit = True
                 # ──────────────────────────────────────────────────────────────────
 
