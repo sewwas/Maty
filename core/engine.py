@@ -2750,8 +2750,11 @@ class BreakoutGridBot:
 
             if hasattr(self, "last_auto_eval") and isinstance(self.last_auto_eval, dict):
                 trend_bias = float(self.last_auto_eval.get("combined_bias", 0.0))
-                if abs(trend_bias) >= 0.35 and len(self.broker.open_positions) >= 1:
-                    counter_side = "SELL" if trend_bias >= 0.35 else "BUY"
+                is_sell_mode = (getattr(self, "unidirectional_mode", "DUAL") == "SELL_ONLY" or getattr(self, "pending_order_side_mode", "AUTO_ADAPTIVE") == "SELL_ONLY" or trend_bias <= -0.20)
+                is_buy_mode = (getattr(self, "unidirectional_mode", "DUAL") == "BUY_ONLY" or getattr(self, "pending_order_side_mode", "AUTO_ADAPTIVE") == "BUY_ONLY" or trend_bias >= 0.20)
+
+                if (is_sell_mode or is_buy_mode or abs(trend_bias) >= 0.20) and len(self.broker.open_positions) >= 1:
+                    counter_side = "BUY" if is_sell_mode else ("SELL" if is_buy_mode else ("SELL" if trend_bias >= 0.0 else "BUY"))
                     counter_positions = [p for p in list(self.broker.open_positions.values()) if p.type == counter_side]
                     
                     for cp in counter_positions:
