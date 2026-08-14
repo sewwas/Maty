@@ -711,12 +711,12 @@ with tab_desk:
 
                     with hdr_c2:
                         st.markdown("<div style='height:24px'></div>", unsafe_allow_html=True)
-                        btn_c1, btn_c2 = st.columns(2)
+                        btn_c1, btn_c2, btn_c3 = st.columns([2, 2, 2])
                         with btn_c1:
                             if not is_run:
                                 if st.button("▶ START", key=f"btn_start_{sym_code}", type="primary", use_container_width=True):
-                                    m_data["running"]  = True
-                                    bot.auto_restart   = is_auto
+                                    m_data["running"] = True
+                                    bot.auto_restart = is_auto
                                     live_px = get_live_price(sym_code) or sym_p
                                     if live_px > 0:
                                         m_data["last_price"] = live_px
@@ -743,6 +743,17 @@ with tab_desk:
                                 except Exception as reset_err:
                                     st.toast(f"Notice: {reset_err}")
                                 save_bot_state()
+                                st.rerun()
+                        with btn_c3:
+                            if st.button("🚨 EMERGENCY FLATTEN", key=f"btn_emergency_{sym_code}", use_container_width=True, help="Close all positions and cancel all pending orders for this pair immediately"):
+                                m_data["running"] = False
+                                try:
+                                    brk.close_all_positions(m_data.get("last_price", 0), time.time())
+                                    brk.cancel_all_orders()
+                                except Exception:
+                                    pass
+                                save_bot_state()
+                                st.toast(f"🚨 Emergency flatten executed for {sym_code}!")
                                 st.rerun()
 
                     st.markdown("<hr style='border-color:#27272a;margin:6px 0 10px'/>", unsafe_allow_html=True)
