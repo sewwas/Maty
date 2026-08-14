@@ -2030,7 +2030,7 @@ class BreakoutGridBot:
         # If pending orders drop to 0 while 1 to 3 active trades exist, automatically restore fresh traps centered around current Ask/Bid once every 30s!
         # (Suppressed when 4+ positions exist to allow 4+ Fills Trap Purge Shield to keep pending orders at 0)
         if self.deployed and len(self.broker.pending_orders) == 0 and (0 < len(self.broker.open_positions) < 4):
-            if timestamp >= getattr(self, "_last_trap_restoration_time", 0.0) + 30.0:
+            if timestamp >= getattr(self, "_last_trap_restoration_time", 0.0) + 2.0:
                 self._last_trap_restoration_time = timestamp
                 try:
                     self.deploy_traps(current_price, timestamp, bb_width)
