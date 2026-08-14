@@ -1565,7 +1565,19 @@ class BreakoutGridBot:
             # Exness Account Order Cap Protection:
             # Cap levels per pair to max 3 levels (3 BUY + 3 SELL = 6 traps total) on live MT5 accounts
             # to keep total account-wide pending orders (36 total across 6 pairs) well below Exness 100 limit.
-            effective_levels = min(self.grid_levels, 3) if hasattr(self.broker, "account_info") or hasattr(self.broker, "symbol") else self.grid_levels
+            # Live Broker Pending Order Double-Check:
+            # If MetaTrader 5 already has active pending orders for this symbol, do NOT place duplicate orders!
+            if hasattr(self.broker, "get_exness_symbol"):
+                try:
+                    ex_sym = self.broker.get_exness_symbol(self.symbol)
+                    mt5_ords = mt5.orders_get(symbol=ex_sym) if (MT5_AVAILABLE and ex_sym) else None
+                    if mt5_ords and len(mt5_ords) >= 3:
+                        print(f"[{sym_name}] deploy_traps skipped: Broker already has {len(mt5_ords)} active pending traps on MT5!")
+                        self.deployed = True
+                        self.last_deploy_time = timestamp
+                        return
+                except Exception:
+                    pass
 
             for i in range(effective_levels):
                 if limit_reached:
