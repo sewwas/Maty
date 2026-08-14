@@ -377,19 +377,27 @@ class MT5Broker:
             return 0
 
         exness_symbol = self.get_exness_symbol(self.symbol)
-        orders = mt5.orders_get(symbol=exness_symbol) if exness_symbol else None
-        if not orders:
+        all_orders = mt5.orders_get() or ()
+        if not all_orders:
             return 0
 
-        symbol_info = mt5.symbol_info(exness_symbol)
+        sym_base = self.symbol.replace("USDT", "").replace("USD", "")
+        matching_orders = [
+            o for o in all_orders
+            if sym_base.upper() in str(o.symbol).upper() or (exness_symbol and str(o.symbol).upper() == str(exness_symbol).upper())
+        ]
+        if not matching_orders:
+            return 0
+
+        symbol_info = mt5.symbol_info(exness_symbol) if exness_symbol else None
         point = symbol_info.point if symbol_info else 0.0001
-        # Exact price match tolerance (3 pips / 3 cents max) to prevent purging valid grid levels
-        tolerance = max(point * 3.0, 0.03)
+        # Set tolerance to 0.50 for XAU/GOLD, 10.0 for BTC, 1.0 for ETH to detect duplicate grid levels
+        sym_name = str(self.symbol).upper()
+        tolerance = 50.0 if "BTC" in sym_name else (1.0 if "ETH" in sym_name else (0.50 if any(x in sym_name for x in ["XAU", "GOLD", "PAXG"]) else 0.05))
 
         buy_orders = []
         sell_orders = []
-        for o in orders:
-            # Purge duplicate tickets on symbol regardless of magic number
+        for o in matching_orders:
             if o.type in [mt5.ORDER_TYPE_BUY_STOP, 4]:
                 buy_orders.append(o)
             elif o.type in [mt5.ORDER_TYPE_SELL_STOP, 5]:
@@ -403,7 +411,7 @@ class MT5Broker:
             seen_prices = []
             valid_orders = []
 
-            # Step 1: Purge exact price match duplicates
+            # Step 1: Purge exact/near price match duplicates
             for o in sorted_group:
                 p = float(o.price_open)
                 if any(abs(p - sp) < tolerance for sp in seen_prices):
