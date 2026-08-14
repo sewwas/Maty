@@ -1537,8 +1537,9 @@ class BreakoutGridBot:
             min_sl_dist = (current_price * 0.025) if "BTC" in sym_name else ((current_price * 0.015) if "ETH" in sym_name else (current_price * 0.010 if current_price > 0 else gap_val * 6.0))
             sl_buffer = max(spike_buffer * 2.0, min_sl_dist)
 
-            # Server Hardware TP Buffer: Add 3.0-pip buffer towards live price so MT5 server hardware TP fills 100% fast and reliably!
-            tp_fill_buffer = (current_price * 0.00030) if "BTC" not in sym_name else 3.00
+            # Server Hardware TP Buffer: Add exact 10-pip buffer towards live price for 100% ultra-fast server TP execution!
+            pip_sz_val = get_pip_size(sym_name, current_price)
+            tp_fill_buffer = 10.0 * pip_sz_val if pip_sz_val > 0 else (current_price * 0.0010)
             buy_tp_px = round(top_buy_level + spike_buffer - tp_fill_buffer, digits)
             sell_tp_px = round(bottom_sell_level - spike_buffer + tp_fill_buffer, digits)
 
