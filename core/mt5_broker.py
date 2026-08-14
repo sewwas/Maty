@@ -812,6 +812,7 @@ class MT5Broker:
             exness_symbol = self.get_exness_symbol(self.symbol)
             deals = mt5.history_deals_get(from_date, to_date)
             if deals:
+                pos_entry_times = {d.position_id: float(d.time) for d in deals if getattr(d, "entry", 0) == 0}
                 synced_trades = []
                 synced_pnl = 0.0
                 target_syms = {self.symbol.upper(), (exness_symbol or "").upper()}
@@ -820,6 +821,7 @@ class MT5Broker:
                     if d_sym and (d_sym in target_syms or any(ts in d_sym or d_sym in ts for ts in target_syms if ts)):
                         pnl = float(getattr(d, "profit", 0.0)) + float(getattr(d, "swap", 0.0)) + float(getattr(d, "commission", 0.0))
                         if getattr(d, "entry", 0) in (1, 2) or abs(pnl) > 0.0001:
+                            e_time = pos_entry_times.get(d.position_id, float(d.time))
                             t_record = {
                                 "position_id": f"deal_{d.ticket}",
                                 "type": "BUY" if getattr(d, "type", 0) == 1 else "SELL",
@@ -827,7 +829,7 @@ class MT5Broker:
                                 "exit_price": float(d.price),
                                 "size": float(d.volume),
                                 "pnl": pnl,
-                                "entry_time": float(d.time),
+                                "entry_time": e_time,
                                 "exit_time": float(d.time),
                                 "commission": float(getattr(d, "commission", 0.0))
                             }
