@@ -1194,9 +1194,9 @@ with tab_desk:
 
                         with p_c2:
                             n_tp = st.number_input(
-                                f"Target Profit ($)", min_value=1.0, max_value=1000.0,
-                                value=float(min(1000.0, max(1.0, bot.target_profit))),
-                                step=1.0, key=f"tp_{sym_code}"
+                                f"Target Profit ($)", min_value=0.10, max_value=1000.0,
+                                value=float(min(1000.0, max(0.10, bot.target_profit))),
+                                step=0.10, key=f"tp_{sym_code}"
                             )
                             if is_pips:
                                 _raw_off = (bot.trap_offset / 100.0 * sym_p) / pip_size if (sym_p > 0 and pip_size > 0) else 5.0
