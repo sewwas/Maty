@@ -1364,6 +1364,14 @@ with tab_desk:
             pnl_c = "pnl-green" if pnl_r >= 0 else "pnl-red"
             prof_mode = getattr(bot_r, "auto_profile", "BALANCED") if getattr(bot_r, "use_auto_reading", False) else "MANUAL"
             
+            c_st = getattr(bot_r, "cycle_start_time", 0.0)
+            c_now = time.time()
+            if c_st > 0 and c_now >= c_st and getattr(bot_r, "deployed", False):
+                act_d = int(c_now - c_st)
+                act_dur_str = f"{act_d // 60}m {act_d % 60}s" if act_d >= 60 else f"{act_d}s"
+            else:
+                act_dur_str = "-"
+
             with radar_cols[idx_r % len(radar_cols)]:
                 st.markdown(f"""
                 <div style='background:#18181b;border:1px solid #22c55e44;padding:10px 14px;border-radius:6px;margin-bottom:10px'>
@@ -1374,9 +1382,9 @@ with tab_desk:
                   <div style='font-size:0.78rem;color:#a1a1aa;margin-top:6px;display:flex;justify-content:space-between'>
                     <span>Open Pos: <strong>{pos_cnt}</strong></span>
                     <span>Traps: <strong>{trap_cnt}</strong></span>
-                    <span>Target: <strong>${bot_r.target_profit:.2f}</strong></span>
+                    <span>Active Dur: <strong>⏱️ {act_dur_str}</strong></span>
                   </div>
-                  <div style='font-size:0.72rem;color:#71717a;margin-top:4px'>Mode: {prof_mode}</div>
+                  <div style='font-size:0.72rem;color:#71717a;margin-top:4px'>Mode: {prof_mode} | Target: ${bot_r.target_profit:.2f}</div>
                 </div>
                 """, unsafe_allow_html=True)
 
@@ -1517,12 +1525,22 @@ with tab_desk:
     f_best_pnl   = max([float(c.get("pnl", 0)) for c in filtered_list], default=0.0)
     f_worst_pnl  = min([float(c.get("pnl", 0)) for c in filtered_list], default=0.0)
 
+    # Calculate average cycle duration across filtered history
+    valid_durs = [int(c["exit_time"] - c["start_time"]) for c in filtered_list if c.get("exit_time") and c.get("start_time") and c["exit_time"] >= c["start_time"]]
+    avg_dur_s = int(sum(valid_durs) / len(valid_durs)) if valid_durs else 0
+    if avg_dur_s < 60:
+        avg_dur_str = f"{avg_dur_s}s"
+    elif avg_dur_s < 3600:
+        avg_dur_str = f"{avg_dur_s // 60}m {avg_dur_s % 60}s"
+    else:
+        avg_dur_str = f"{avg_dur_s // 3600}h {(avg_dur_s % 3600) // 60}m"
+
     f_pnl_cls = "pnl-green" if f_total_pnl >= 0 else "pnl-red"
     f_best_cls = "pnl-green" if f_best_pnl >= 0 else "pnl-red"
     f_worst_cls = "pnl-red" if f_worst_pnl < 0 else "pnl-green"
 
     st.markdown(f"""
-    <div style='display:grid;grid-template-columns:1fr 1fr 1fr 1fr 1fr;gap:8px;margin:10px 0 14px'>
+    <div style='display:grid;grid-template-columns:1fr 1fr 1fr 1fr 1fr 1fr;gap:8px;margin:10px 0 14px'>
       <div style='background:#18181b;border:1px solid #27272a;padding:8px 12px;border-radius:6px;font-size:0.80rem'>
         <div style='color:#71717a'>Filtered PnL ({f_total_cnt} Cycles)</div>
         <strong class='{f_pnl_cls}' style='font-size:1.0rem'>${f_total_pnl:+,.2f}</strong>
@@ -1534,6 +1552,10 @@ with tab_desk:
       <div style='background:#18181b;border:1px solid #27272a;padding:8px 12px;border-radius:6px;font-size:0.80rem'>
         <div style='color:#71717a'>Avg Cycle PnL</div>
         <strong style='font-size:1.0rem'>${f_avg_pnl:+,.2f}</strong>
+      </div>
+      <div style='background:#18181b;border:1px solid #27272a;padding:8px 12px;border-radius:6px;font-size:0.80rem'>
+        <div style='color:#71717a'>Avg Duration</div>
+        <strong style='font-size:1.0rem;color:#38bdf8'>⏱️ {avg_dur_str}</strong>
       </div>
       <div style='background:#18181b;border:1px solid #27272a;padding:8px 12px;border-radius:6px;font-size:0.80rem'>
         <div style='color:#71717a'>Best Cycle</div>
@@ -1565,6 +1587,22 @@ with tab_desk:
             trades_cnt = c.get("trades_count", c.get("fills_count", 0))
             sym_badge = c.get("symbol", "ACTIVE")
             t_exit = time.strftime("%H:%M:%S", time.localtime(c.get("exit_time", time.time()))) if c.get("exit_time") else "-"
+            
+            st_t = c.get("start_time", 0.0)
+            ex_t = c.get("exit_time", 0.0)
+            if ex_t > 0 and st_t > 0 and ex_t >= st_t:
+                d_sec = int(ex_t - st_t)
+                if d_sec < 60:
+                    dur_fmt = f"{d_sec}s"
+                elif d_sec < 3600:
+                    dur_fmt = f"{d_sec // 60}m {d_sec % 60}s"
+                elif d_sec < 86400:
+                    dur_fmt = f"{d_sec // 3600}h {(d_sec % 3600) // 60}m"
+                else:
+                    dur_fmt = f"{d_sec // 86400}d {(d_sec % 86400) // 3600}h"
+            else:
+                dur_fmt = "-"
+
             table_rows += (
                 f"<tr>"
                 f"<td>#{c.get('cycle_id', 1)}</td>"
@@ -1572,6 +1610,7 @@ with tab_desk:
                 f"<td>${c.get('deploy_price', 0):,.2f}</td>"
                 f"<td>${c.get('exit_price', 0):,.2f}</td>"
                 f"<td>{trades_cnt}</td>"
+                f"<td><span style='font-family:JetBrains Mono,monospace;color:#38bdf8'>⏱️ {dur_fmt}</span></td>"
                 f"<td><span style='background:#27272a;padding:2px 6px;border-radius:4px;font-size:0.72rem'>{c.get('exit_reason', 'TP')}</span></td>"
                 f"<td>{t_exit}</td>"
                 f"<td class='{pnl_cls}'><strong>${c_pnl:+,.2f}</strong></td>"
@@ -1586,6 +1625,7 @@ with tab_desk:
                     <th>Deploy Entry</th>
                     <th>Exit Price</th>
                     <th>Fills</th>
+                    <th>Duration</th>
                     <th>Exit Reason</th>
                     <th>Exit Time</th>
                     <th>Net PnL</th>
