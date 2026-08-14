@@ -2856,16 +2856,32 @@ class BreakoutGridBot:
                           f"PnL ${float_pnl:.2f} harvested on pullback near TP line. Secured cash profit fast!")
 
 
+            # 10. INSTANT 3-TICK MICRO-PROFIT SNAP SHIELD (1M Ultra-Fast Scalp)
+            # If ANY open position stays in net positive cash profit (>= +$0.10 USD) for 3 consecutive ticks,
+            # SNAP HARVEST IMMEDIATELY! Bank cash profit instantly into account equity!
+            micro_snap_hit = False
+            if len(self.broker.open_positions) >= 1 and float_pnl >= (10.0 if is_cent else 0.10) and not self.in_runner_mode:
+                if not hasattr(self, "_pos_pnl_ticks"):
+                    self._pos_pnl_ticks = 0
+                self._pos_pnl_ticks += 1
+                if self._pos_pnl_ticks >= 3:
+                    micro_snap_hit = True
+                    self._pos_pnl_ticks = 0
+            else:
+                self._pos_pnl_ticks = 0
+
+
         # 100% UNBREAKABLE MASTER NET-POSITIVE PROFIT GUARD:
         # Guarantees that ALL profit-taking exit shields strictly require float_pnl >= +$0.10 USD (strictly net positive cash profit)!
-        is_profit_exit_triggered = (target_hit or runner_hit or trailing_stop_hit or breakeven_hit or early_range_hit or hedge_lock_hit or momentum_scalp_hit or wvap_exit_hit or instant_counter_flip_hit or single_fill_scalp_hit or top_bottom_reversal_hit or ranging_pnl_harvest_hit or counter_trend_harvest_hit)
+        is_profit_exit_triggered = (target_hit or runner_hit or trailing_stop_hit or breakeven_hit or early_range_hit or hedge_lock_hit or momentum_scalp_hit or wvap_exit_hit or instant_counter_flip_hit or single_fill_scalp_hit or top_bottom_reversal_hit or ranging_pnl_harvest_hit or counter_trend_harvest_hit or micro_snap_hit)
         if is_profit_exit_triggered and float_pnl < (10.0 if is_cent else 0.10) and not counter_trend_be_hit:
             target_hit = runner_hit = trailing_stop_hit = breakeven_hit = early_range_hit = False
             hedge_lock_hit = momentum_scalp_hit = wvap_exit_hit = instant_counter_flip_hit = False
-            single_fill_scalp_hit = top_bottom_reversal_hit = ranging_pnl_harvest_hit = counter_trend_harvest_hit = False
+            single_fill_scalp_hit = top_bottom_reversal_hit = ranging_pnl_harvest_hit = counter_trend_harvest_hit = micro_snap_hit = False
 
-        if target_hit or runner_hit or trailing_stop_hit or stop_loss_hit or timeout_hit or breakeven_hit or early_range_hit or prop_guard_hit or hedge_lock_hit or velocity_shield_hit or momentum_scalp_hit or wvap_exit_hit or instant_counter_flip_hit or single_fill_scalp_hit or top_bottom_reversal_hit or ranging_pnl_harvest_hit or counter_trend_harvest_hit or counter_trend_be_hit:
-            if counter_trend_harvest_hit: reason = "COUNTER_TREND_PROFIT_HARVEST"
+        if target_hit or runner_hit or trailing_stop_hit or stop_loss_hit or timeout_hit or breakeven_hit or early_range_hit or prop_guard_hit or hedge_lock_hit or velocity_shield_hit or momentum_scalp_hit or wvap_exit_hit or instant_counter_flip_hit or single_fill_scalp_hit or top_bottom_reversal_hit or ranging_pnl_harvest_hit or counter_trend_harvest_hit or counter_trend_be_hit or micro_snap_hit:
+            if micro_snap_hit: reason = "INSTANT_3TICK_PROFIT_SNAP"
+            elif counter_trend_harvest_hit: reason = "COUNTER_TREND_PROFIT_HARVEST"
             elif counter_trend_be_hit: reason = "COUNTER_TREND_BREAKEVEN_EXIT"
             elif instant_counter_flip_hit: reason = "MIXED_FILL_FAST_EXIT"
             elif ranging_pnl_harvest_hit: reason = "RANGING_CHOP_PNL_HARVEST"
