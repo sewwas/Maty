@@ -246,7 +246,12 @@ class MT5Broker:
         # If 3 or more pending orders of this order_type already exist for this symbol on MT5,
         # REJECT the placement attempt instantly! Only 1 single grid (max 3 traps per side) can EVER exist!
         if order_type in ("BUY_STOP", "SELL_STOP"):
-            existing_mt5_orders = mt5.orders_get(symbol=exness_symbol) if exness_symbol else None
+            all_mt5_orders = mt5.orders_get() or ()
+            sym_base = self.symbol.replace("USDT", "").replace("USD", "")
+            existing_mt5_orders = [
+                o for o in all_mt5_orders
+                if sym_base.upper() in str(o.symbol).upper() or (exness_symbol and str(o.symbol).upper() == str(exness_symbol).upper())
+            ]
             if existing_mt5_orders:
                 target_type = mt5.ORDER_TYPE_BUY_STOP if order_type == "BUY_STOP" else mt5.ORDER_TYPE_SELL_STOP
                 same_side_count = sum(1 for o in existing_mt5_orders if o.type in (target_type, 4 if order_type == "BUY_STOP" else 5))
