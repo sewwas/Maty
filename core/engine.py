@@ -1422,20 +1422,21 @@ class BreakoutGridBot:
         try:
             unidirectional_mode = getattr(self, "unidirectional_mode", "DUAL")
 
-            # ── ULTRA-FAST LIVE SPREAD & MOMENTUM GRID OPTIMIZER ────────────
-            # 1. Live Spread Shield: Ensure offsets strictly exceed 1.8x live Bid-Ask spread
+            # ── ULTRA-FAST LIVE SPREAD & 1M MICRO-WICK GRID OPTIMIZER ────────────
+            # 1. Live Spread Shield: Ensure offsets strictly exceed 2.5x live Bid-Ask spread
             if hasattr(self.broker, "get_current_spread"):
                 live_sp = float(self.broker.get_current_spread())
                 if live_sp > 0:
-                    min_sp_off = live_sp * 1.80
+                    min_sp_off = live_sp * 2.50
                     buy_offset_val = max(buy_offset_val, min_sp_off)
                     sell_offset_val = max(sell_offset_val, min_sp_off)
 
-            # 2. Trend Acceleration: In strong trend mode, tighten trend-side offset 15% for fast execution
-            if unidirectional_mode == "BUY_ONLY":
-                buy_offset_val *= 0.85
-            elif unidirectional_mode == "SELL_ONLY":
-                sell_offset_val *= 0.85
+            # 2. 1M Micro-Wick Filter: Prevent buying top wicks (RSI >= 70) or selling bottom wicks (RSI <= 30)
+            rsi_1m = float(getattr(self.last_auto_eval, "get", lambda k, d: d)("rsi", 50.0)) if hasattr(self, "last_auto_eval") and isinstance(self.last_auto_eval, dict) else 50.0
+            if rsi_1m >= 70.0:  # Micro-top overbought: expand buy offset +25% above top wick
+                buy_offset_val *= 1.25
+            elif rsi_1m <= 30.0: # Micro-bottom oversold: expand sell offset +25% below bottom wick
+                sell_offset_val *= 1.25
             # ────────────────────────────────────────────────────────────────────
 
 
@@ -2822,16 +2823,19 @@ class BreakoutGridBot:
                     move_pct = 0.0
                     is_pos_trend = False
 
-                # ── 1M MICRO-TREND & UNCONFIRMED TREND FAST HARVEST SHIELD ───────
-                # Fast scalp harvest: As soon as float_pnl >= +$0.10 USD during non-trending markets or micro-reversals,
-                # HARVEST IMMEDIATELY! Never hold unconfirmed trend positions long in uncertainty.
+                # ── 1M MICRO-TREND & 45-SECOND DURATION FAST HARVEST SHIELD ──────
+                # Fast scalp harvest: As soon as float_pnl >= +$0.10 USD (net positive cash profit):
+                # 1. Harvest immediately if position has been open for >= 45 seconds!
+                # 2. Harvest immediately on 1M tick micro-reversals!
+                # 3. Harvest immediately in non-trending markets!
                 fast_single_target = (10.0 if is_cent else 0.10)
+                pos_st = float(getattr(open_pos, 'entry_time', timestamp) or timestamp)
+                pos_dur = timestamp - pos_st if pos_st > 0 else 0
 
-                # Micro-reversal after profit: if price touched profit (>= +$0.10) and starts to reverse 1 tick
                 recent_deltas = [self.price_history_ticks[i] - self.price_history_ticks[i-1] for i in range(1, len(self.price_history_ticks))] if len(getattr(self, "price_history_ticks", [])) >= 2 else []
                 is_micro_reversal = (open_pos.type == "BUY" and recent_deltas and recent_deltas[-1] < 0) or (open_pos.type == "SELL" and recent_deltas and recent_deltas[-1] > 0)
 
-                if float_pnl >= fast_single_target and (not is_strong_trend or is_micro_reversal or move_pct >= 0.02):
+                if float_pnl >= fast_single_target and (pos_dur >= 45.0 or not is_strong_trend or is_micro_reversal or move_pct >= 0.01):
                     single_fill_scalp_hit = True
                 # ──────────────────────────────────────────────────────────────────
 
