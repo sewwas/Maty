@@ -2723,14 +2723,31 @@ class BreakoutGridBot:
                     cur_tp = float(getattr(pos, "tp", getattr(pos, "take_profit", 0.0)) or 0.0)
                     entry_px = float(getattr(pos, "open_price", getattr(pos, "entry_price", current_price)))
                     
-                    # Compute required hardware SL level
+                    # Compute required hardware SL level (incorporating live ratchet floor / breakeven lock)
+                    ratchet_pnl = float(getattr(self, "ratchet_floor", 0.0))
+                    is_cent = getattr(self.broker, "is_cent_account", False)
+                    r_usd = (ratchet_pnl / 100.0) if is_cent else ratchet_pnl
+
                     if pos.type == "BUY":
-                        target_sl = round(entry_px - min_sl_dist, digits)
+                        base_sl = entry_px - min_sl_dist
+                        if r_usd > 0 and current_price > 0:
+                            lot_v = float(getattr(pos, "volume", getattr(pos, "size", 0.01)) or 0.01)
+                            c_mult = 100.0 if any(x in sym_name for x in ["XAU", "PAXG", "GOLD"]) else 1.0
+                            lock_dist = r_usd / max(0.001, lot_v * c_mult)
+                            base_sl = max(base_sl, entry_px + lock_dist)
+                        target_sl = round(base_sl, digits)
                     else:
-                        target_sl = round(entry_px + min_sl_dist, digits)
+                        base_sl = entry_px + min_sl_dist
+                        if r_usd > 0 and current_price > 0:
+                            lot_v = float(getattr(pos, "volume", getattr(pos, "size", 0.01)) or 0.01)
+                            c_mult = 100.0 if any(x in sym_name for x in ["XAU", "PAXG", "GOLD"]) else 1.0
+                            lock_dist = r_usd / max(0.001, lot_v * c_mult)
+                            base_sl = min(base_sl, entry_px - lock_dist)
+                        target_sl = round(base_sl, digits)
                     
-                    # Attach SL if missing (cur_sl == 0.0)
-                    if cur_sl == 0.0 and target_sl > 0:
+                    # Attach SL if missing (cur_sl == 0.0) or re-edit if trailing ratchet advanced (abs(target_sl - cur_sl) > pip_size)
+                    pip_sz = get_pip_size(sym_name, current_price)
+                    if (cur_sl == 0.0 and target_sl > 0) or (cur_sl > 0 and abs(target_sl - cur_sl) >= pip_sz * 2.0):
                         try:
                             self.broker.modify_position_sl_tp(pos.position_id, target_sl, cur_tp)
                             pos.sl = target_sl
