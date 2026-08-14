@@ -562,20 +562,38 @@ class MT5Broker:
                 ticket = t
                 break
 
-        if not ticket and str(position_id).startswith("live_"):
-            try:
-                ticket = int(str(position_id).replace("live_", ""))
-            except Exception:
-                pass
-
         if not ticket:
+            clean_pid = str(position_id).replace("live_", "").replace("pos_", "").replace("ord_", "")
+            if clean_pid.isdigit():
+                try:
+                    ticket = int(clean_pid)
+                except Exception:
+                    pass
+
+        pos = None
+        if ticket:
+            pos_list = mt5.positions_get(ticket=ticket)
+            if pos_list:
+                pos = pos_list[0]
+
+        if not pos:
+            exness_symbol = self.get_exness_symbol(self.symbol)
+            pos_list = mt5.positions_get(symbol=exness_symbol) if exness_symbol else ()
+            if pos_list:
+                for p in pos_list:
+                    if hasattr(self, "magic_number") and self.magic_number:
+                        if getattr(p, "magic", 0) == self.magic_number:
+                            pos = p
+                            ticket = p.ticket
+                            break
+                    else:
+                        pos = p
+                        ticket = p.ticket
+                        break
+
+        if not pos or not ticket:
             return False
 
-        pos_list = mt5.positions_get(ticket=ticket)
-        if not pos_list:
-            return False
-
-        pos = pos_list[0]
         symbol_info = self.get_cached_symbol_info(pos.symbol)
         digits = symbol_info.digits if symbol_info else 4
 
