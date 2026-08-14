@@ -964,7 +964,7 @@ with tab_desk:
                         _secs_trig    = _now_ts - _last_trig_t   if _last_trig_t  > 0 else 9999
                         _secs_err     = _now_ts - _deploy_err_t  if _deploy_err_t > 0 else 9999
                         _is_stuck     = is_run and _is_deployed and pend_ord == 0 and open_pos == 0 and _secs_deploy > 120
-                        _is_frozen    = is_run and _secs_deploy > 600 and pend_ord == 0 and not _runner_mode
+                        _is_frozen    = is_run and _secs_deploy > 600 and pend_ord == 0 and open_pos == 0 and not _runner_mode
 
                         def _ago(s):
                             if s > 9000: return 'never'
