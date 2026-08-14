@@ -548,6 +548,49 @@ class MT5Broker:
             return record
         return None
 
+    def modify_position_sl_tp(self, position_id: str, sl: float, tp: float = 0.0) -> bool:
+        """
+        Sends TRADE_ACTION_SLTP request to MT5 server to update hardware Stop Loss (SL) 
+        and Take Profit (TP) directly on the open MT5 position.
+        """
+        if not self.ensure_connected():
+            return False
+
+        ticket = None
+        for t, pid in list(self.ticket_to_position_id.items()):
+            if pid == position_id:
+                ticket = t
+                break
+
+        if not ticket and str(position_id).startswith("live_"):
+            try:
+                ticket = int(str(position_id).replace("live_", ""))
+            except Exception:
+                pass
+
+        if not ticket:
+            return False
+
+        pos_list = mt5.positions_get(ticket=ticket)
+        if not pos_list:
+            return False
+
+        pos = pos_list[0]
+        symbol_info = self.get_cached_symbol_info(pos.symbol)
+        digits = symbol_info.digits if symbol_info else 4
+
+        req = {
+            "action": mt5.TRADE_ACTION_SLTP,
+            "symbol": pos.symbol,
+            "position": ticket,
+            "sl": round(sl, digits) if sl > 0 else 0.0,
+            "tp": round(tp, digits) if tp > 0 else 0.0,
+            "magic": self.magic_number,
+        }
+
+        res = mt5.order_send(req)
+        return res is not None and res.retcode in [mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_PLACED]
+
     def close_all_positions(self, exit_price: float, timestamp: float, symbol: Optional[str] = None) -> List[dict]:
         if not self.ensure_connected():
             return []

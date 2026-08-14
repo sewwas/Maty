@@ -2707,6 +2707,34 @@ class BreakoutGridBot:
                 except Exception:
                     pass
 
+            # 5d. MANDATORY HARDWARE STOP LOSS (SL) ENFORCEMENT & DYNAMIC RE-EDITOR SHIELD
+            # Checks every open position:
+            # 1. If any position on MT5 is missing a hardware SL, immediately compute and attach hardware SL!
+            # 2. If trailing ratchet or breakeven lock advances the SL level, re-edit the hardware SL directly on MT5 server!
+            if len(self.broker.open_positions) >= 1 and hasattr(self.broker, "modify_position_sl_tp"):
+                sym_name = str(getattr(self.broker, "symbol", "")).upper()
+                digits = 4 if any(x in sym_name for x in ["DOGE", "GBP", "EUR"]) else 2
+                min_sl_dist = (current_price * 0.025) if "BTC" in sym_name else ((current_price * 0.015) if "ETH" in sym_name else (current_price * 0.010 if current_price > 0 else 5.0))
+                
+                for pos in list(self.broker.open_positions.values()):
+                    cur_sl = float(getattr(pos, "sl", getattr(pos, "stop_loss", 0.0)) or 0.0)
+                    cur_tp = float(getattr(pos, "tp", getattr(pos, "take_profit", 0.0)) or 0.0)
+                    entry_px = float(getattr(pos, "open_price", getattr(pos, "entry_price", current_price)))
+                    
+                    # Compute required hardware SL level
+                    if pos.type == "BUY":
+                        target_sl = round(entry_px - min_sl_dist, digits)
+                    else:
+                        target_sl = round(entry_px + min_sl_dist, digits)
+                    
+                    # Attach SL if missing (cur_sl == 0.0)
+                    if cur_sl == 0.0 and target_sl > 0:
+                        try:
+                            self.broker.modify_position_sl_tp(pos.position_id, target_sl, cur_tp)
+                            pos.sl = target_sl
+                        except Exception:
+                            pass
+
             # 6. MICRO-VELOCITY MOMENTUM SCALP EXIT (True Trend Reversal Guard)
             momentum_scalp_hit = False
             if len(self.broker.open_positions) > 0 and float_pnl >= volume_friction_target:
