@@ -2834,8 +2834,8 @@ class BreakoutGridBot:
                                     try: self.deploy_traps(current_price, timestamp, force=True)
                                     except Exception: pass
                         
-                        # 2. Selective Counter-Trend Breakeven / Micro-Pullback Loss Minimizer (-$0.15 to +$0.05 USD)
-                        elif -0.15 <= cp_pnl <= 0.05:
+                        # 2. Selective Counter-Trend Breakeven Exit (Strictly Net Positive Profit >= +$0.05 USD)
+                        elif cp_pnl >= (5.0 if is_cent else 0.05):
                             c_res = self.broker.close_position(cp.position_id, current_price, timestamp)
                             if c_res:
                                 counter_trend_be_hit = True
