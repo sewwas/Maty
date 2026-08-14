@@ -52,15 +52,15 @@ _symbol_labels = {
 }
 
 _golden_sweet_spots = {
-    "PAXGUSDT": {"gap": 0.07, "offset": 0.07, "size": 0.01,  "tp": 10.0, "mult": 1.5},
-    "GBPUSD":   {"gap": 0.05, "offset": 0.05, "size": 0.02,  "tp": 9.0,  "mult": 1.5},
-    "EURUSD":   {"gap": 0.05, "offset": 0.05, "size": 0.02,  "tp": 8.0,  "mult": 1.5},
-    "USDJPY":   {"gap": 0.05, "offset": 0.05, "size": 0.02,  "tp": 9.0,  "mult": 1.5},
-    "BTCUSDT":  {"gap": 0.10, "offset": 0.10, "size": 0.001, "tp": 10.0, "mult": 1.5},
-    "ETHUSDT":  {"gap": 0.07, "offset": 0.07, "size": 0.05,  "tp": 10.0, "mult": 1.5},
-    "SOLUSDT":  {"gap": 0.07, "offset": 0.07, "size": 0.50,  "tp": 10.0, "mult": 1.5},
-    "BNBUSDT":  {"gap": 0.07, "offset": 0.07, "size": 0.05,  "tp": 10.0, "mult": 1.5},
-    "DOGEUSDT": {"gap": 0.07, "offset": 0.07, "size": 100.0, "tp": 10.0, "mult": 1.5},
+    "PAXGUSDT": {"gap": 0.07, "offset": 0.07, "size": 0.01,  "tp": 0.50, "mult": 1.5},
+    "GBPUSD":   {"gap": 0.05, "offset": 0.05, "size": 0.02,  "tp": 0.50, "mult": 1.5},
+    "EURUSD":   {"gap": 0.05, "offset": 0.05, "size": 0.02,  "tp": 0.50, "mult": 1.5},
+    "USDJPY":   {"gap": 0.05, "offset": 0.05, "size": 0.02,  "tp": 0.50, "mult": 1.5},
+    "BTCUSDT":  {"gap": 0.10, "offset": 0.10, "size": 0.001, "tp": 0.50, "mult": 1.5},
+    "ETHUSDT":  {"gap": 0.07, "offset": 0.07, "size": 0.05,  "tp": 0.50, "mult": 1.5},
+    "SOLUSDT":  {"gap": 0.07, "offset": 0.07, "size": 0.50,  "tp": 0.50, "mult": 1.5},
+    "BNBUSDT":  {"gap": 0.07, "offset": 0.07, "size": 0.05,  "tp": 0.50, "mult": 1.5},
+    "DOGEUSDT": {"gap": 0.07, "offset": 0.07, "size": 100.0, "tp": 0.50, "mult": 1.5},
 }
 
 def save_bot_state_dict(markets_dict: dict, force: bool = False):

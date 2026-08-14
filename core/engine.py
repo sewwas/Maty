@@ -809,7 +809,7 @@ class BreakoutGridBot:
         trap_offset: float = 5.0,
         order_size: float = 0.01,
         order_size_multiplier: float = 1.25,
-        target_profit: float = 4.50,
+        target_profit: float = 0.50,
         auto_restart: bool = True,
         is_percent: bool = False,
         spacing_mode: Optional[str] = None,
