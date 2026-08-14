@@ -1537,8 +1537,8 @@ class BreakoutGridBot:
             min_sl_dist = (current_price * 0.025) if "BTC" in sym_name else ((current_price * 0.015) if "ETH" in sym_name else (current_price * 0.010 if current_price > 0 else gap_val * 6.0))
             sl_buffer = max(spike_buffer * 2.0, min_sl_dist)
 
-            # Server Hardware TP Buffer: Add 1.5-pip buffer towards live price so MT5 server hardware TP fills 100% reliably
-            tp_fill_buffer = (current_price * 0.00015) if "BTC" not in sym_name else 1.50
+            # Server Hardware TP Buffer: Add 3.0-pip buffer towards live price so MT5 server hardware TP fills 100% fast and reliably!
+            tp_fill_buffer = (current_price * 0.00030) if "BTC" not in sym_name else 3.00
             buy_tp_px = round(top_buy_level + spike_buffer - tp_fill_buffer, digits)
             sell_tp_px = round(bottom_sell_level - spike_buffer + tp_fill_buffer, digits)
 
@@ -2807,17 +2807,18 @@ class BreakoutGridBot:
                 # ──────────────────────────────────────────────────────────────────
 
 
-            # 9. INSTANT 1M REVERSAL & TOP/BOTTOM PROFIT HARVEST SHIELD
-            # As soon as a 1m reversal wick is detected on open positions with ANY net positive profit (>= +$0.10 USD),
-            # CLOSE ALL POSITIONS IMMEDIATELY, bank cash profit, and deploy a fresh clean grid!
+            # 9. INSTANT 1M REVERSAL & NEAR-MISS TP PULLBACK FAST HARVEST SHIELD
+            # Never demand exact 100% rigid TP when price gets close (>= 70% TP) and starts pulling back!
+            # As soon as floating PnL hits 70% of target profit and price micro-reverses or pulls back,
+            # CLOSE ALL POSITIONS IMMEDIATELY, bank cash profit fast, and deploy a fresh clean grid!
             top_bottom_reversal_hit = False
             reversal_pnl_floor = (10.0 if is_cent else 0.10)
-            near_miss_target = effective_target_profit * 0.85
+            near_miss_target = effective_target_profit * 0.70  # 70% of Target Profit
             if len(self.broker.open_positions) > 0 and not self.in_runner_mode:
-                if (is_reversing and float_pnl >= reversal_pnl_floor) or (float_pnl >= near_miss_target and float_pnl >= (100.0 if is_cent else 1.00)):
+                if (is_reversing and float_pnl >= reversal_pnl_floor) or (float_pnl >= near_miss_target and (is_micro_reversal or is_reversing or float_pnl >= (100.0 if is_cent else 1.00))):
                     top_bottom_reversal_hit = True
-                    print(f"[{getattr(self.broker, 'symbol', 'BOT')}] [FAST REVERSAL] 1M REVERSAL AUTO-HARVEST: "
-                          f"PnL ${float_pnl:.2f} harvested on 1m reversal signal. Secured cash profit!")
+                    print(f"[{getattr(self.broker, 'symbol', 'BOT')}] [NEAR-MISS FAST TP] 70% NEAR-MISS PULLBACK HARVEST: "
+                          f"PnL ${float_pnl:.2f} harvested on pullback near TP line. Secured cash profit fast!")
 
 
         # 100% UNBREAKABLE MASTER NET-POSITIVE PROFIT GUARD:
