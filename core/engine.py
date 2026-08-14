@@ -2021,18 +2021,11 @@ class BreakoutGridBot:
                 else:
                     self.deployed = False
 
-        # ── DYNAMIC GRID RE-CENTERING SHIELD ─────────────────────────────────────
-        # If zero open positions exist and price moves far away from pending traps (> 2x gap),
-        # automatically cancel stale pending traps and re-deploy fresh traps centered around current Ask/Bid!
-        if self.deployed and len(self.broker.open_positions) == 0 and len(self.broker.pending_orders) > 0:
-            nearest_dist = min(abs(current_price - o.trigger_price) for o in self.broker.pending_orders.values())
-            recenter_threshold = max(getattr(self, "deploy_grid_gap", 3.0) * 2.0, 6.00 if ("XAU" in str(getattr(self.broker, "symbol", "")).upper() or "GOLD" in str(getattr(self.broker, "symbol", "")).upper()) else current_price * 0.005)
-            if nearest_dist > recenter_threshold:
-                try:
-                    self.broker.cancel_all_orders()
-                    self.deploy_traps(current_price, timestamp, bb_width)
-                except Exception as rec_err:
-                    print(f"Notice: Grid re-centering notice: {rec_err}")
+        # ── FIXED CONFIRMED TRAP LOCK (ZERO ORDER WIPING SHIELD) ─────────────────
+        # Confirmed pending grid traps are locked 100% fixed on MT5 once placed.
+        # Wiping and re-centering on tick drift is permanently disabled to eliminate order-wiping loops!
+        # Traps remain stationary on MT5 until filled or cycle completed.
+        pass
 
         # ── PENDING TRAP RESTORATION SHIELD ──────────────────────────────────────
         # If pending orders drop to 0 while 1 to 3 active trades exist, automatically restore fresh traps centered around current Ask/Bid once every 30s!
