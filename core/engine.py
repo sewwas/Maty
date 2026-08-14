@@ -2391,6 +2391,7 @@ class BreakoutGridBot:
         top_bottom_reversal_hit = False
         counter_trend_harvest_hit = False
         counter_trend_be_hit = False
+        micro_snap_hit = False
 
         # SMART TIMEOUT: Only exits if PnL is at or above breakeven (friction_floor).
         # If the cycle is in the red when time expires, do NOT force-exit — let Stop Loss
