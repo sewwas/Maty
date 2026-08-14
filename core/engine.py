@@ -1450,6 +1450,9 @@ class BreakoutGridBot:
 
             # Always cancel existing pending orders FIRST before placing new grid traps
             try:
+                if hasattr(self.broker, "purge_duplicate_mt5_orders"):
+                    try: self.broker.purge_duplicate_mt5_orders()
+                    except Exception: pass
                 self.broker.cancel_all_orders()
                 cancel_success = True
             except Exception as pre_cancel_err:
