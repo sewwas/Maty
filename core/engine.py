@@ -1890,7 +1890,7 @@ class BreakoutGridBot:
         buy_groups: dict = defaultdict(list)
         sell_groups: dict = defaultdict(list)
 
-        for order_id, order in self.broker.pending_orders.items():
+        for order_id, order in list(self.broker.pending_orders.items()):
             if order_id in cancelled_ids:
                 continue
             if order.type == "BUY_STOP":

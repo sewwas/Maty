@@ -1339,7 +1339,7 @@ with tab_desk:
             
             # Plot pending orders as horizontal dashed trap lines
             chart_brk = st.session_state.markets[chart_sym]["broker"]
-            for oid, ord_obj in chart_brk.pending_orders.items():
+            for oid, ord_obj in list(getattr(chart_brk, "pending_orders", {}).items()):
                 line_color = "#22c55e" if "BUY" in ord_obj.type else "#ef4444"
                 fig.add_hline(y=ord_obj.trigger_price, line_dash="dash", line_color=line_color, annotation_text=f"{ord_obj.type} @ ${ord_obj.trigger_price:,.2f}")
                 
@@ -1349,7 +1349,7 @@ with tab_desk:
             st.info("Accumulating live tick history for price visualization...")
 
     # ── LIVE ACTIVE TRADING PAIRS RADAR ──────────────────────────────────────
-    active_pairs_list = [code for code, m in st.session_state.markets.items() if m.get("running", False)]
+    active_pairs_list = [code for code, m in list(st.session_state.markets.items()) if m.get("running", False)]
     if active_pairs_list:
         st.markdown("#### 📡 Live Active Trading Pairs Radar")
         radar_cols = st.columns(min(3, len(active_pairs_list)))
@@ -1383,14 +1383,14 @@ with tab_desk:
     # Global Positions & Pending Orders Table
     st.markdown("#### 📊 Open MT5 Positions & Active Grid Traps Across All Pairs")
     all_open_rows = ""
-    for sym_code, m_data in st.session_state.markets.items():
+    for sym_code, m_data in list(st.session_state.markets.items()):
         brk = m_data["broker"]
         sym_p = m_data["last_price"]
-        for pid, pos in brk.open_positions.items():
+        for pid, pos in list(getattr(brk, "open_positions", {}).items()):
             pnl = (sym_p - pos.entry_price) * pos.size if pos.type == "BUY" else (pos.entry_price - sym_p) * pos.size
             pnl_cls = "pnl-green" if pnl >= 0 else "pnl-red"
             all_open_rows += f"<tr><td>{pos.position_id}</td><td>{sym_code}</td><td>POSITION</td><td>{pos.type}</td><td>${pos.entry_price:,.2f}</td><td>${sym_p:,.2f}</td><td>{pos.size:.2f}</td><td class='{pnl_cls}'>${pnl:+,.2f}</td></tr>"
-        for oid, ord_obj in brk.pending_orders.items():
+        for oid, ord_obj in list(getattr(brk, "pending_orders", {}).items()):
             all_open_rows += f"<tr><td>{ord_obj.order_id}</td><td>{sym_code}</td><td>PENDING TRAP</td><td>{ord_obj.type}</td><td>${ord_obj.trigger_price:,.2f}</td><td>-</td><td>{ord_obj.size:.2f}</td><td>-</td></tr>"
             
     if all_open_rows:
