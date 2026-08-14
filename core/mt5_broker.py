@@ -594,20 +594,48 @@ class MT5Broker:
         if not pos or not ticket:
             return False
 
-        symbol_info = self.get_cached_symbol_info(pos.symbol)
+        symbol_info = mt5.symbol_info(pos.symbol)
         digits = symbol_info.digits if symbol_info else 4
+        point = symbol_info.point if symbol_info else 0.0001
+        stops_lvl = getattr(symbol_info, "stops_level", 0) or 0
+        min_stop_dist = max(stops_lvl * point, point * 10.0, 0.10 if any(x in str(pos.symbol).upper() for x in ["XAU", "GOLD"]) else 0.0001)
+
+        tick_info = mt5.symbol_info_tick(pos.symbol)
+        bid_px = getattr(tick_info, "bid", 0.0) or 0.0
+        ask_px = getattr(tick_info, "ask", 0.0) or 0.0
+
+        final_sl = round(sl, digits) if sl > 0 else 0.0
+        final_tp = round(tp, digits) if tp > 0 else 0.0
+
+        # Exness Stops Level Clamping: ensure SL & TP satisfy broker minimum distance from live price
+        if pos.type == mt5.POSITION_TYPE_BUY:
+            if final_tp > 0 and ask_px > 0:
+                final_tp = max(final_tp, round(ask_px + min_stop_dist, digits))
+            if final_sl > 0 and bid_px > 0:
+                final_sl = min(final_sl, round(bid_px - min_stop_dist, digits))
+        else:
+            if final_tp > 0 and bid_px > 0:
+                final_tp = min(final_tp, round(bid_px - min_stop_dist, digits))
+            if final_sl > 0 and ask_px > 0:
+                final_sl = max(final_sl, round(ask_px + min_stop_dist, digits))
 
         req = {
             "action": mt5.TRADE_ACTION_SLTP,
             "symbol": pos.symbol,
             "position": ticket,
-            "sl": round(sl, digits) if sl > 0 else 0.0,
-            "tp": round(tp, digits) if tp > 0 else 0.0,
-            "magic": self.magic_number,
+            "sl": final_sl,
+            "tp": final_tp,
+            "magic": getattr(pos, "magic", self.magic_number),
         }
 
         res = mt5.order_send(req)
-        return res is not None and res.retcode in [mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_PLACED]
+        if res is not None and res.retcode in [mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_PLACED]:
+            return True
+        else:
+            ret_code = getattr(res, 'retcode', 'N/A')
+            ret_comment = getattr(res, 'comment', 'N/A')
+            print(f"[{pos.symbol}] [SL/TP MODIFY NOTICE] Ticket {ticket} SL/TP modification notice: {ret_comment} (Retcode: {ret_code})")
+            return False
 
     def close_all_positions(self, exit_price: float, timestamp: float, symbol: Optional[str] = None) -> List[dict]:
         if not self.ensure_connected():
@@ -663,15 +691,23 @@ class MT5Broker:
 
         if mt5_positions:
             for p in mt5_positions:
-                if p.magic == self.magic_number:
+                if getattr(p, "magic", 0) == self.magic_number or getattr(p, "magic", 0) == 0:
                     active_pos_tickets.add(p.ticket)
-                    if p.ticket not in self.ticket_to_position_id:
+                    pid = self.ticket_to_position_id.get(p.ticket)
+                    if not pid:
                         pos_type = "BUY" if p.type == mt5.POSITION_TYPE_BUY else "SELL"
                         new_pos = Position(pos_type, p.price_open, p.volume, p.time)
                         new_pos.position_id = f"live_{p.ticket}"
+                        new_pos.sl = float(getattr(p, "sl", 0.0) or 0.0)
+                        new_pos.tp = float(getattr(p, "tp", 0.0) or 0.0)
                         self.ticket_to_position_id[p.ticket] = new_pos.position_id
                         self.open_positions[new_pos.position_id] = new_pos
                         triggered_positions.append(new_pos)
+                    else:
+                        pos_obj = self.open_positions.get(pid)
+                        if pos_obj:
+                            pos_obj.sl = float(getattr(p, "sl", 0.0) or 0.0)
+                            pos_obj.tp = float(getattr(p, "tp", 0.0) or 0.0)
 
         # Purge local positions ONLY if MT5 query succeeded
         if mt5_positions is not None:
