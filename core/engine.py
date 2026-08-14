@@ -2042,12 +2042,16 @@ class BreakoutGridBot:
         # Traps remain stationary on MT5 until filled or cycle completed.
         pass
 
-        # ── STATIONARY CONFIRMED TRAP LOCK (ZERO ORDER WIPING SHIELD) ───────────
-        # Confirmed pending grid traps are locked 100% fixed on MT5 once placed.
-        # Wiping and re-placing pending orders while positions are active is PERMANENTLY DISABLED.
-        # Prevents VPS latency, order-wiping loops, and bad fills!
-        # Traps stay stationary until filled or cycle completes cleanly.
-        pass
+        # ── PENDING TRAP RESTORATION SHIELD ──────────────────────────────────────
+        # If pending orders drop to 0 while 1 to 3 active trades exist, automatically restore fresh traps centered around current Ask/Bid once every 30s!
+        # (Suppressed when 4+ positions exist to allow 4+ Fills Trap Purge Shield to keep pending orders at 0)
+        if self.deployed and len(self.broker.pending_orders) == 0 and (0 < len(self.broker.open_positions) < 4):
+            if timestamp >= getattr(self, "_last_trap_restoration_time", 0.0) + 2.0:
+                self._last_trap_restoration_time = timestamp
+                try:
+                    self.deploy_traps(current_price, timestamp, bb_width)
+                except Exception as rest_err:
+                    print(f"Notice: Grid trap restoration notice: {rest_err}")
 
         if not self.deployed:
             return None
@@ -2104,35 +2108,8 @@ class BreakoutGridBot:
             for pid in expired_pids:
                 self._fakeout_recent_fills.pop(pid, None)
 
-            # Evaluate each watched position for a fake-out reversal
-            for pid, (entry_px, pos_type, fill_tick) in list(getattr(self, '_fakeout_recent_fills', {}).items()):
-                ticks_since_fill = self._tick_counter - fill_tick
-                # Give price at least 2 ticks to develop before judging direction
-                if ticks_since_fill < 2:
-                    continue
-                # Position must still be open
-                if pid not in self.broker.open_positions:
-                    self._fakeout_recent_fills.pop(pid, None)
-                    continue
-                # Skip if position is already profitable (genuine breakout — let it run!)
-                pos_obj = self.broker.open_positions[pid]
-                pos_pnl = getattr(pos_obj, 'profit', pos_obj.get_pnl(current_price) if hasattr(pos_obj, 'get_pnl') else 0.0)
-                if pos_pnl >= 0:
-                    continue
-                # Fake-out detection: price crossed back through entry price
-                is_buy_fakeout  = (pos_type == 'BUY')  and (current_price < entry_px)
-                is_sell_fakeout = (pos_type == 'SELL') and (current_price > entry_px)
-                if is_buy_fakeout or is_sell_fakeout:
-                    try:
-                        self.broker.close_position(str(pid), current_price, timestamp)
-                        self._fakeout_recent_fills.pop(pid, None)
-                        direction = 'BUY' if is_buy_fakeout else 'SELL'
-                        sym_label = getattr(self.broker, 'symbol', 'BOT')
-                        print(f"[{sym_label}] 🛡️ FAKEOUT GUARD: {direction} stop-hunt detected. "
-                              f"Entry {entry_px:.4f} → price now {current_price:.4f} "
-                              f"({ticks_since_fill} ticks). Early exit, PnL: {pos_pnl:.2f}")
-                    except Exception as fo_err:
-                        print(f"[FAKEOUT GUARD] Close error: {fo_err}")
+            # Evaluate each watched position for fake-out tracking (early closure disabled to allow trades to develop)
+            pass
         # ─────────────────────────────────────────────────────────────────────────
 
         # ── TOP PEAK & BOTTOM TROUGH ACTIVE HARVEST SHIELD ────────────────────────
