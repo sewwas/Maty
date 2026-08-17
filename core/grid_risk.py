@@ -740,7 +740,7 @@ def trail_stop_loss_5m_structure(self, current_price: float, timestamp: float) -
 
     now_ts = timestamp or time.time()
     last_trail_time = getattr(self, "_last_5m_sl_trail_time", 0.0)
-    if now_ts - last_trail_time < 3.0:
+    if now_ts - last_trail_time < 0.5:
         return 0
 
     self._last_5m_sl_trail_time = now_ts
@@ -810,7 +810,7 @@ def align_basket_take_profits(self, current_price: float, timestamp: float) -> i
 
     now_ts = timestamp or time.time()
     last_align_time = getattr(self, "_last_tp_align_time", 0.0)
-    if now_ts - last_align_time < 3.0:
+    if now_ts - last_align_time < 0.5:
         return 0
 
     self._last_tp_align_time = now_ts
