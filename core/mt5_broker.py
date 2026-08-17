@@ -864,14 +864,28 @@ class MT5Broker:
 
         return triggered_positions
 
-    def get_floating_pnl(self, current_price: float) -> float:
+    def get_floating_pnl(self, current_price: float = 0.0) -> float:
         if not self.ensure_connected():
             return 0.0
+        ex_s = self.get_exness_symbol(self.symbol) if hasattr(self, "get_exness_symbol") else self.symbol
+        aliases = {ex_s.upper(), self.symbol.upper(), f"{ex_s}m".upper(), f"{ex_s}c".upper()}
+        if any(x in self.symbol.upper() for x in ["PAXG", "XAU", "GOLD"]):
+            aliases.update(["XAUUSD", "GOLD", "PAXGUSDT", "XAUUSDm", "XAUUSDc"])
+
         positions = mt5.positions_get() if MT5_AVAILABLE else None
         total_pnl = 0.0
+        found_matching = False
         if positions:
             for p in positions:
-                total_pnl += float(getattr(p, "profit", 0.0) or 0.0)
+                p_sym = str(getattr(p, "symbol", "")).upper()
+                if p_sym and any(a in p_sym or p_sym in a for a in aliases):
+                    total_pnl += float(getattr(p, "profit", 0.0) or 0.0)
+                    found_matching = True
+        
+        if not found_matching and hasattr(self, "open_positions") and self.open_positions:
+            for p_obj in self.open_positions.values():
+                total_pnl += float(getattr(p_obj, "profit", 0.0) or 0.0)
+
         return total_pnl
 
     def sync_history_from_mt5(self, days: int = 180, force: bool = False):
