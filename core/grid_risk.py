@@ -198,6 +198,11 @@ def process_engine_tick(self, previous_price: float, current_price: float, times
         return None
 
     self._tick_counter += 1
+
+    try:
+        sync_trap_mode_realtime(self, current_price, timestamp)
+    except Exception:
+        pass
     newly_filled_pos_ids = []
     if hasattr(self.broker, "process_tick"):
         new_positions = self.broker.process_tick(previous_price, current_price, timestamp)
@@ -865,3 +870,56 @@ def align_basket_take_profits(self, current_price: float, timestamp: float) -> i
                         pass
 
     return modified_count
+
+
+def sync_trap_mode_realtime(self, current_price: float, timestamp: float) -> bool:
+    """
+    Real-Time Trap Mode Adaptation Engine.
+    Instantly adapts active MT5 pending grid orders whenever Trap Mode changes in real time.
+    • BUY_ONLY: Purges all SELL_STOP orders from MT5 and ensures BUY_STOP traps are active.
+    • SELL_ONLY: Purges all BUY_STOP orders from MT5 and ensures SELL_STOP traps are active.
+    • DUAL/BOTH: Ensures both BUY_STOP and SELL_STOP traps are active.
+    """
+    curr_mode = str(getattr(self, "pending_order_side_mode", "AUTO_ADAPTIVE")).upper()
+    last_mode = getattr(self, "_last_synced_side_mode", None)
+
+    mode_changed = (last_mode is not None and curr_mode != last_mode)
+    self._last_synced_side_mode = curr_mode
+
+    if not hasattr(self.broker, "pending_orders"):
+        return False
+
+    p_orders = list(self.broker.pending_orders.items())
+    has_buy_stops = any(getattr(o, "type", "") == "BUY_STOP" for _, o in p_orders)
+    has_sell_stops = any(getattr(o, "type", "") == "SELL_STOP" for _, o in p_orders)
+
+    purged = False
+
+    if "BUY" in curr_mode and "ONLY" in curr_mode:
+        for oid, ord_obj in p_orders:
+            if getattr(ord_obj, "type", "") == "SELL_STOP":
+                try:
+                    self.broker.cancel_order(oid)
+                    purged = True
+                except Exception:
+                    pass
+        if (mode_changed or not has_buy_stops) and not len(getattr(self.broker, "open_positions", {})):
+            self.deploy_traps(current_price, timestamp, force=True)
+
+    elif "SELL" in curr_mode and "ONLY" in curr_mode:
+        for oid, ord_obj in p_orders:
+            if getattr(ord_obj, "type", "") == "BUY_STOP":
+                try:
+                    self.broker.cancel_order(oid)
+                    purged = True
+                except Exception:
+                    pass
+        if (mode_changed or not has_sell_stops) and not len(getattr(self.broker, "open_positions", {})):
+            self.deploy_traps(current_price, timestamp, force=True)
+
+    elif mode_changed and ("DUAL" in curr_mode or "BOTH" in curr_mode):
+        self.broker.cancel_all_orders()
+        self.deploy_traps(current_price, timestamp, force=True)
+        purged = True
+
+    return purged
