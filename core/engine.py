@@ -1369,30 +1369,31 @@ class BreakoutGridBot:
             else:
                 effective_levels = 3
 
-            # 100% High-Confidence Trend & Market Regime Confirmation Guard:
-            # Requires 100% confirmed multi-timeframe candle data & verified technical indicators before deploying grid traps
+            # 100% Multi-Timeframe Confluence Guard: 1m Micro-Entry + 5m/15m Higher-Timeframe Trend Direction
             try:
                 from core.data import get_historical_klines, calculate_technical_indicators
+                df_1m = get_historical_klines(sym_name, interval="1m", limit=30)
                 df_5m = get_historical_klines(sym_name, interval="5m", limit=30)
-                if df_5m is not None and not df_5m.empty and len(df_5m) >= 10:
-                    tech = calculate_technical_indicators(df_5m)
-                    trend_dir = tech.get("trend", "NEUTRAL")
-                    rsi_val = tech.get("rsi", 50.0)
-                    ema_fast = tech.get("ema_fast", current_price)
-                    ema_slow = tech.get("ema_slow", current_price)
-                    
-                    # 100% Bullish Confirmation (Bullish Trend + EMA fast >= slow OR Oversold RSI <= 35)
-                    if (trend_dir == "BULLISH" and ema_fast >= ema_slow) or rsi_val <= 35.0:
-                        place_buy = True
-                        place_sell = False
-                    # 100% Bearish Confirmation (Bearish Trend + EMA fast <= slow OR Overbought RSI >= 65)
-                    elif (trend_dir == "BEARISH" and ema_fast <= ema_slow) or rsi_val >= 65.0:
-                        place_buy = False
-                        place_sell = True
-                    else:
-                        # 100% Confirmed Choppy Range: BOTH Buy & Sell Active
-                        place_buy = True
-                        place_sell = True
+                df_15m = get_historical_klines(sym_name, interval="15m", limit=30)
+                
+                tech_1m = calculate_technical_indicators(df_1m) if (df_1m is not None and not df_1m.empty) else {}
+                tech_5m = calculate_technical_indicators(df_5m) if (df_5m is not None and not df_5m.empty) else {}
+                tech_15m = calculate_technical_indicators(df_15m) if (df_15m is not None and not df_15m.empty) else {}
+                
+                t_5m = tech_5m.get("trend", "NEUTRAL")
+                t_15m = tech_15m.get("trend", "NEUTRAL")
+                rsi_1m = tech_1m.get("rsi", 50.0)
+                
+                # Higher Timeframe Trend Confluence (5m & 15m)
+                if t_5m == "BULLISH" or t_15m == "BULLISH" or rsi_1m <= 38.0:
+                    place_buy = True
+                    place_sell = False
+                elif t_5m == "BEARISH" or t_15m == "BEARISH" or rsi_1m >= 62.0:
+                    place_buy = False
+                    place_sell = True
+                else:
+                    place_buy = True
+                    place_sell = True
             except Exception:
                 pass
 
@@ -1410,8 +1411,9 @@ class BreakoutGridBot:
                 major_15m_high = current_price + min_sl_dist
 
             placed_count = 0
-            fast_buy_offset = max(b_min_stop + 0.50, buy_offset_val * 0.50)
-            fast_sell_offset = max(b_min_stop + 0.50, sell_offset_val * 0.50)
+            pt_val = 0.01 if any(x in sym_name for x in ["XAU", "PAXG", "GOLD"]) else (0.1 if "BTC" in sym_name else 0.0001)
+            fast_buy_offset = max(b_min_stop + (pt_val * 5.0), buy_offset_val * 0.15)
+            fast_sell_offset = max(b_min_stop + (pt_val * 5.0), sell_offset_val * 0.15)
 
             for i in range(effective_levels):
                 if i == 0:
