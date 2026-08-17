@@ -1357,12 +1357,15 @@ class BreakoutGridBot:
             placed_count = 0
 
             for i in range(effective_levels):
-                buy_px = round(ask_ref + buy_offset_val + (i * gap_val), digits)
-                sell_px = round(bid_ref - sell_offset_val - (i * gap_val), digits)
+                # BUY_LIMIT: Placed BELOW current Bid price to buy the pullback dip at a discount
+                buy_px = round(bid_ref - buy_offset_val - (i * gap_val), digits)
+                # SELL_LIMIT: Placed ABOVE current Ask price to sell the rally peak at a premium
+                sell_px = round(ask_ref + sell_offset_val + (i * gap_val), digits)
                 
                 buy_size = self.calculate_level_size(self.order_size, self.order_size_multiplier, i)
                 sell_size = self.calculate_level_size(self.order_size, self.order_size_multiplier, i)
 
+                # Automated Hardware Take Profit (TP) & 15m Major Structural Stop Loss (SL)
                 buy_tp = round(buy_px + min_tp_dist, digits)
                 buy_sl = round(min(major_15m_low, buy_px - min_sl_dist), digits)
 
@@ -1371,17 +1374,17 @@ class BreakoutGridBot:
 
                 if place_buy:
                     try:
-                        b_res = self.broker.place_order("BUY_STOP", buy_px, buy_size, timestamp, tp=buy_tp, sl=buy_sl)
+                        b_res = self.broker.place_order("BUY_LIMIT", buy_px, buy_size, timestamp, tp=buy_tp, sl=buy_sl)
                         if b_res: placed_count += 1
                     except Exception as e:
-                        print(f"[{sym_name}] BUY_STOP level {i} error: {e}")
+                        print(f"[{sym_name}] BUY_LIMIT level {i} error: {e}")
 
                 if place_sell:
                     try:
-                        s_res = self.broker.place_order("SELL_STOP", sell_px, sell_size, timestamp, tp=sell_tp, sl=sell_sl)
+                        s_res = self.broker.place_order("SELL_LIMIT", sell_px, sell_size, timestamp, tp=sell_tp, sl=sell_sl)
                         if s_res: placed_count += 1
                     except Exception as e:
-                        print(f"[{sym_name}] SELL_STOP level {i} error: {e}")
+                        print(f"[{sym_name}] SELL_LIMIT level {i} error: {e}")
 
             if placed_count > 0 or len(self.broker.pending_orders) > 0:
                 self.deployed = True
