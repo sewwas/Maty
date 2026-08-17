@@ -231,6 +231,7 @@ def process_engine_tick(self, previous_price: float, current_price: float, times
     if len(getattr(self.broker, "open_positions", {})) > 0:
         try:
             trail_stop_loss_1m_structure(self, current_price, timestamp)
+            align_basket_take_profits(self, current_price, timestamp)
         except Exception:
             pass
 
@@ -777,5 +778,76 @@ def trail_stop_loss_1m_structure(self, current_price: float, timestamp: float) -
                         print(f"[{sym_name}] 🛡️ [1M STRUCTURE TRAILING] SELL Position #{pos_id} SL updated to 1m Lower High (LH): ${target_sl:,.3f}")
                 except Exception:
                     pass
+
+    return modified_count
+
+
+def align_basket_take_profits(self, current_price: float, timestamp: float) -> int:
+    """
+    Unified Basket Take-Profit Alignment Engine.
+    Ensures all active open positions on the same side share the EXACT SAME nearest Take Profit (TP)
+    so all positions close together cleanly in profit.
+    """
+    if not hasattr(self.broker, "open_positions") or not self.broker.open_positions:
+        return 0
+
+    if not hasattr(self.broker, "modify_position_sl_tp"):
+        return 0
+
+    now_ts = timestamp or time.time()
+    last_align_time = getattr(self, "_last_tp_align_time", 0.0)
+    if now_ts - last_align_time < 3.0:
+        return 0
+
+    self._last_tp_align_time = now_ts
+
+    sym_name = str(getattr(self.broker, "symbol", getattr(self, "symbol_code", "BTCUSDT"))).upper()
+    digits = 4 if any(x in sym_name for x in ["DOGE", "GBP", "EUR"]) else (3 if any(x in sym_name for x in ["XAU", "GOLD", "PAXG"]) else 2)
+
+    buy_positions = []
+    sell_positions = []
+
+    for pos_id, pos_obj in list(self.broker.open_positions.items()):
+        pos_type = str(getattr(pos_obj, "type", "")).upper()
+        if "BUY" in pos_type:
+            buy_positions.append((pos_id, pos_obj))
+        elif "SELL" in pos_type:
+            sell_positions.append((pos_id, pos_obj))
+
+    modified_count = 0
+
+    # Align BUY basket to nearest common TP
+    if len(buy_positions) >= 1:
+        valid_tps = [float(getattr(p, "tp", 0.0) or 0.0) for _, p in buy_positions if float(getattr(p, "tp", 0.0) or 0.0) > current_price]
+        if valid_tps:
+            nearest_tp = round(min(valid_tps), digits)
+            for pos_id, pos_obj in buy_positions:
+                cur_tp = round(float(getattr(pos_obj, "tp", 0.0) or 0.0), digits)
+                if cur_tp != nearest_tp:
+                    cur_sl = float(getattr(pos_obj, "sl", 0.0) or 0.0)
+                    try:
+                        if self.broker.modify_position_sl_tp(pos_id, sl=cur_sl if cur_sl > 0 else None, tp=nearest_tp):
+                            setattr(pos_obj, "tp", nearest_tp)
+                            modified_count += 1
+                            print(f"[{sym_name}] 🎯 [BASKET TP ALIGNED] BUY Position #{pos_id} TP unified to nearest target: ${nearest_tp:,.3f}")
+                    except Exception:
+                        pass
+
+    # Align SELL basket to nearest common TP
+    if len(sell_positions) >= 1:
+        valid_tps = [float(getattr(p, "tp", 0.0) or 0.0) for _, p in sell_positions if 0.0 < float(getattr(p, "tp", 0.0) or 0.0) < current_price]
+        if valid_tps:
+            nearest_tp = round(max(valid_tps), digits)
+            for pos_id, pos_obj in sell_positions:
+                cur_tp = round(float(getattr(pos_obj, "tp", 0.0) or 0.0), digits)
+                if cur_tp != nearest_tp:
+                    cur_sl = float(getattr(pos_obj, "sl", 0.0) or 0.0)
+                    try:
+                        if self.broker.modify_position_sl_tp(pos_id, sl=cur_sl if cur_sl > 0 else None, tp=nearest_tp):
+                            setattr(pos_obj, "tp", nearest_tp)
+                            modified_count += 1
+                            print(f"[{sym_name}] 🎯 [BASKET TP ALIGNED] SELL Position #{pos_id} TP unified to nearest target: ${nearest_tp:,.3f}")
+                    except Exception:
+                        pass
 
     return modified_count
