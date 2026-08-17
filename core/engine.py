@@ -1291,12 +1291,8 @@ class BreakoutGridBot:
                 except Exception:
                     pass
 
-            # 3. Purge Old Pending Orders for Symbol ONLY if zero orders currently active
-            try:
-                self.broker.cancel_all_orders()
-                time.sleep(0.15)  # 150ms MT5 server slot buffer
-            except Exception:
-                pass
+            # 3. Stationary Trap Lock: Never wipe active MT5 pending orders
+            pass
 
             # 4. Symbol Precision & Reference Prices
             digits = 4 if any(x in sym_name for x in ["DOGE", "GBP", "EUR"]) else 2
@@ -1334,10 +1330,24 @@ class BreakoutGridBot:
             else:
                 effective_levels = 3
 
-            # 6. Direct Placement Loop (Respects DIP_BUY / RALLY_SELL / BUY_ONLY / SELL_ONLY side modes)
+            # 6. Trend Confirmation Guard: Verify 5m market structure trend before placing new grid traps
             side_mode = str(getattr(self, "pending_order_side_mode", "AUTO_ADAPTIVE")).upper()
             place_buy = ("SELL_ONLY" not in side_mode)
             place_sell = ("BUY_ONLY" not in side_mode)
+            try:
+                from core.data import get_historical_klines, calculate_technical_indicators
+                df_5m = get_historical_klines(sym_name, interval="5m", limit=30)
+                if df_5m is not None and not df_5m.empty and len(df_5m) >= 10:
+                    tech = calculate_technical_indicators(df_5m)
+                    trend_dir = tech.get("trend", "NEUTRAL")
+                    if trend_dir == "BULLISH":
+                        place_buy = True
+                        place_sell = False
+                    elif trend_dir == "BEARISH":
+                        place_buy = False
+                        place_sell = True
+            except Exception:
+                pass
             placed_count = 0
 
             for i in range(effective_levels):
