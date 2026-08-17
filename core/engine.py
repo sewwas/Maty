@@ -1316,12 +1316,9 @@ class BreakoutGridBot:
             else:
                 effective_levels = 3
 
-            # 6. SMC Liquidity Top-Sell & Bottom-Buy Engine:
-            # - Near Market Top (Overbought / Resistance): Place SELL orders to capture downward reversal
-            # - Near Market Bottom (Oversold / Support): Place BUY orders to capture upward reversal
-            side_mode = str(getattr(self, "pending_order_side_mode", "AUTO_ADAPTIVE")).upper()
-            place_buy = ("SELL_ONLY" not in side_mode)
-            place_sell = ("BUY_ONLY" not in side_mode)
+            # Market Regime Adaptive Order Placement:
+            # - Trending Market (Bullish / Bearish): Place orders ONLY on the trending side!
+            # - Choppy / Ranging Market (Neutral): BOTH Buy & Sell active!
             try:
                 from core.data import get_historical_klines, calculate_technical_indicators
                 df_5m = get_historical_klines(sym_name, interval="5m", limit=30)
@@ -1330,14 +1327,18 @@ class BreakoutGridBot:
                     trend_dir = tech.get("trend", "NEUTRAL")
                     rsi_val = tech.get("rsi", 50.0)
                     
-                    # Top Sell (Overbought >= 70 or Bearish Trend)
-                    if trend_dir == "BEARISH" or rsi_val >= 70.0:
-                        place_buy = False
-                        place_sell = True
-                    # Bottom Buy (Oversold <= 30 or Bullish Trend)
-                    elif trend_dir == "BULLISH" or rsi_val <= 30.0:
+                    if trend_dir == "BULLISH" or rsi_val <= 30.0:
+                        # Trending Bullish: Place BUY ONLY on trend side
                         place_buy = True
                         place_sell = False
+                    elif trend_dir == "BEARISH" or rsi_val >= 70.0:
+                        # Trending Bearish: Place SELL ONLY on trend side
+                        place_buy = False
+                        place_sell = True
+                    else:
+                        # Choppy / Neutral Market: BOTH Buy & Sell Active
+                        place_buy = True
+                        place_sell = True
             except Exception:
                 pass
 
