@@ -182,10 +182,6 @@ def get_global_vps_trading_engine():
         _last_state_save = 0.0
         while True:
             try:
-                # If dedicated 24/7 bot_service daemon is running, skip duplicate tick processing
-                if os.path.exists("bot_service.lock"):
-                    time.sleep(2.0)
-                    continue
 
                 now = time.time()
                 for sym_code, m_data in shared_markets.items():
