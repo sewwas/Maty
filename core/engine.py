@@ -2335,14 +2335,14 @@ class BreakoutGridBot:
                     breakeven_hit = True
 
                 # 1M MARKET STRUCTURE ANCHORED TRAILING SL (1m LL for BUY / 1m HH for SELL)
-                # Only activates AFTER net floating profit reaches +$1.50 USD locked profit floor
-                if (hasattr(self.broker, "modify_position_sl_tp") or hasattr(self.broker, "modify_order")) and float_pnl >= (150.0 if is_cent else 1.50):
+                # Only activates AFTER net floating profit reaches +$3.50 USD locked profit floor
+                if (hasattr(self.broker, "modify_position_sl_tp") or hasattr(self.broker, "modify_order")) and float_pnl >= (350.0 if is_cent else 3.50):
                     now_t = time.time()
-                    if now_t - getattr(self, "_last_hw_trail_sync_time", 0.0) >= 2.0:
+                    if now_t - getattr(self, "_last_hw_trail_sync_time", 0.0) >= 3.0:
                         self._last_hw_trail_sync_time = now_t
                         sym_n = str(getattr(self.broker, "symbol", "")).upper()
                         digits = 4 if any(x in sym_n for x in ["DOGE", "GBP", "EUR"]) else 2
-                        min_sl_dist = 250.0 if "BTC" in sym_n else (15.0 if "ETH" in sym_n else (6.0 if any(x in sym_n for x in ["XAU", "PAXG", "GOLD"]) else 0.0035))
+                        min_sl_dist = 650.0 if "BTC" in sym_n else (45.0 if "ETH" in sym_n else (20.0 if any(x in sym_n for x in ["XAU", "PAXG", "GOLD"]) else 0.0120))
                         
                         # Fetch 1m Market Structure Highs & Lows (1m LL & 1m HH)
                         try:
@@ -2366,18 +2366,18 @@ class BreakoutGridBot:
                             cur_sl = getattr(pos, 'sl', 0.0)
                             cur_tp = getattr(pos, 'tp', 0.0)
                             
-                            # BUY Trailing SL: Anchors to 1m Lowest Low (1m LL), guaranteeing locked profit > entry_price
+                            # BUY Trailing SL: Maintains full min_sl_dist breathing room below current price
                             if pos.type == "BUY" and current_price > e_px:
                                 struct_sl = round(min(lowest_low_1m, current_price - min_sl_dist), digits)
-                                if struct_sl > e_px and struct_sl > cur_sl:
+                                if struct_sl > cur_sl and (current_price - struct_sl) >= (min_sl_dist * 0.9):
                                     try:
                                         if hasattr(self.broker, "modify_position_sl_tp"):
                                             self.broker.modify_position_sl_tp(pos_id, struct_sl, cur_tp)
                                     except Exception: pass
-                            # SELL Trailing SL: Anchors to 1m Highest High (1m HH), guaranteeing locked profit < entry_price
+                            # SELL Trailing SL: Maintains full min_sl_dist breathing room above current price
                             elif pos.type == "SELL" and current_price < e_px:
                                 struct_sl = round(max(highest_high_1m, current_price + min_sl_dist), digits)
-                                if struct_sl < e_px and (cur_sl == 0.0 or struct_sl < cur_sl):
+                                if (cur_sl == 0.0 or struct_sl < cur_sl) and (struct_sl - current_price) >= (min_sl_dist * 0.9):
                                     try:
                                         if hasattr(self.broker, "modify_position_sl_tp"):
                                             self.broker.modify_position_sl_tp(pos_id, struct_sl, cur_tp)
@@ -2693,11 +2693,12 @@ class BreakoutGridBot:
 
 
         # 100% UNBREAKABLE MASTER NET-POSITIVE PROFIT GUARD:
-        # Guarantees that ALL profit-taking exit shields strictly require net float_pnl (after broker commission) >= +$1.50 USD!
+        # Guarantees that ALL profit-taking exit shields strictly require net float_pnl (after broker commission) >= +$3.50 USD!
         total_comm = sum(abs(float(getattr(p, "commission", 0.0))) for p in self.broker.open_positions.values())
         net_float_pnl = float_pnl - total_comm
         is_profit_exit_triggered = (target_hit or runner_hit or trailing_stop_hit or breakeven_hit or early_range_hit or hedge_lock_hit or momentum_scalp_hit or wvap_exit_hit or instant_counter_flip_hit or single_fill_scalp_hit or top_bottom_reversal_hit or ranging_pnl_harvest_hit or micro_snap_hit)
-        if is_profit_exit_triggered and net_float_pnl < (150.0 if is_cent else 1.50):
+        min_profit_required = (350.0 if is_cent else 3.50)
+        if is_profit_exit_triggered and net_float_pnl < min_profit_required:
             target_hit = runner_hit = trailing_stop_hit = breakeven_hit = early_range_hit = False
             hedge_lock_hit = momentum_scalp_hit = wvap_exit_hit = instant_counter_flip_hit = False
             single_fill_scalp_hit = top_bottom_reversal_hit = ranging_pnl_harvest_hit = micro_snap_hit = False
