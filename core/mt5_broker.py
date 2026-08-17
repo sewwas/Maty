@@ -345,10 +345,10 @@ class MT5Broker:
 
         if "BUY" in order_type:
             tp_val = round(max(tp, trigger_price + min_tp_dist), digits) if tp > 0 else round(trigger_price + min_tp_dist, digits)
-            sl_val = round(min(sl, trigger_price - min_sl_dist), digits) if sl > 0 else round(trigger_price - min_sl_dist, digits)
+            sl_val = round(sl, digits) if sl > 0 else 0.0
         else:
             tp_val = round(min(tp, trigger_price - min_tp_dist), digits) if tp > 0 else round(trigger_price - min_tp_dist, digits)
-            sl_val = round(max(sl, trigger_price + min_sl_dist), digits) if sl > 0 else round(trigger_price + min_sl_dist, digits)
+            sl_val = round(sl, digits) if sl > 0 else 0.0
 
         # Dynamic Exness filling mode detection
         filling_flags = getattr(symbol_info, "filling_mode", 0) or 0
