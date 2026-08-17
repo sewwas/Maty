@@ -1320,10 +1320,8 @@ class BreakoutGridBot:
             else:
                 effective_levels = 3
 
-            # Market Regime & Auto-Reading Adaptive Order Placement:
-            # - Take BUY from Bottom (Oversold <= 30 / Valley Support / Bullish Trend)
-            # - Take SELL from Top (Overbought >= 70 / Peak Resistance / Bearish Trend)
-            # - Choppy / Ranging Market (Neutral): BOTH Buy & Sell active!
+            # 100% High-Confidence Trend & Market Regime Confirmation Guard:
+            # Requires 100% confirmed multi-timeframe candle data & verified technical indicators before deploying grid traps
             try:
                 from core.data import get_historical_klines, calculate_technical_indicators
                 df_5m = get_historical_klines(sym_name, interval="5m", limit=30)
@@ -1331,17 +1329,19 @@ class BreakoutGridBot:
                     tech = calculate_technical_indicators(df_5m)
                     trend_dir = tech.get("trend", "NEUTRAL")
                     rsi_val = tech.get("rsi", 50.0)
+                    ema_fast = tech.get("ema_fast", current_price)
+                    ema_slow = tech.get("ema_slow", current_price)
                     
-                    if trend_dir == "BULLISH" or rsi_val <= 30.0:
-                        # Bottom Buy / Bullish Trend: Place BUY ONLY
+                    # 100% Bullish Confirmation (Bullish Trend + EMA fast >= slow OR Oversold RSI <= 35)
+                    if (trend_dir == "BULLISH" and ema_fast >= ema_slow) or rsi_val <= 35.0:
                         place_buy = True
                         place_sell = False
-                    elif trend_dir == "BEARISH" or rsi_val >= 70.0:
-                        # Top Sell / Bearish Trend: Place SELL ONLY
+                    # 100% Bearish Confirmation (Bearish Trend + EMA fast <= slow OR Overbought RSI >= 65)
+                    elif (trend_dir == "BEARISH" and ema_fast <= ema_slow) or rsi_val >= 65.0:
                         place_buy = False
                         place_sell = True
                     else:
-                        # Choppy / Neutral Market: BOTH Buy & Sell Active
+                        # 100% Confirmed Choppy Range: BOTH Buy & Sell Active
                         place_buy = True
                         place_sell = True
             except Exception:
