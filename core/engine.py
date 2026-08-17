@@ -1316,13 +1316,12 @@ class BreakoutGridBot:
             else:
                 effective_levels = 3
 
-            # 6. Trend Confirmation Guard: Verify 5m market structure trend before placing new grid traps
-            side_mode = str(getattr(self, "pending_order_side_mode", "AUTO_ADAPTIVE")).upper()
-            place_buy = ("SELL_ONLY" not in side_mode)
-            place_sell = ("BUY_ONLY" not in side_mode)
             # 6. SMC Liquidity Top-Sell & Bottom-Buy Engine:
             # - Near Market Top (Overbought / Resistance): Place SELL orders to capture downward reversal
             # - Near Market Bottom (Oversold / Support): Place BUY orders to capture upward reversal
+            side_mode = str(getattr(self, "pending_order_side_mode", "AUTO_ADAPTIVE")).upper()
+            place_buy = ("SELL_ONLY" not in side_mode)
+            place_sell = ("BUY_ONLY" not in side_mode)
             try:
                 from core.data import get_historical_klines, calculate_technical_indicators
                 df_5m = get_historical_klines(sym_name, interval="5m", limit=30)
@@ -2347,8 +2346,8 @@ class BreakoutGridBot:
                 if active_ratchet > 0 and float_pnl <= active_ratchet and float_pnl >= (friction_floor_adjusted if is_cent else friction_floor):
                     breakeven_hit = True
 
-                # 1M MARKET STRUCTURE ANCHORED TRAILING SL (1m LL for BUY / 1m HH for SELL)
-                # Only activates AFTER net floating profit reaches +$3.50 USD locked profit floor
+                # 15M MAJOR MARKET STRUCTURE SYNCHRONIZED BASKET TRAILING ENGINE
+                # Only activates AFTER total combined cycle floating profit reaches +$3.50 USD locked profit floor
                 if (hasattr(self.broker, "modify_position_sl_tp") or hasattr(self.broker, "modify_order")) and float_pnl >= (350.0 if is_cent else 3.50):
                     now_t = time.time()
                     if now_t - getattr(self, "_last_hw_trail_sync_time", 0.0) >= 3.0:
