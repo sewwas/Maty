@@ -2340,39 +2340,39 @@ class BreakoutGridBot:
                         digits = 4 if any(x in sym_n for x in ["DOGE", "GBP", "EUR"]) else 2
                         min_sl_dist = 650.0 if "BTC" in sym_n else (45.0 if "ETH" in sym_n else (20.0 if any(x in sym_n for x in ["XAU", "PAXG", "GOLD"]) else 0.0120))
                         
-                        # Fetch 1m Market Structure Highs & Lows (1m LL & 1m HH)
+                        # Fetch 5m Market Structure Highs & Lows (5m Swing Low & 5m Swing High)
                         try:
                             from core.data import get_historical_klines
                             sym_code = getattr(self, "symbol_code", getattr(self.broker, "symbol", "BTCUSDT"))
-                            df_1m = get_historical_klines(sym_code, interval="1m", limit=5)
-                            if df_1m is not None and not df_1m.empty and "low" in df_1m.columns and "high" in df_1m.columns:
-                                lowest_low_1m = float(df_1m["low"].min())
-                                highest_high_1m = float(df_1m["high"].max())
+                            df_struct = get_historical_klines(sym_code, interval="5m", limit=12)
+                            if df_struct is not None and not df_struct.empty and "low" in df_struct.columns and "high" in df_struct.columns:
+                                struct_low = float(df_struct["low"].min())
+                                struct_high = float(df_struct["high"].max())
                             else:
                                 tick_h = getattr(self, "price_history_ticks", [])
-                                lowest_low_1m = min(tick_h) if tick_h else (current_price - min_sl_dist)
-                                highest_high_1m = max(tick_h) if tick_h else (current_price + min_sl_dist)
+                                struct_low = min(tick_h) if tick_h else (current_price - min_sl_dist)
+                                struct_high = max(tick_h) if tick_h else (current_price + min_sl_dist)
                         except Exception:
                             tick_h = getattr(self, "price_history_ticks", [])
-                            lowest_low_1m = min(tick_h) if tick_h else (current_price - min_sl_dist)
-                            highest_high_1m = max(tick_h) if tick_h else (current_price + min_sl_dist)
+                            struct_low = min(tick_h) if tick_h else (current_price - min_sl_dist)
+                            struct_high = max(tick_h) if tick_h else (current_price + min_sl_dist)
 
                         for pos_id, pos in list(self.broker.open_positions.items()):
                             e_px = getattr(pos, 'open_price', getattr(pos, 'price', getattr(pos, 'entry_price', current_price)))
                             cur_sl = getattr(pos, 'sl', 0.0)
                             cur_tp = getattr(pos, 'tp', 0.0)
                             
-                            # BUY Trailing SL: Maintains full min_sl_dist breathing room below current price
+                            # BUY Trailing SL: Anchors below 5m Swing Low, maintaining full min_sl_dist breathing distance
                             if pos.type == "BUY" and current_price > e_px:
-                                struct_sl = round(min(lowest_low_1m, current_price - min_sl_dist), digits)
+                                struct_sl = round(min(struct_low, current_price - min_sl_dist), digits)
                                 if struct_sl > cur_sl and (current_price - struct_sl) >= (min_sl_dist * 0.9):
                                     try:
                                         if hasattr(self.broker, "modify_position_sl_tp"):
                                             self.broker.modify_position_sl_tp(pos_id, struct_sl, cur_tp)
                                     except Exception: pass
-                            # SELL Trailing SL: Maintains full min_sl_dist breathing room above current price
+                            # SELL Trailing SL: Anchors above 5m Swing High, maintaining full min_sl_dist breathing distance
                             elif pos.type == "SELL" and current_price < e_px:
-                                struct_sl = round(max(highest_high_1m, current_price + min_sl_dist), digits)
+                                struct_sl = round(max(struct_high, current_price + min_sl_dist), digits)
                                 if (cur_sl == 0.0 or struct_sl < cur_sl) and (struct_sl - current_price) >= (min_sl_dist * 0.9):
                                     try:
                                         if hasattr(self.broker, "modify_position_sl_tp"):
