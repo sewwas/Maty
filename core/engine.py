@@ -2368,13 +2368,14 @@ class BreakoutGridBot:
                             struct_low = min(tick_h) if tick_h else (current_price - min_sl_dist)
                             struct_high = max(tick_h) if tick_h else (current_price + min_sl_dist)
 
+                        # Synchronized Basket Cycle Trailing: Execute ONLY when Total Combined Cycle PnL >= +$3.50 USD
                         for pos_id, pos in list(self.broker.open_positions.items()):
                             e_px = getattr(pos, 'open_price', getattr(pos, 'price', getattr(pos, 'entry_price', current_price)))
                             cur_sl = getattr(pos, 'sl', 0.0)
                             cur_tp = getattr(pos, 'tp', 0.0)
                             
-                            # BUY Trailing SL & Dynamic TP Outward Expansion:
-                            if pos.type == "BUY" and current_price > e_px:
+                            # BUY Basket Trailing SL & Dynamic TP Outward Expansion:
+                            if pos.type == "BUY":
                                 struct_sl = round(min(struct_low, current_price - min_sl_dist), digits)
                                 
                                 # Dynamic TP Trailing & Outward Expansion in Confirmed Trend
@@ -2395,8 +2396,8 @@ class BreakoutGridBot:
                                             pos.tp = target_tp
                                     except Exception: pass
 
-                            # SELL Trailing SL & Dynamic TP Outward Expansion:
-                            elif pos.type == "SELL" and current_price < e_px:
+                            # SELL Basket Trailing SL & Dynamic TP Outward Expansion:
+                            elif pos.type == "SELL":
                                 struct_sl = round(max(struct_high, current_price + min_sl_dist), digits)
                                 
                                 # Dynamic TP Trailing & Outward Expansion in Confirmed Trend
