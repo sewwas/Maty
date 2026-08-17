@@ -1334,6 +1334,20 @@ class BreakoutGridBot:
                         place_sell = True
             except Exception:
                 pass
+
+            # Fetch 15m Major Structural Support & Resistance for Noise-Immune Initial SL Placement
+            try:
+                df_15m = get_historical_klines(sym_name, interval="15m", limit=16)
+                if df_15m is not None and not df_15m.empty and "low" in df_15m.columns and "high" in df_15m.columns:
+                    major_15m_low = float(df_15m["low"].min())
+                    major_15m_high = float(df_15m["high"].max())
+                else:
+                    major_15m_low = current_price - min_sl_dist
+                    major_15m_high = current_price + min_sl_dist
+            except Exception:
+                major_15m_low = current_price - min_sl_dist
+                major_15m_high = current_price + min_sl_dist
+
             placed_count = 0
 
             for i in range(effective_levels):
@@ -1344,10 +1358,10 @@ class BreakoutGridBot:
                 sell_size = self.calculate_level_size(self.order_size, self.order_size_multiplier, i)
 
                 buy_tp = round(buy_px + min_tp_dist, digits)
-                buy_sl = round(buy_px - sl_buffer, digits)
+                buy_sl = round(min(major_15m_low, buy_px - min_sl_dist), digits)
 
                 sell_tp = round(sell_px - min_tp_dist, digits)
-                sell_sl = round(sell_px + sl_buffer, digits)
+                sell_sl = round(max(major_15m_high, sell_px + min_sl_dist), digits)
 
                 if place_buy:
                     try:
@@ -2337,11 +2351,11 @@ class BreakoutGridBot:
                         min_sl_dist = 1200.0 if "BTC" in sym_n else (80.0 if "ETH" in sym_n else (35.0 if any(x in sym_n for x in ["XAU", "PAXG", "GOLD"]) else 0.0200))
                         min_tp_dist = 1800.0 if "BTC" in sym_n else (120.0 if "ETH" in sym_n else (50.0 if any(x in sym_n for x in ["XAU", "PAXG", "GOLD"]) else 0.0300))
                         
-                        # Fetch 5m Market Structure Highs & Lows (5m Swing Low & 5m Swing High)
+                        # Fetch 15m Major Market Structure Highs & Lows (15m Major Swing Low & 15m Major Swing High)
                         try:
                             from core.data import get_historical_klines
                             sym_code = getattr(self, "symbol_code", getattr(self.broker, "symbol", "BTCUSDT"))
-                            df_struct = get_historical_klines(sym_code, interval="5m", limit=12)
+                            df_struct = get_historical_klines(sym_code, interval="15m", limit=16)
                             if df_struct is not None and not df_struct.empty and "low" in df_struct.columns and "high" in df_struct.columns:
                                 struct_low = float(df_struct["low"].min())
                                 struct_high = float(df_struct["high"].max())
