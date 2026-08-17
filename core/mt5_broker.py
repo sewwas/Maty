@@ -175,16 +175,17 @@ class MT5Broker:
 
     @property
     def balance(self) -> float:
+        """Returns account cash balance (realized funds only, excludes floating PnL)."""
         now = time.time()
         if hasattr(self, "_acc_info_cache"):
             acc, ts = self._acc_info_cache
             if now - ts < 1.0 and acc:
-                return float(acc.equity)
+                return float(acc.balance)   # Fixed: was acc.equity
         if self.ensure_connected():
             acc = mt5.account_info()
             self._acc_info_cache = (acc, now)
             if acc:
-                return float(acc.equity)
+                return float(acc.balance)   # Fixed: was acc.equity
         return 1000.0
 
     @property
@@ -196,6 +197,17 @@ class MT5Broker:
         pass
 
     def get_equity(self, current_price: float = 0.0) -> float:
+        """Returns account equity (balance + floating PnL)."""
+        now = time.time()
+        if hasattr(self, "_acc_info_cache"):
+            acc, ts = self._acc_info_cache
+            if now - ts < 1.0 and acc:
+                return float(acc.equity)
+        if self.ensure_connected():
+            acc = mt5.account_info()
+            self._acc_info_cache = (acc, now)
+            if acc:
+                return float(acc.equity)
         return self.balance
 
     def get_cached_symbol_info(self, exness_symbol: str):
@@ -223,12 +235,15 @@ class MT5Broker:
         return 0.0
 
     def get_total_account_orders_count(self) -> int:
+        """Returns order+position count for THIS symbol and magic number only."""
         if not self.ensure_connected():
             return len(self.pending_orders) + len(self.open_positions)
         try:
-            orders = mt5.orders_get()
-            positions = mt5.positions_get()
-            n_orders = len(orders) if orders else 0
+            exness_symbol = self.get_exness_symbol(self.symbol)
+            orders = mt5.orders_get(symbol=exness_symbol) if exness_symbol else mt5.orders_get()
+            positions = mt5.positions_get(symbol=exness_symbol) if exness_symbol else mt5.positions_get()
+            # Filter by magic number so multi-symbol bots don't block each other
+            n_orders = sum(1 for o in orders if getattr(o, "magic", 0) == self.magic_number) if orders else 0
             n_positions = len(positions) if positions else 0
             return n_orders + n_positions
         except Exception:
@@ -294,7 +309,7 @@ class MT5Broker:
         if existing_positions:
             total_open_vol = sum(float(getattr(p, "volume", 0.0) or 0.0) for p in existing_positions)
             if len(existing_positions) >= 2 or (total_open_vol + size) > 0.05:
-                return Order(order_type, trigger_price, size, timestamp)
+                return None   # Position cap hit — return None so caller knows nothing was placed
 
         sym_u_name = str(exness_symbol).upper()
         px_tolerance = 0.50 if "BTC" in sym_u_name else (0.01 if any(x in sym_u_name for x in ["XAU", "GOLD", "PAXG"]) else (0.05 if "ETH" in sym_u_name else 0.00005))
@@ -342,7 +357,7 @@ class MT5Broker:
 
         sym_name = str(exness_symbol).upper()
         if "BTC" in sym_name:
-            min_sl_dist = 1200.0
+            min_sl_dist = 380.0    # Aligned with deploy_traps value (was 1200 — too wide, caused rejection)
             min_tp_dist = 5.0
         elif any(x in sym_name for x in ["XAU", "GOLD", "PAXG"]):
             min_sl_dist = 35.0
@@ -537,7 +552,14 @@ class MT5Broker:
 
         if ticket:
             req = {"action": mt5.TRADE_ACTION_REMOVE, "order": ticket}
-            mt5.order_send(req)
+            res = mt5.order_send(req)
+            cancel_ok = res is not None and getattr(res, "retcode", -1) in (0, 10009, 10008, 10004)
+            if not cancel_ok:
+                # Order may have already filled into a position — sync to track it
+                try:
+                    self.process_tick(0.0, 0.0, time.time())
+                except Exception:
+                    pass
 
         self.pending_orders.pop(order_id, None)
         if ticket:
@@ -643,6 +665,8 @@ class MT5Broker:
 
             st_sec = float(pos.time / 1000.0) if pos.time > 1e11 else float(pos.time)
             ex_sec = float(timestamp / 1000.0) if timestamp > 1e11 else float(timestamp)
+            if ex_sec <= st_sec:   # Guard against negative duration from timestamp unit mismatch
+                ex_sec = st_sec + 1.0
             record = {
                 "position_id": position_id,
                 "type": "BUY" if pos.type == mt5.POSITION_TYPE_BUY else "SELL",
@@ -944,7 +968,13 @@ class MT5Broker:
                             synced_trades.append(t_record)
                             synced_pnl += pnl
                 if synced_trades:
-                    self.closed_trades = synced_trades
+                    # Merge by position_id — don't overwrite session-added trades
+                    existing_ids = {t.get("position_id") for t in self.closed_trades}
+                    for t in synced_trades:
+                        if t.get("position_id") not in existing_ids:
+                            self.closed_trades.append(t)
+                    if len(self.closed_trades) > 500:
+                        self.closed_trades = self.closed_trades[-500:]
                     self.realized_pnl = synced_pnl
         except Exception as err:
             print(f"Notice: MT5 deal history sync: {err}")

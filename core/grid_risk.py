@@ -79,6 +79,48 @@ def calculate_ratchet_breakeven(entry_price: float, position_type: str, current_
         return min(entry_price - (pip_size * 2.0), current_price + (pip_size * 15.0))
 
 
+def enforce_position_tp(self, current_price: float, timestamp: float) -> int:
+    """
+    SOFTWARE-SIDE TP GUARD — Always Take Profit Safety Net.
+    Runs every tick. If any open position's price has crossed its TP level,
+    force-closes it immediately via the broker regardless of MT5 broker TP state.
+    This ensures profit is ALWAYS taken even if broker TP is rejected or silent.
+    Returns the number of positions force-closed.
+    """
+    if not getattr(self.broker, "open_positions", None):
+        return 0
+
+    closed_count = 0
+    sym_name = str(getattr(self.broker, "symbol", getattr(self, "symbol_code", ""))).upper()
+    digits = 3 if any(x in sym_name for x in ["XAU", "GOLD", "PAXG"]) else (2 if any(x in sym_name for x in ["BTC", "ETH", "SOL", "BNB"]) else 5)
+
+    for pos_id, pos_obj in list(getattr(self.broker, "open_positions", {}).items()):
+        try:
+            pos_tp = float(getattr(pos_obj, "tp", 0.0) or 0.0)
+            if pos_tp <= 0:
+                continue  # No TP set — skip
+
+            pos_type = str(getattr(pos_obj, "type", "")).upper()
+            tp_hit = False
+
+            if "BUY" in pos_type and current_price >= pos_tp:
+                tp_hit = True
+            elif "SELL" in pos_type and current_price <= pos_tp:
+                tp_hit = True
+
+            if tp_hit:
+                print(f"[{sym_name}] ✅ [SOFTWARE TP HIT] {pos_type} #{pos_id} | Price: {current_price:.{digits}f} | TP: {pos_tp:.{digits}f} — Force closing!")
+                try:
+                    self.broker.close_position(pos_id, current_price, timestamp)
+                    closed_count += 1
+                except Exception as close_err:
+                    print(f"[{sym_name}] ⚠️ [SOFTWARE TP] Close failed for #{pos_id}: {close_err}")
+        except Exception:
+            pass
+
+    return closed_count
+
+
 def check_target_profit(self, current_price: float, timestamp: float) -> Optional[dict]:
     """
     Evaluates floating PnL across active open positions against target profit,
@@ -87,7 +129,7 @@ def check_target_profit(self, current_price: float, timestamp: float) -> Optiona
     if not self.broker.open_positions:
         return None
 
-    total_pnl = sum(pos.get_pnl(current_price) for pos in self.broker.open_positions.values())
+    total_pnl = self.broker.get_floating_pnl(current_price)  # Use real MT5 profit (includes spread, swap, commission)
     duration = timestamp - getattr(self, "cycle_start_time", timestamp)
 
     target_prof = float(getattr(self, "target_profit", 3.0) or 3.0)
@@ -109,7 +151,7 @@ def check_target_profit(self, current_price: float, timestamp: float) -> Optiona
         exit_reason = "STOP_LOSS"
     elif self.in_runner_mode:
         lock_pct = float(getattr(self, "profit_lock_pct", 0.80) or 0.80)
-        trailing_floor = max_pnl * lock_pct
+        trailing_floor = max(max_pnl * lock_pct, 0.10)   # Min $0.10 floor: never exit runner mode at a net loss
         if total_pnl <= trailing_floor:
             exit_triggered = True
             exit_reason = "RUNNER_MODE_TRAILING_LOCK"
@@ -191,6 +233,7 @@ def process_engine_tick(self, previous_price: float, current_price: float, times
     if not has_orders:
         self.deployed = False
         if timestamp >= getattr(self, "_last_deploy_error_time", 0.0) + 3.0:
+            self._last_deploy_error_time = timestamp   # Prevent runaway deploy loop on every tick
             self.deploy_traps(current_price, timestamp, force=True)
         return None
 
@@ -234,6 +277,7 @@ def process_engine_tick(self, previous_price: float, current_price: float, times
         try:
             trail_stop_loss_5m_structure(self, current_price, timestamp)
             align_basket_take_profits(self, current_price, timestamp)
+            enforce_position_tp(self, current_price, timestamp)  # Software-side TP guard — always take profit
         except Exception:
             pass
 
@@ -289,7 +333,7 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
     if not current_price or current_price <= 0:
         return
 
-    force = False
+    # NOTE: do NOT add `force = False` here — that would overwrite the keyword argument
     if args:
         if isinstance(args[0], bool):
             force = args[0]
@@ -410,7 +454,16 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
         elif "SOL" in sym_name:
             min_sl_dist = 2.80
         else:
-            min_sl_dist = max(b_min_stop * 2.5, point * 50.0)
+            # Derive `point` safely for alt coins (DOGE, XRP, etc.) that don't match named branches
+            _sym_info_alt = None
+            try:
+                if hasattr(self.broker, "get_cached_symbol_info") and hasattr(self.broker, "get_exness_symbol"):
+                    _ex_s_alt = self.broker.get_exness_symbol(sym_name)
+                    _sym_info_alt = self.broker.get_cached_symbol_info(_ex_s_alt)
+            except Exception:
+                pass
+            _point_alt = getattr(_sym_info_alt, "point", 0.0001) if _sym_info_alt else 0.0001
+            min_sl_dist = max(b_min_stop * 2.5, _point_alt * 50.0)
 
         acc_eq = self.broker.get_equity() if hasattr(self.broker, "get_equity") else 1000.0
         base_cfg_levels = getattr(self, "grid_levels", 5) or 5

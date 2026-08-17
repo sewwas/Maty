@@ -44,7 +44,7 @@ import core.services
 
 import threading
 from core.mt5_broker import MT5Broker, SimulatedBroker, MT5_AVAILABLE, get_symbol_magic_number, mt5
-from core.engine import BreakoutGridBot, get_pip_size, sanitize_order_size
+from core.engine import BreakoutGridBot, Order, Position, get_pip_size, sanitize_order_size
 from core.auto_reading import PAIR_SWEET_SPOTS
 from core.services import PAMMMasterPool, send_telegram_alert, dispatch_trade_exit_signal
 from core.data import get_live_price, get_default_price, get_historical_klines, get_24h_market_stats
@@ -593,7 +593,14 @@ with tab_desk:
     first_b = list(st.session_state.markets.values())[0]["broker"]
     acc_bal = getattr(first_b, "balance", 10000.0)
     acc_eq  = first_b.get_equity(0.0)
-    margin_lvl_str = "14,500% (HEALTHY)" if acc_eq >= acc_bal else "9,800% (STABLE)"
+    # Calculate real margin level from MT5 account data
+    _margin_used = float(getattr(acc_info, "margin", 0.0) or 0.0) if acc_info else 0.0
+    if _margin_used > 0:
+        _margin_pct = acc_eq / _margin_used * 100.0
+        _margin_status = "HEALTHY" if _margin_pct > 500 else ("WARNING" if _margin_pct > 150 else "DANGER")
+        margin_lvl_str = f"{_margin_pct:,.0f}% ({_margin_status})"
+    else:
+        margin_lvl_str = "∞% (NO MARGIN USED)"
     
     st.markdown(f"""
     <div style='background:#18181b;border:1px solid #27272a;border-radius:6px;padding:8px 14px;margin-bottom:8px;display:flex;justify-content:space-between;align-items:center;font-size:0.80rem'>
@@ -643,8 +650,12 @@ with tab_desk:
         if st.button("⏹️ PAUSE ALL", use_container_width=True):
             for _m_item in st.session_state.markets.values():
                 _m_item["running"] = False
+                try:
+                    _m_item["broker"].cancel_all_orders()   # Cancel MT5 orders so they don't fire unmanaged
+                except Exception:
+                    pass
             save_bot_state()
-            st.toast("Paused all pairs.")
+            st.toast("Paused all pairs and cancelled all pending grid orders.")
             st.rerun()
     with tb_c3:
         if st.button("🎯 RE-CENTER ALL TRAPS", use_container_width=True):
@@ -878,6 +889,10 @@ with tab_desk:
                             else:
                                 if st.button("⏹️ STOP BOT", key=f"btn_stop_{sym_code}", use_container_width=True):
                                     m_data["running"] = False
+                                    try:
+                                        brk.cancel_all_orders()   # Cancel MT5 orders so they don't fire unmanaged
+                                    except Exception:
+                                        pass
                                     save_bot_state()
                                     st.rerun()
                         with e_col2:

@@ -35,8 +35,8 @@ class Order:
         }
 
 class Position:
-    def __init__(self, type: str, entry_price: float, size: float, entry_time: float):
-        self.position_id = str(uuid.uuid4())[:8]
+    def __init__(self, type: str, entry_price: float, size: float, entry_time: float, pos_id: Optional[str] = None):
+        self.position_id = str(pos_id) if pos_id else str(uuid.uuid4())[:8]
         self.type = type
         self.entry_price = entry_price
         self.size = size
