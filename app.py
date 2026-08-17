@@ -1633,10 +1633,38 @@ with tab_desk:
                 bot.sync_cycle_history_from_trades()
             except Exception:
                 pass
+        
+        cycles_list = list(getattr(bot, "cycle_history", []) or [])
+        if not cycles_list and hasattr(brk, "closed_trades") and brk.closed_trades:
+            for idx_tr, tr in enumerate(brk.closed_trades):
+                pnl_tr = float(tr.get("pnl", 0.0))
+                ts_tr = float(tr.get("exit_time", time.time()))
+                st_tr = float(tr.get("entry_time", ts_tr - 15.0))
+                dep_px = float(tr.get("deploy_price", tr.get("entry_price", tr.get("open_price", 0.0))))
+                ex_px = float(tr.get("exit_price", tr.get("close_price", tr.get("price", 0.0))))
+                fl_cnt = int(tr.get("fills_count", tr.get("trades_count", tr.get("size", 1))))
+                cycles_list.append({
+                    "cycle_id": idx_tr + 1,
+                    "symbol": sym_code,
+                    "pnl": pnl_tr,
+                    "total_pnl": pnl_tr,
+                    "deploy_price": dep_px,
+                    "entry_price": dep_px,
+                    "exit_price": ex_px,
+                    "fills_count": max(1, fl_cnt),
+                    "trades_count": max(1, fl_cnt),
+                    "exit_reason": tr.get("exit_reason", "TARGET_PROFIT" if pnl_tr > 0 else "STOP_LOSS"),
+                    "duration": max(1, int(ts_tr - st_tr)),
+                    "start_time": st_tr,
+                    "timestamp": ts_tr,
+                    "exit_time": ts_tr,
+                    "is_win": pnl_tr > 0.0
+                })
+
         seen_keys = set()
-        for idx, item in enumerate(getattr(bot, "cycle_history", [])):
+        for idx, item in enumerate(cycles_list):
             rec = dict(item)
-            rec["symbol"] = sym_code
+            rec["symbol"] = rec.get("symbol", sym_code)
             pnl_val = float(rec.get("pnl", rec.get("total_pnl", 0.0)))
             ts_val = float(rec.get("exit_time", rec.get("timestamp", rec.get("entry_time", 0.0))))
             c_id = rec.get("cycle_id", idx + 1)
@@ -1645,7 +1673,7 @@ with tab_desk:
             rec["timestamp"] = ts_val
             rec["exit_time"] = ts_val
 
-            key = (sym_code, c_id, round(ts_val, 1), round(pnl_val, 4))
+            key = (rec["symbol"], c_id, round(ts_val, 1), round(pnl_val, 4))
             if key not in seen_keys:
                 seen_keys.add(key)
                 raw_history.append(rec)
@@ -1787,10 +1815,17 @@ with tab_desk:
         for c in display_list:
             c_pnl = float(c.get("pnl", 0.0))
             pnl_cls = "pnl-green" if c_pnl >= 0 else "pnl-red"
-            trades_cnt = c.get("trades_count", c.get("fills_count", 0))
+            trades_cnt = c.get("fills_count", c.get("trades_count", c.get("size", 1)))
             sym_badge = c.get("symbol", "ACTIVE")
             t_exit = time.strftime("%H:%M:%S", time.localtime(c.get("exit_time", time.time()))) if c.get("exit_time") else "-"
             
+            dep_px = float(c.get("deploy_price", c.get("entry_price", c.get("open_price", 0.0))))
+            ex_px = float(c.get("exit_price", c.get("close_price", c.get("price", 0.0))))
+            
+            px_fmt = "{:,.3f}" if any(x in str(sym_badge).upper() for x in ["XAU", "GOLD", "PAXG", "EUR", "GBP", "JPY"]) else "{:,.2f}"
+            dep_str = f"${px_fmt.format(dep_px)}" if dep_px > 0 else "-"
+            ex_str = f"${px_fmt.format(ex_px)}" if ex_px > 0 else "-"
+
             st_t = float(c.get("start_time", 0.0))
             ex_t = float(c.get("exit_time", 0.0))
             st_t = (st_t / 1000.0) if st_t > 1e11 else st_t
@@ -1813,8 +1848,8 @@ with tab_desk:
                 f"<tr>"
                 f"<td>#{c.get('cycle_id', 1)}</td>"
                 f"<td><strong>{sym_badge}</strong></td>"
-                f"<td>${c.get('deploy_price', 0):,.2f}</td>"
-                f"<td>${c.get('exit_price', 0):,.2f}</td>"
+                f"<td>{dep_str}</td>"
+                f"<td>{ex_str}</td>"
                 f"<td>{trades_cnt}</td>"
                 f"<td><span style='font-family:JetBrains Mono,monospace;color:#38bdf8'>⏱️ {dur_fmt}</span></td>"
                 f"<td><span style='background:#27272a;padding:2px 6px;border-radius:4px;font-size:0.72rem'>{c.get('exit_reason', 'TP')}</span></td>"

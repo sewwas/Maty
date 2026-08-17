@@ -301,12 +301,7 @@ class AutoReadingEngine:
             is_overbought_rally = (rsi >= 65.0 or vwap_dev >= 0.25)
             is_oversold_dip = (rsi <= 35.0 or vwap_dev <= -0.25)
             
-            if any(x in str(symbol).upper() for x in ["XAU", "GOLD", "PAXG"]):
-                if combined_bias <= -0.45:
-                    unidirectional_mode = "SELL_ONLY"
-                else:
-                    unidirectional_mode = "BUY_ONLY"
-            elif adx >= 35.0 and not (rsi >= 75.0 or rsi <= 25.0):
+            if adx >= 35.0 and not (rsi >= 75.0 or rsi <= 25.0):
                 if combined_bias >= 0.20:
                     unidirectional_mode = "BUY_ONLY"
                 elif combined_bias <= -0.20:

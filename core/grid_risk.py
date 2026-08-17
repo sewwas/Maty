@@ -716,21 +716,43 @@ def get_self_learning_metrics(self) -> dict:
 
 
 def sync_cycle_history_from_trades(self):
-    if not hasattr(self, "trade_history") or not self.trade_history:
-        return
     if not hasattr(self, "cycle_history") or self.cycle_history is None:
         self.cycle_history = []
-    for item in self.trade_history:
+    
+    trades_source = getattr(self, "trade_history", []) or []
+    if not trades_source and hasattr(self, "broker") and hasattr(self.broker, "closed_trades"):
+        trades_source = getattr(self.broker, "closed_trades", []) or []
+
+    if not trades_source:
+        return
+
+    seen_timestamps = {round(float(c.get("exit_time", c.get("timestamp", 0))), 1) for c in self.cycle_history if isinstance(c, dict)}
+    
+    for item in trades_source:
         if isinstance(item, dict) and ("pnl" in item or "total_pnl" in item):
-            pnl_val = item.get("pnl", item.get("total_pnl", 0.0))
-            ts_val = item.get("exit_time", item.get("timestamp", time.time()))
-            if pnl_val not in [c.get("pnl", c.get("total_pnl", 0.0)) for c in self.cycle_history if isinstance(c, dict)]:
+            pnl_val = float(item.get("pnl", item.get("total_pnl", 0.0)))
+            ts_val = float(item.get("exit_time", item.get("timestamp", time.time())))
+            st_val = float(item.get("entry_time", item.get("start_time", ts_val - 15.0)))
+            ts_round = round(ts_val, 1)
+            
+            deploy_px = float(item.get("deploy_price", item.get("entry_price", item.get("open_price", 0.0))))
+            exit_px = float(item.get("exit_price", item.get("close_price", item.get("price", 0.0))))
+            fills_cnt = int(item.get("fills_count", item.get("trades_count", item.get("size", 1))))
+
+            if ts_round not in seen_timestamps:
+                seen_timestamps.add(ts_round)
                 self.cycle_history.append({
                     "cycle_id": item.get("cycle_id", len(self.cycle_history) + 1),
                     "total_pnl": pnl_val,
                     "pnl": pnl_val,
-                    "exit_reason": item.get("exit_reason", "MANUAL_CLOSE"),
-                    "duration": item.get("duration", 0.0),
+                    "deploy_price": deploy_px,
+                    "entry_price": deploy_px,
+                    "exit_price": exit_px,
+                    "fills_count": max(1, fills_cnt),
+                    "trades_count": max(1, fills_cnt),
+                    "exit_reason": item.get("exit_reason", "TARGET_PROFIT" if pnl_val > 0 else "STOP_LOSS"),
+                    "duration": max(1, int(ts_val - st_val)),
+                    "start_time": st_val,
                     "timestamp": ts_val,
                     "exit_time": ts_val,
                     "is_win": pnl_val > 0.0

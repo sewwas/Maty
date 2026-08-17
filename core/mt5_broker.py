@@ -891,6 +891,7 @@ class MT5Broker:
             deals = mt5.history_deals_get(from_date, to_date)
             if deals:
                 pos_entry_times = {d.position_id: float(d.time) for d in deals if getattr(d, "entry", 0) == 0}
+                pos_entry_prices = {d.position_id: float(d.price) for d in deals if getattr(d, "entry", 0) == 0}
                 synced_trades = []
                 synced_pnl = 0.0
                 target_syms = {self.symbol.upper(), (exness_symbol or "").upper()}
@@ -906,15 +907,24 @@ class MT5Broker:
                                 e_sec = min(raw_sec, ex_sec - 1.0)
                             else:
                                 e_sec = ex_sec - 15.0
+                            
+                            en_price = pos_entry_prices.get(d.position_id, float(d.price))
+                            ex_price = float(d.price)
+                            
                             t_record = {
                                 "position_id": f"deal_{d.ticket}",
                                 "type": "BUY" if getattr(d, "type", 0) == 1 else "SELL",
-                                "entry_price": float(d.price),
-                                "exit_price": float(d.price),
+                                "entry_price": en_price,
+                                "deploy_price": en_price,
+                                "exit_price": ex_price,
                                 "size": float(d.volume),
+                                "fills_count": max(1, int(round(float(d.volume) / 0.01))) if any(x in d_sym for x in ["XAU", "GOLD", "PAXG"]) else 1,
                                 "pnl": pnl,
                                 "entry_time": e_sec,
+                                "start_time": e_sec,
                                 "exit_time": ex_sec,
+                                "timestamp": ex_sec,
+                                "duration": max(1, int(ex_sec - e_sec)),
                                 "commission": float(getattr(d, "commission", 0.0))
                             }
                             synced_trades.append(t_record)
