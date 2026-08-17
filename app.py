@@ -1193,10 +1193,10 @@ with tab_desk:
                             _gbadge, _gcol = '⚡ DEPLOY ERROR — retrying', '#ef4444'
                         elif _runner_mode:
                             _gbadge, _gcol = '🚀 RUNNER MODE — Traps wiped, trailing profit', '#a855f7'
-                        elif _is_deployed and pend_ord > 0:
+                        elif (pend_ord > 0 and open_pos > 0) or (_is_deployed and pend_ord > 0):
                             _gbadge, _gcol = f'✅ GRID ACTIVE — {pend_ord} traps | {open_pos} positions', '#22c55e'
-                        elif _is_deployed and open_pos > 0:
-                            _gbadge, _gcol = f'📍 POSITIONS ONLY — {open_pos} open, 0 pending', '#3b82f6'
+                        elif open_pos > 0 or _is_deployed:
+                            _gbadge, _gcol = f'📍 POSITIONS ACTIVE — {open_pos} open, {pend_ord} pending', '#3b82f6'
                         elif not is_run:
                             _gbadge, _gcol = '⏸️ PAUSED — Standby mode', '#71717a'
                         else:
