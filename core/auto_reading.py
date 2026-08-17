@@ -308,6 +308,11 @@ class AutoReadingEngine:
                     unidirectional_mode = "SELL_ONLY"
                 else:
                     unidirectional_mode = "DUAL"
+            elif any(x in str(symbol).upper() for x in ["XAU", "GOLD", "PAXG"]):
+                if combined_bias <= -0.45:
+                    unidirectional_mode = "SELL_ONLY"
+                else:
+                    unidirectional_mode = "BUY_ONLY"
             elif is_overbought_rally and combined_bias < 0.30:
                 top_bottom_status = "RALLY_SELL_OVERBOUGHT"
                 unidirectional_mode = "SELL_ONLY"
