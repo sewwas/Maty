@@ -1270,8 +1270,8 @@ class BreakoutGridBot:
             if len(self.broker.open_positions) > 0 and not force:
                 return
 
-            # 2. Existing Pending Traps Lock: If full matrix (6 traps) exists on MT5 and not force, skip redeployment
-            if hasattr(self.broker, "get_exness_symbol") and not force:
+            # 2. Existing Pending Traps Lock: If active orders exist on MT5, lock deployed=True and preserve stationary orders
+            if hasattr(self.broker, "get_exness_symbol"):
                 try:
                     ex_sym = self.broker.get_exness_symbol(getattr(self, "symbol_code", self.broker.symbol))
                     import core.mt5_broker as mt5_mod
@@ -1279,6 +1279,11 @@ class BreakoutGridBot:
                     mt5_avail = getattr(mt5_mod, "MT5_AVAILABLE", False)
                     if mt5_avail and mt5_ref and ex_sym:
                         mt5_ords = mt5_ref.orders_get(symbol=ex_sym)
+                        if not mt5_ords:
+                            # Also check symbol aliases (e.g. XAUUSD vs PAXGUSDT)
+                            sym_u = str(ex_sym).upper()
+                            alt_s = "XAUUSD" if any(x in sym_u for x in ["PAXG", "GOLD", "XAU"]) else sym_u
+                            mt5_ords = mt5_ref.orders_get(symbol=alt_s)
                         if mt5_ords and len(mt5_ords) >= 1:
                             self.deployed = True
                             self.last_deploy_time = timestamp
@@ -1286,10 +1291,10 @@ class BreakoutGridBot:
                 except Exception:
                     pass
 
-            # 3. Purge Old Pending Orders for Symbol
+            # 3. Purge Old Pending Orders for Symbol ONLY if zero orders currently active
             try:
                 self.broker.cancel_all_orders()
-                time.sleep(0.35)  # 350ms MT5 server slot clearing buffer
+                time.sleep(0.15)  # 150ms MT5 server slot buffer
             except Exception:
                 pass
 

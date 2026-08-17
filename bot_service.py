@@ -174,7 +174,7 @@ def main():
                                 markets[sym]["bot"].deployed = False
                                 live_px = get_live_price(sym) or markets[sym]["last_price"]
                                 try:
-                                    markets[sym]["bot"].deploy_traps(live_px, now, force=True)
+                                    markets[sym]["bot"].deploy_traps(live_px, now, force=False)
                                     logging.info(f"[{sym}] Auto-healing trap deployment @ {live_px}")
                                 except Exception as e:
                                     logging.error(f"[{sym}] Trap deploy error: {e}")
