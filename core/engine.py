@@ -1316,8 +1316,8 @@ class BreakoutGridBot:
             sell_offset_val = round(sell_offset_val, digits)
             gap_val = round(gap_val, digits)
 
-            min_sl_dist = 650.0 if "BTC" in sym_name else (45.0 if "ETH" in sym_name else (20.0 if any(x in sym_name for x in ["XAU", "PAXG", "GOLD"]) else 0.0120))
-            min_tp_dist = 950.0 if "BTC" in sym_name else (75.0 if "ETH" in sym_name else (35.0 if any(x in sym_name for x in ["XAU", "PAXG", "GOLD"]) else 0.0200))
+            min_sl_dist = 1200.0 if "BTC" in sym_name else (80.0 if "ETH" in sym_name else (35.0 if any(x in sym_name for x in ["XAU", "PAXG", "GOLD"]) else 0.0200))
+            min_tp_dist = 1800.0 if "BTC" in sym_name else (120.0 if "ETH" in sym_name else (50.0 if any(x in sym_name for x in ["XAU", "PAXG", "GOLD"]) else 0.0300))
             sl_buffer = min_sl_dist
 
             # Dynamic Account-Size Grid Allocator: 3 to 5 grid levels on trading side based on account equity
@@ -2348,7 +2348,7 @@ class BreakoutGridBot:
                         self._last_hw_trail_sync_time = now_t
                         sym_n = str(getattr(self.broker, "symbol", "")).upper()
                         digits = 4 if any(x in sym_n for x in ["DOGE", "GBP", "EUR"]) else 2
-                        min_sl_dist = 650.0 if "BTC" in sym_n else (45.0 if "ETH" in sym_n else (20.0 if any(x in sym_n for x in ["XAU", "PAXG", "GOLD"]) else 0.0120))
+                        min_sl_dist = 1200.0 if "BTC" in sym_n else (80.0 if "ETH" in sym_n else (35.0 if any(x in sym_n for x in ["XAU", "PAXG", "GOLD"]) else 0.0200))
                         
                         # Fetch 5m Market Structure Highs & Lows (5m Swing Low & 5m Swing High)
                         try:

@@ -321,17 +321,17 @@ class MT5Broker:
         # Hardware TP & SL Clamping & Default Generation (Guarantees visible TP/SL on MT5 terminal with realistic noise buffer)
         sym_name = str(exness_symbol).upper()
         if "BTC" in sym_name:
-            min_sl_dist = 650.0   # Wide Noise-Immune SL Buffer for BTC
-            min_tp_dist = 950.0
+            min_sl_dist = 1200.0   # Ultra-Wide Noise-Immune SL Buffer for BTC ($1,200)
+            min_tp_dist = 1800.0
         elif any(x in sym_name for x in ["XAU", "GOLD", "PAXG"]):
-            min_sl_dist = 20.0    # Wide Noise-Immune SL Buffer for Gold
-            min_tp_dist = 35.0
+            min_sl_dist = 35.0    # Ultra-Wide Noise-Immune SL Buffer for Gold ($35)
+            min_tp_dist = 50.0
         elif "ETH" in sym_name:
-            min_sl_dist = 45.0    # Wide Noise-Immune SL Buffer for ETH
-            min_tp_dist = 75.0
+            min_sl_dist = 80.0    # Ultra-Wide Noise-Immune SL Buffer for ETH ($80)
+            min_tp_dist = 120.0
         elif any(x in sym_name for x in ["EUR", "GBP"]):
-            min_sl_dist = 0.0120  # Wide Noise-Immune Buffer for Forex
-            min_tp_dist = 0.0200
+            min_sl_dist = 0.0200  # Ultra-Wide Noise-Immune Buffer for Forex (200 pips)
+            min_tp_dist = 0.0300
         else:
             min_sl_dist = max(min_stop_dist * 5.0, point * 500.0)
             min_tp_dist = max(min_stop_dist * 5.0, point * 500.0)
