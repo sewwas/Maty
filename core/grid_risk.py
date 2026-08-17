@@ -90,8 +90,8 @@ def check_target_profit(self, current_price: float, timestamp: float) -> Optiona
     total_pnl = sum(pos.get_pnl(current_price) for pos in self.broker.open_positions.values())
     duration = timestamp - getattr(self, "cycle_start_time", timestamp)
 
-    target_prof = float(getattr(self, "target_profit", 10.0) or 10.0)
-    effective_target = max(1.00, target_prof)
+    target_prof = float(getattr(self, "target_profit", 3.0) or 3.0)
+    effective_target = max(0.50, target_prof)
 
     if total_pnl > getattr(self, "max_floating_pnl", -float("inf")):
         self.max_floating_pnl = total_pnl
