@@ -285,6 +285,11 @@ class MT5Broker:
         trigger_price = round(trigger_price, digits)
 
         # Layer 1 Unbreakable Pre-Placement Duplicate Shield (Strict Level Cap Enforcement)
+        # Open Position Hard Ceiling: If 2 or more open positions exist for this symbol on MT5, BLOCK new order placement!
+        existing_positions = mt5.positions_get(symbol=exness_symbol) if (MT5_AVAILABLE and exness_symbol) else ()
+        if existing_positions and len(existing_positions) >= 2:
+            return Order(order_type, trigger_price, size, timestamp)
+
         for p_ord in list(self.pending_orders.values()):
             ord_t = getattr(p_ord, "timestamp", getattr(p_ord, "time", 0.0))
             if getattr(p_ord, "type", "") == order_type and (timestamp - ord_t) < 15.0:
@@ -462,9 +467,53 @@ class MT5Broker:
 
     def purge_duplicate_mt5_positions(self) -> int:
         """
-        Permanently disabled to prevent unauthorized position closing.
+        Scans MT5 server for open positions on this symbol across all aliases.
+        Strictly enforces max 2 open positions ceiling per symbol.
+        Closes excess duplicate positions beyond 2 immediately.
         """
-        return 0
+        if not self.ensure_connected():
+            return 0
+        exness_symbol = self.get_exness_symbol(self.symbol)
+        poss = mt5.positions_get(symbol=exness_symbol) if (MT5_AVAILABLE and exness_symbol) else None
+        if not poss and MT5_AVAILABLE:
+            all_poss = mt5.positions_get()
+            if all_poss:
+                clean_target = "XAU" if any(x in self.symbol.upper() for x in ["XAU", "GOLD", "PAXG"]) else self.symbol.replace("USDT", "").replace("USD", "").upper()
+                poss = [p for p in all_poss if clean_target in str(p.symbol).upper()]
+
+        if not poss or len(poss) <= 2:
+            return 0
+
+        poss_list = list(poss)
+        poss_list.sort(key=lambda x: getattr(x, "time", 0), reverse=True)
+        excess = poss_list[2:]
+        closed_count = 0
+        for p in excess:
+            close_type = mt5.ORDER_TYPE_SELL if p.type == mt5.POSITION_TYPE_BUY else mt5.ORDER_TYPE_BUY
+            tick = mt5.symbol_info_tick(p.symbol)
+            if not tick:
+                continue
+            price = tick.bid if p.type == mt5.POSITION_TYPE_BUY else tick.ask
+            req = {
+                "action": mt5.TRADE_ACTION_DEAL,
+                "symbol": p.symbol,
+                "volume": p.volume,
+                "type": close_type,
+                "position": p.ticket,
+                "price": price,
+                "deviation": 20,
+                "magic": getattr(p, "magic", 0),
+                "comment": "Max 2 Position Ceiling Purge",
+                "type_time": mt5.ORDER_TIME_GTC,
+                "type_filling": mt5.ORDER_FILLING_IOC,
+            }
+            res = mt5.order_send(req)
+            if res and res.retcode in (0, 10009, 10008, 10004):
+                closed_count += 1
+                pid = self.ticket_to_position_id.pop(p.ticket, None)
+                if pid:
+                    self.open_positions.pop(pid, None)
+        return closed_count
 
     def cancel_order(self, order_id: str) -> Optional[Order]:
         if not self.ensure_connected():
@@ -894,8 +943,14 @@ class MT5Broker:
                     self.pending_orders.pop(oid, None)
                     self.ticket_to_order_id.pop(ticket, None)
 
-        # 2. Active positions from MT5 across ALL symbols
-        mt5_positions = mt5.positions_get() if MT5_AVAILABLE else None
+        # 2. Active positions from MT5 filtered strictly for THIS symbol
+        mt5_positions = mt5.positions_get(symbol=exness_symbol) if (MT5_AVAILABLE and exness_symbol) else None
+        if mt5_positions is None and MT5_AVAILABLE:
+            all_poss = mt5.positions_get()
+            if all_poss:
+                clean_target = "XAU" if any(x in self.symbol.upper() for x in ["XAU", "GOLD", "PAXG"]) else self.symbol.replace("USDT", "").replace("USD", "").upper()
+                mt5_positions = [p for p in all_poss if clean_target in str(p.symbol).upper()]
+
         active_pos_tickets = set()
         triggered_positions = []
 
