@@ -1306,18 +1306,23 @@ class BreakoutGridBot:
             min_tp_dist = 1800.0 if "BTC" in sym_name else (120.0 if "ETH" in sym_name else (50.0 if any(x in sym_name for x in ["XAU", "PAXG", "GOLD"]) else 0.0300))
             sl_buffer = min_sl_dist
 
-            # Dynamic Account-Size Grid Allocator: 3 to 5 grid levels on trading side based on account equity
+            # Dynamic Account-Size Grid Allocator: Min 3 levels, Max 7 levels based on account equity
             acc_eq = self.broker.get_equity() if hasattr(self.broker, "get_equity") else 1000.0
-            base_cfg_levels = getattr(self, "grid_levels", 4) or 4
-            if acc_eq >= 5000.0:
-                effective_levels = min(5, max(3, base_cfg_levels))
+            base_cfg_levels = getattr(self, "grid_levels", 5) or 5
+            if acc_eq >= 10000.0:
+                effective_levels = min(7, max(3, base_cfg_levels))
+            elif acc_eq >= 5000.0:
+                effective_levels = min(6, max(3, base_cfg_levels))
             elif acc_eq >= 2000.0:
+                effective_levels = min(5, max(3, base_cfg_levels))
+            elif acc_eq >= 1000.0:
                 effective_levels = min(4, max(3, base_cfg_levels))
             else:
                 effective_levels = 3
 
-            # Market Regime Adaptive Order Placement:
-            # - Trending Market (Bullish / Bearish): Place orders ONLY on the trending side!
+            # Market Regime & Auto-Reading Adaptive Order Placement:
+            # - Take BUY from Bottom (Oversold <= 30 / Valley Support / Bullish Trend)
+            # - Take SELL from Top (Overbought >= 70 / Peak Resistance / Bearish Trend)
             # - Choppy / Ranging Market (Neutral): BOTH Buy & Sell active!
             try:
                 from core.data import get_historical_klines, calculate_technical_indicators
@@ -1328,11 +1333,11 @@ class BreakoutGridBot:
                     rsi_val = tech.get("rsi", 50.0)
                     
                     if trend_dir == "BULLISH" or rsi_val <= 30.0:
-                        # Trending Bullish: Place BUY ONLY on trend side
+                        # Bottom Buy / Bullish Trend: Place BUY ONLY
                         place_buy = True
                         place_sell = False
                     elif trend_dir == "BEARISH" or rsi_val >= 70.0:
-                        # Trending Bearish: Place SELL ONLY on trend side
+                        # Top Sell / Bearish Trend: Place SELL ONLY
                         place_buy = False
                         place_sell = True
                     else:
