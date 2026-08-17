@@ -333,12 +333,21 @@ st.markdown("""
         color: #e4e4e7;
     }
     
-    /* Buttons */
+    /* Premium Non-Squishing Modern Dark Buttons */
     .stButton button {
         border-radius: 6px !important;
-        font-weight: 600 !important;
-        font-size: 0.85rem !important;
-        transition: none !important;
+        font-weight: 700 !important;
+        font-size: 0.80rem !important;
+        white-space: nowrap !important;
+        word-break: keep-all !important;
+        padding: 6px 12px !important;
+        min-height: 38px !important;
+        letter-spacing: 0.2px !important;
+        transition: all 0.15s ease-in-out !important;
+    }
+    .stButton button:hover {
+        transform: translateY(-1px) !important;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.4) !important;
     }
     
     /* Hide Streamlit elements */
@@ -826,8 +835,8 @@ with tab_desk:
             with cols[idx_c]:
                 with st.expander(label_title, expanded=True):
 
-                    # ── MODE SELECTOR ROW ─────────────────────────────────────
-                    hdr_c1, hdr_c2 = st.columns([6, 4])
+                    # ── MODE SELECTOR & ENGINE CONTROL STRIP ───────────────────
+                    hdr_c1, hdr_c2 = st.columns([5, 5])
                     with hdr_c1:
                         mode_sel = st.radio(
                             f"Mode ({sym_code})",
@@ -851,10 +860,10 @@ with tab_desk:
 
                     with hdr_c2:
                         st.markdown("<div style='height:24px'></div>", unsafe_allow_html=True)
-                        btn_c1, btn_c2, btn_c3, btn_c4, btn_c5 = st.columns(5)
-                        with btn_c1:
+                        e_col1, e_col2 = st.columns(2)
+                        with e_col1:
                             if not is_run:
-                                if st.button("▶ START", key=f"btn_start_{sym_code}", type="primary", use_container_width=True):
+                                if st.button("▶ START BOT", key=f"btn_start_{sym_code}", type="primary", use_container_width=True):
                                     m_data["running"] = True
                                     bot.auto_restart = is_auto
                                     live_px = get_live_price(sym_code) or sym_p
@@ -867,12 +876,12 @@ with tab_desk:
                                     save_bot_state()
                                     st.rerun()
                             else:
-                                if st.button("⏹️ STOP", key=f"btn_stop_{sym_code}", use_container_width=True):
+                                if st.button("⏹️ STOP BOT", key=f"btn_stop_{sym_code}", use_container_width=True):
                                     m_data["running"] = False
                                     save_bot_state()
                                     st.rerun()
-                        with btn_c2:
-                            if st.button("🔄 RESET", key=f"btn_reset_{sym_code}", use_container_width=True, help=f"Reset and re-center grid traps for {sym_code} at current live price"):
+                        with e_col2:
+                            if st.button("🔄 RESET GRID", key=f"btn_reset_{sym_code}", use_container_width=True, help=f"Reset and re-center grid traps for {sym_code} at current live price"):
                                 live_px = get_live_price(sym_code) or sym_p
                                 if live_px > 0:
                                     m_data["last_price"] = live_px
@@ -884,35 +893,39 @@ with tab_desk:
                                     st.toast(f"Notice: {reset_err}")
                                 save_bot_state()
                                 st.rerun()
-                        with btn_c3:
-                            if st.button("🟢 BUY ONLY", key=f"btn_close_buy_{sym_code}", use_container_width=True, help=f"Close ONLY open BUY positions for {sym_code}"):
-                                try:
-                                    brk.close_buy_positions(sym_code)
-                                    st.toast(f"🟢 Closed BUY positions for {sym_code}!")
-                                except Exception:
-                                    pass
-                                save_bot_state()
-                                st.rerun()
-                        with btn_c4:
-                            if st.button("🔴 SELL ONLY", key=f"btn_close_sell_{sym_code}", use_container_width=True, help=f"Close ONLY open SELL positions for {sym_code}"):
-                                try:
-                                    brk.close_sell_positions(sym_code)
-                                    st.toast(f"🔴 Closed SELL positions for {sym_code}!")
-                                except Exception:
-                                    pass
-                                save_bot_state()
-                                st.rerun()
-                        with btn_c5:
-                            if st.button("🚨 FLATTEN", key=f"btn_emergency_{sym_code}", use_container_width=True, help="Close all positions and cancel all pending orders for this pair immediately"):
-                                m_data["running"] = False
-                                try:
-                                    brk.close_all_positions(symbol=sym_code)
-                                    brk.cancel_all_orders(symbol=sym_code)
-                                except Exception:
-                                    pass
-                                save_bot_state()
-                                st.toast(f"🚨 Emergency flatten executed for {sym_code}!")
-                                st.rerun()
+
+                    # ── POSITION OPERATIONS CONTROL BAR ─────────────────────────────
+                    st.markdown("<div style='margin-top:6px'></div>", unsafe_allow_html=True)
+                    act_c1, act_c2, act_c3 = st.columns(3)
+                    with act_c1:
+                        if st.button("🟢 CLOSE BUY", key=f"btn_close_buy_{sym_code}", use_container_width=True, help=f"Close ONLY open BUY positions for {sym_code}"):
+                            try:
+                                brk.close_buy_positions(sym_code)
+                                st.toast(f"🟢 Closed BUY positions for {sym_code}!")
+                            except Exception:
+                                pass
+                            save_bot_state()
+                            st.rerun()
+                    with act_c2:
+                        if st.button("🔴 CLOSE SELL", key=f"btn_close_sell_{sym_code}", use_container_width=True, help=f"Close ONLY open SELL positions for {sym_code}"):
+                            try:
+                                brk.close_sell_positions(sym_code)
+                                st.toast(f"🔴 Closed SELL positions for {sym_code}!")
+                            except Exception:
+                                pass
+                            save_bot_state()
+                            st.rerun()
+                    with act_c3:
+                        if st.button("🚨 FLATTEN ALL", key=f"btn_emergency_{sym_code}", use_container_width=True, help="Close all positions and cancel all pending orders for this pair immediately"):
+                            m_data["running"] = False
+                            try:
+                                brk.close_all_positions(symbol=sym_code)
+                                brk.cancel_all_orders(symbol=sym_code)
+                            except Exception:
+                                pass
+                            save_bot_state()
+                            st.toast(f"🚨 Emergency flatten executed for {sym_code}!")
+                            st.rerun()
 
                     st.markdown("<hr style='border-color:#27272a;margin:6px 0 10px'/>", unsafe_allow_html=True)
 
