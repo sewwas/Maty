@@ -1085,6 +1085,16 @@ with tab_desk:
                                         live_p = [p for p in _all_p if any(_a in str(p.symbol).upper() for _a in chk_aliases)]
                                 if live_p:
                                     open_pos = max(open_pos, len(live_p))
+                                    if not brk.open_positions:
+                                        for p in live_p:
+                                            pos_id = str(getattr(p, "ticket", getattr(p, "position_id", id(p))))
+                                            p_type = "BUY" if getattr(p, "type", 0) == 0 else "SELL"
+                                            p_entry = float(getattr(p, "price_open", getattr(p, "entry_price", 0.0)))
+                                            p_vol = float(getattr(p, "volume", getattr(p, "size", 0.01)))
+                                            p_pnl = float(getattr(p, "profit", 0.0))
+                                            pos_obj = Position(p_type, p_entry, p_vol, getattr(p, "time", time.time()), pos_id)
+                                            pos_obj.profit = p_pnl
+                                            brk.open_positions[pos_id] = pos_obj
                             except Exception:
                                 pass
                         realized  = getattr(brk, "realized_pnl", 0.0)
