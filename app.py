@@ -1266,17 +1266,20 @@ with tab_desk:
 
                         _pos_rows = ''
                         for _pid, _pos in list(brk.open_positions.items())[:6]:
-                            _ep   = getattr(_pos, 'entry_price', getattr(_pos, 'open_price', getattr(_pos, 'price', 0)))
-                            _pt   = getattr(_pos, 'type', '?')
-                            _ppnl = getattr(_pos, 'profit', 0.0)
-                            _lot  = getattr(_pos, 'volume', getattr(_pos, 'size', 0))
-                            if _ppnl == 0.0 and _ep > 0 and sym_p > 0:
+                            _ep   = float(getattr(_pos, 'entry_price', getattr(_pos, 'open_price', getattr(_pos, 'price', 0))))
+                            _pt   = str(getattr(_pos, 'type', 'BUY')).upper()
+                            _lot  = float(getattr(_pos, 'volume', getattr(_pos, 'size', 0.01)))
+                            _ppnl = float(getattr(_pos, 'profit', 0.0))
+
+                            if _ep > 0 and sym_p > 0:
                                 _cmult = 100.0 if any(x in str(sym_code).upper() for x in ["XAU", "PAXG", "GOLD"]) else 1.0
-                                _ppnl = (sym_p - _ep) * _lot * _cmult if _pt == "BUY" else (_ep - sym_p) * _lot * _cmult
+                                _calc_pnl = (sym_p - _ep) * _lot * _cmult if "BUY" in _pt else (_ep - sym_p) * _lot * _cmult
+                                if abs(_calc_pnl) > 0.001 or _ppnl == 0.0:
+                                    _ppnl = _calc_pnl
 
                             _pcol = '#22c55e' if _ppnl >= 0 else '#ef4444'
                             _fgi  = '🛡️ ' if str(_pid) in _fg_watches else ''
-                            _pos_rows += f'<tr><td>{_fgi}{str(_pid)[:8]}</td><td style="color:{"#22c55e" if _pt=="BUY" else "#ef4444"}">{_pt}</td><td>${_ep:,.4f}</td><td>${sym_p:,.4f}</td><td>{_lot}</td><td style="color:{_pcol};font-weight:700">${_ppnl:+,.2f}</td></tr>'
+                            _pos_rows += f'<tr><td>{_fgi}{str(_pid)[:8]}</td><td style="color:{"#22c55e" if "BUY" in _pt else "#ef4444"}">{_pt}</td><td>${_ep:,.3f}</td><td>${sym_p:,.3f}</td><td>{_lot}</td><td style="color:{_pcol};font-weight:700">${_ppnl:+,.2f}</td></tr>'
 
 
                         _pos_table_html = ''
