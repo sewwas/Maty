@@ -712,53 +712,13 @@ class MT5Broker:
         if pos and ticket:
             symbol_info = self.get_cached_symbol_info(pos.symbol)
             digits = symbol_info.digits if symbol_info else 4
-            point = symbol_info.point if symbol_info else 0.0001
-            stops_lvl = getattr(symbol_info, "trade_stops_level", 0) or 0
-            min_stop_dist = max(stops_lvl * point, point * 50.0, 0.10 if any(x in str(pos.symbol).upper() for x in ["XAU", "GOLD"]) else 0.0001)
-
-            tick_info = mt5.symbol_info_tick(pos.symbol)
-            bid_px = getattr(tick_info, "bid", 0.0) or getattr(pos, "price_current", 0.0)
-            ask_px = getattr(tick_info, "ask", 0.0) or getattr(pos, "price_current", 0.0)
 
             cur_p_sl = float(getattr(pos, "sl", 0.0) or 0.0)
             cur_p_tp = float(getattr(pos, "tp", 0.0) or 0.0)
 
-            # Preserve existing SL level if sl is not provided or <= 0
-            if sl is None:
-                final_sl = cur_p_sl
-            elif sl > 0:
-                final_sl = round(sl, digits)
-            else:
-                final_sl = cur_p_sl if cur_p_sl > 0 else 0.0
-
-            # Preserve existing TP level if tp is not provided or <= 0, or compute default TP if missing
-            if tp is None:
-                final_tp = cur_p_tp
-            elif tp > 0:
-                final_tp = round(tp, digits)
-            else:
-                if cur_p_tp > 0:
-                    final_tp = cur_p_tp
-                else:
-                    lot_v = float(getattr(pos, "volume", 0.01) or 0.01)
-                    c_mult = 100.0 if any(x in str(pos.symbol).upper() for x in ["XAU", "GOLD"]) else 1.0
-                    tp_dist = max(min_stop_dist * 2.0, 2.0 / max(0.001, lot_v * c_mult))
-                    if pos.type == mt5.POSITION_TYPE_BUY:
-                        final_tp = round(pos.price_open + tp_dist, digits)
-                    else:
-                        final_tp = round(pos.price_open - tp_dist, digits)
-
-            # Exness Stops Level Clamping: ensure SL & TP satisfy broker minimum distance from live price
-            if pos.type == mt5.POSITION_TYPE_BUY:
-                if final_tp > 0 and ask_px > 0:
-                    final_tp = max(final_tp, round(ask_px + min_stop_dist, digits))
-                if final_sl > 0 and bid_px > 0:
-                    final_sl = min(final_sl, round(bid_px - min_stop_dist, digits))
-            else:
-                if final_tp > 0 and bid_px > 0:
-                    final_tp = min(final_tp, round(bid_px - min_stop_dist, digits))
-                if final_sl > 0 and ask_px > 0:
-                    final_sl = max(final_sl, round(ask_px + min_stop_dist, digits))
+            # Use exact target SL/TP provided by engine, preserving current non-zero levels if None
+            final_sl = round(sl, digits) if (sl is not None and sl > 0) else cur_p_sl
+            final_tp = round(tp, digits) if (tp is not None and tp > 0) else cur_p_tp
 
             req = {
                 "action": mt5.TRADE_ACTION_SLTP,
@@ -776,7 +736,6 @@ class MT5Broker:
                 is_ok = res is not None and (getattr(res, "retcode", -1) in (0, 10009, 10008, 10004) or getattr(res, "comment", "") == "ok")
 
             if is_ok:
-                # Update local position tracking
                 pid_key = self.ticket_to_position_id.get(ticket, f"live_{ticket}")
                 pos_obj = self.open_positions.get(pid_key)
                 if pos_obj:
@@ -784,31 +743,8 @@ class MT5Broker:
                     pos_obj.tp = final_tp
             return is_ok
 
-        # 3. Fallback: Pending Order Modification (TRADE_ACTION_MODIFY)
-        if ticket:
-            ord_list = mt5.orders_get(ticket=ticket) if MT5_AVAILABLE else ()
-            if ord_list:
-                ord_item = ord_list[0]
-                symbol_info = self.get_cached_symbol_info(ord_item.symbol)
-                digits = symbol_info.digits if symbol_info else 4
-                cur_ord_sl = float(getattr(ord_item, "sl", 0.0) or 0.0)
-                cur_ord_tp = float(getattr(ord_item, "tp", 0.0) or 0.0)
-
-                final_sl = round(sl, digits) if (sl is not None and sl > 0) else cur_ord_sl
-                final_tp = round(tp, digits) if (tp is not None and tp > 0) else cur_ord_tp
-
-                req = {
-                    "action": mt5.TRADE_ACTION_MODIFY,
-                    "order": int(ticket),
-                    "price": float(ord_item.price_open),
-                    "sl": float(final_sl),
-                    "tp": float(final_tp),
-                    "type_time": mt5.ORDER_TIME_GTC,
-                }
-                res = mt5.order_send(req)
-                return res is not None and (getattr(res, "retcode", -1) in (0, 10009, 10008, 10004) or getattr(res, "comment", "") == "ok")
-
-        return False
+        # 3. Pending Orders: Do not attach SL to pending orders
+        return True
 
     def modify_order(self, order_id: str, price: Optional[float] = None, sl: Optional[float] = None, tp: Optional[float] = None) -> bool:
         """Alias method for modify_position_sl_tp to ensure 100% API compatibility."""
