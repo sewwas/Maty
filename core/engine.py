@@ -1264,7 +1264,7 @@ class BreakoutGridBot:
             if len(self.broker.open_positions) > 0 and not force:
                 return
 
-            # 2. Existing Pending Traps Lock: If active orders exist on MT5, lock deployed=True and preserve stationary orders
+            # 2. Existing Pending Traps Lock: Only lock deployed=True if full grid levels exist on MT5
             if hasattr(self.broker, "get_exness_symbol"):
                 try:
                     ex_sym = self.broker.get_exness_symbol(getattr(self, "symbol_code", self.broker.symbol))
@@ -1274,11 +1274,11 @@ class BreakoutGridBot:
                     if mt5_avail and mt5_ref and ex_sym:
                         mt5_ords = mt5_ref.orders_get(symbol=ex_sym)
                         if not mt5_ords:
-                            # Also check symbol aliases (e.g. XAUUSD vs PAXGUSDT)
                             sym_u = str(ex_sym).upper()
                             alt_s = "XAUUSD" if any(x in sym_u for x in ["PAXG", "GOLD", "XAU"]) else sym_u
                             mt5_ords = mt5_ref.orders_get(symbol=alt_s)
-                        if mt5_ords and len(mt5_ords) >= 1:
+                        req_levels = getattr(self, "grid_levels", 5) or 5
+                        if mt5_ords and len(mt5_ords) >= req_levels and not force:
                             self.deployed = True
                             self.last_deploy_time = timestamp
                             return
