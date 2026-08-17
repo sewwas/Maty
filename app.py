@@ -979,6 +979,7 @@ with tab_desk:
                                 )
                                 if ev:
                                     bot.last_auto_eval = ev
+                                    bot.unidirectional_mode = ev.get("unidirectional_mode", "DUAL")
                             except Exception:
                                 ev = getattr(bot, "last_auto_eval", {})
                         if not ev:
