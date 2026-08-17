@@ -290,18 +290,12 @@ class MT5Broker:
             if getattr(p_ord, "type", "") == order_type and (timestamp - ord_t) < 15.0:
                 return p_ord
 
+        round_dp = 2 if any(x in str(exness_symbol).upper() for x in ["BTC", "XAU", "GOLD", "PAXG", "ETH"]) else 4
         existing_orders = mt5.orders_get(symbol=exness_symbol) if MT5_AVAILABLE else ()
         if existing_orders:
-            if len(existing_orders) >= 2:
-                ext_o = existing_orders[0]
-                loc_ord = Order(order_type, ext_o.price_open, getattr(ext_o, "volume_initial", size), getattr(ext_o, "time_setup", timestamp))
-                loc_ord.order_id = f"mt5_{ext_o.ticket}"
-                loc_ord.mt5_ticket = ext_o.ticket
-                self.ticket_to_order_id[ext_o.ticket] = loc_ord.order_id
-                self.pending_orders[loc_ord.order_id] = loc_ord
-                return loc_ord
+            # Prevent placing duplicate orders at the EXACT SAME price level while allowing multi-level grids
             for ext_o in existing_orders:
-                if ext_o.type == mt5_type:
+                if ext_o.type == mt5_type and round(ext_o.price_open, round_dp) == round(trigger_price, round_dp):
                     loc_ord = Order(order_type, ext_o.price_open, getattr(ext_o, "volume_initial", size), getattr(ext_o, "time_setup", timestamp))
                     loc_ord.order_id = f"mt5_{ext_o.ticket}"
                     loc_ord.mt5_ticket = ext_o.ticket

@@ -1324,9 +1324,15 @@ class BreakoutGridBot:
             min_tp_dist = 750.0 if "BTC" in sym_name else (50.0 if "ETH" in sym_name else (25.0 if any(x in sym_name for x in ["XAU", "PAXG", "GOLD"]) else 0.0150))
             sl_buffer = min_sl_dist
 
-            # Dynamic Auto-Sanitizing Grid Level Allocator:
-            # Strictly capped to 1 level per side max (1 BUY_STOP + 1 SELL_STOP = 2 traps max total)
-            effective_levels = 1
+            # Dynamic Account-Size Grid Allocator: 3 to 5 grid levels on trading side based on account equity
+            acc_eq = self.broker.get_equity() if hasattr(self.broker, "get_equity") else 1000.0
+            base_cfg_levels = getattr(self, "grid_levels", 4) or 4
+            if acc_eq >= 5000.0:
+                effective_levels = min(5, max(3, base_cfg_levels))
+            elif acc_eq >= 2000.0:
+                effective_levels = min(4, max(3, base_cfg_levels))
+            else:
+                effective_levels = 3
 
             # 6. Direct Placement Loop (Respects DIP_BUY / RALLY_SELL / BUY_ONLY / SELL_ONLY side modes)
             side_mode = str(getattr(self, "pending_order_side_mode", "AUTO_ADAPTIVE")).upper()
