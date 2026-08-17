@@ -1421,10 +1421,27 @@ class BreakoutGridBot:
             placed_count = 0
             base_start_offset = max(b_min_stop + 1.0, buy_offset_val)
 
+            # Dip-Buy Bottom & Rally-Sell Top Mode Selection:
+            # - When RSI <= 48 or Bullish: Deploy BUY_LIMIT orders at VERY BOTTOM below current price
+            # - When RSI >= 52 or Bearish: Deploy SELL_LIMIT orders at VERY TOP above current price
+            use_bottom_buy_limit = (rsi_1m <= 48.0 or t_5m == "BULLISH" or t_15m == "BULLISH")
+
             for i in range(effective_levels):
-                buy_px = round(ask_ref + base_start_offset + (i * gap_val), digits)
-                sell_px = round(bid_ref - base_start_offset - (i * gap_val), digits)
-                
+                if use_bottom_buy_limit:
+                    # BUY_LIMIT at very bottom (below current price)
+                    buy_px = round(bid_ref - base_start_offset - (i * gap_val), digits)
+                    # SELL_LIMIT at very top (above current price)
+                    sell_px = round(ask_ref + base_start_offset + (i * gap_val), digits)
+                    buy_type = "BUY_LIMIT"
+                    sell_type = "SELL_LIMIT"
+                else:
+                    # BUY_STOP momentum breakout (above current price)
+                    buy_px = round(ask_ref + base_start_offset + (i * gap_val), digits)
+                    # SELL_STOP breakdown (below current price)
+                    sell_px = round(bid_ref - base_start_offset - (i * gap_val), digits)
+                    buy_type = "BUY_STOP"
+                    sell_type = "SELL_STOP"
+
                 buy_size = self.calculate_level_size(self.order_size, self.order_size_multiplier, i)
                 sell_size = self.calculate_level_size(self.order_size, self.order_size_multiplier, i)
 
@@ -1433,17 +1450,17 @@ class BreakoutGridBot:
 
                 if place_buy:
                     try:
-                        b_res = self.broker.place_order("BUY_STOP", buy_px, buy_size, timestamp, tp=buy_tp, sl=0.0)
+                        b_res = self.broker.place_order(buy_type, buy_px, buy_size, timestamp, tp=buy_tp, sl=0.0)
                         if b_res: placed_count += 1
                     except Exception as e:
-                        print(f"[{sym_name}] BUY_STOP level {i} error: {e}")
+                        print(f"[{sym_name}] {buy_type} level {i} error: {e}")
 
                 if place_sell:
                     try:
-                        s_res = self.broker.place_order("SELL_STOP", sell_px, sell_size, timestamp, tp=sell_tp, sl=0.0)
+                        s_res = self.broker.place_order(sell_type, sell_px, sell_size, timestamp, tp=sell_tp, sl=0.0)
                         if s_res: placed_count += 1
                     except Exception as e:
-                        print(f"[{sym_name}] SELL_STOP level {i} error: {e}")
+                        print(f"[{sym_name}] {sell_type} level {i} error: {e}")
 
             # Post-Deployment Duplicate Level Purge Shield:
             if hasattr(self.broker, "purge_duplicate_mt5_orders"):
