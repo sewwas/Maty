@@ -896,42 +896,6 @@ class MT5Broker:
             for o in mt5_orders:
                 if o.magic == self.magic_number or getattr(self, "magic_number", None) is None:
                     active_order_tickets.add(o.ticket)
-                    # Auto-attach hardware SL/TP to existing live MT5 pending orders if missing (sl == 0.0 or tp == 0.0)
-                    cur_o_sl = float(getattr(o, "sl", 0.0) or 0.0)
-                    cur_o_tp = float(getattr(o, "tp", 0.0) or 0.0)
-                    if cur_o_sl == 0.0 or cur_o_tp == 0.0:
-                        symbol_info = self.get_cached_symbol_info(o.symbol)
-                        digits = symbol_info.digits if symbol_info else 2
-                        point = symbol_info.point if symbol_info else 0.01
-                        stops_lvl = getattr(symbol_info, "trade_stops_level", 0) or 0
-                        sym_u = str(o.symbol).upper()
-                        if "BTC" in sym_u:
-                            sl_dist = 250.0
-                            tp_dist = 450.0
-                        elif "ETH" in sym_u:
-                            sl_dist = 20.0
-                            tp_dist = 40.0
-                        elif any(x in sym_u for x in ["XAU", "GOLD"]):
-                            sl_dist = 6.0
-                            tp_dist = 12.0
-                        elif any(x in sym_u for x in ["EUR", "GBP"]):
-                            sl_dist = 0.0035
-                            tp_dist = 0.0070
-                        else:
-                            sl_dist = max(stops_lvl * point, point * 500.0, 1.0)
-                            tp_dist = max(stops_lvl * point, point * 500.0, 1.0)
-
-                        is_buy = o.type in [mt5.ORDER_TYPE_BUY_STOP, mt5.ORDER_TYPE_BUY_LIMIT, 2, 4]
-                        px = float(o.price_open)
-                        calc_tp = round(px + tp_dist if is_buy else px - tp_dist, digits)
-                        calc_sl = round(px - sl_dist if is_buy else px + sl_dist, digits)
-                        t_tp = cur_o_tp if cur_o_tp > 0 else calc_tp
-                        t_sl = cur_o_sl if cur_o_sl > 0 else calc_sl
-                        try:
-                            self.modify_position_sl_tp(str(o.ticket), t_sl, t_tp)
-                        except Exception:
-                            pass
-
                     if o.ticket not in self.ticket_to_order_id:
                         order_type = "BUY_STOP" if o.type in [mt5.ORDER_TYPE_BUY_STOP, 4] else ("BUY_LIMIT" if o.type in [mt5.ORDER_TYPE_BUY_LIMIT, 2] else ("SELL_LIMIT" if o.type in [mt5.ORDER_TYPE_SELL_LIMIT, 3] else "SELL_STOP"))
                         loc_ord = Order(order_type, o.price_open, o.volume_initial, o.time_setup)
@@ -964,43 +928,8 @@ class MT5Broker:
                 active_pos_tickets.add(p.ticket)
                 pid = self.ticket_to_position_id.get(p.ticket)
 
-                symbol_info = self.get_cached_symbol_info(p.symbol)
-                digits = symbol_info.digits if symbol_info else (4 if any(x in sym_upper for x in ["DOGE", "GBP", "EUR"]) else 2)
-                point = symbol_info.point if symbol_info else (0.01 if "BTC" in sym_upper else 0.0001)
-                stops_lvl = getattr(symbol_info, "trade_stops_level", 0) or 0
-                if "BTC" in sym_upper:
-                    sl_dist_floor = 250.0
-                    tp_dist_floor = 450.0
-                elif any(x in sym_upper for x in ["XAU", "GOLD"]):
-                    sl_dist_floor = 6.0
-                    tp_dist_floor = 12.0
-                elif "ETH" in sym_upper:
-                    sl_dist_floor = 20.0
-                    tp_dist_floor = 40.0
-                elif any(x in sym_upper for x in ["EUR", "GBP"]):
-                    sl_dist_floor = 0.0035
-                    tp_dist_floor = 0.0070
-                else:
-                    sl_dist_floor = max(stops_lvl * point, point * 500.0, 1.0)
-                    tp_dist_floor = max(stops_lvl * point, point * 500.0, 1.0)
-
-                # Auto-attach SL/TP to live MT5 position if missing (sl == 0.0 or tp == 0.0)
                 cur_p_sl = float(getattr(p, "sl", 0.0) or 0.0)
                 cur_p_tp = float(getattr(p, "tp", 0.0) or 0.0)
-
-                if cur_p_sl == 0.0 or cur_p_tp == 0.0:
-                    is_buy = (p.type == mt5.POSITION_TYPE_BUY)
-                    p_open = float(p.price_open)
-                    calc_tp = round(p_open + tp_dist_floor if is_buy else p_open - tp_dist_floor, digits)
-                    calc_sl = round(p_open - sl_dist_floor if is_buy else p_open + sl_dist_floor, digits)
-                    target_tp = cur_p_tp if cur_p_tp > 0 else calc_tp
-                    target_sl = cur_p_sl if cur_p_sl > 0 else calc_sl
-                    try:
-                        self.modify_position_sl_tp(str(p.ticket), target_sl, target_tp)
-                        cur_p_sl = target_sl
-                        cur_p_tp = target_tp
-                    except Exception:
-                        pass
 
                 if not pid:
                     pos_type = "BUY" if p.type == mt5.POSITION_TYPE_BUY else "SELL"
