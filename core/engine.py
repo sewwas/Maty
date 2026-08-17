@@ -1252,6 +1252,14 @@ class BreakoutGridBot:
         self._is_deploying = True
 
         try:
+            # 0. Active Duplicate Level Purge Shield:
+            # Automatically purge any duplicate MT5 pending orders before evaluating grid placement
+            if hasattr(self.broker, "purge_duplicate_mt5_orders"):
+                try:
+                    self.broker.purge_duplicate_mt5_orders()
+                except Exception:
+                    pass
+
             # 1. Open Positions Guard: If positions are active, preserve current cycle
             if len(self.broker.open_positions) > 0 and not force:
                 return
@@ -1415,6 +1423,13 @@ class BreakoutGridBot:
                         if s_res: placed_count += 1
                     except Exception as e:
                         print(f"[{sym_name}] SELL_STOP level {i} error: {e}")
+
+            # Post-Deployment Duplicate Level Purge Shield:
+            if hasattr(self.broker, "purge_duplicate_mt5_orders"):
+                try:
+                    self.broker.purge_duplicate_mt5_orders()
+                except Exception:
+                    pass
 
             if placed_count > 0 or len(self.broker.pending_orders) > 0:
                 self.deployed = True
