@@ -271,19 +271,19 @@ class MT5Broker:
 
         if order_type == "BUY_STOP":
             mt5_type = mt5.ORDER_TYPE_BUY_STOP
-            trigger_price = max(price, ask + min_stop_dist)
+            trigger_price = price if price > (ask + min_stop_dist) else (ask + min_stop_dist)
         elif order_type == "SELL_STOP":
             mt5_type = mt5.ORDER_TYPE_SELL_STOP
-            trigger_price = min(price, bid - min_stop_dist)
+            trigger_price = price if price < (bid - min_stop_dist) else (bid - min_stop_dist)
         elif order_type == "BUY_LIMIT":
             mt5_type = mt5.ORDER_TYPE_BUY_LIMIT
-            trigger_price = min(price, ask - min_stop_dist)
+            trigger_price = price if price < (ask - min_stop_dist) else (ask - min_stop_dist)
         elif order_type == "SELL_LIMIT":
             mt5_type = mt5.ORDER_TYPE_SELL_LIMIT
-            trigger_price = max(price, bid + min_stop_dist)
+            trigger_price = price if price > (bid + min_stop_dist) else (bid + min_stop_dist)
         else:
             mt5_type = mt5.ORDER_TYPE_BUY_STOP
-            trigger_price = max(price, ask + min_stop_dist)
+            trigger_price = price if price > (ask + min_stop_dist) else (ask + min_stop_dist)
 
         digits = symbol_info.digits
         trigger_price = round(trigger_price, digits)
