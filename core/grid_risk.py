@@ -880,6 +880,7 @@ def sync_trap_mode_realtime(self, current_price: float, timestamp: float) -> boo
     • SELL_ONLY: Purges all BUY_STOP orders from MT5 and ensures SELL_STOP traps are active.
     • DUAL/BOTH: Ensures both BUY_STOP and SELL_STOP traps are active.
     """
+    sym_name = str(getattr(self.broker, "symbol", getattr(self, "symbol_code", "XAUUSD"))).upper()
     curr_mode = str(getattr(self, "pending_order_side_mode", "AUTO_ADAPTIVE")).upper()
     last_mode = getattr(self, "_last_synced_side_mode", None)
 
@@ -889,10 +890,21 @@ def sync_trap_mode_realtime(self, current_price: float, timestamp: float) -> boo
     if not hasattr(self.broker, "pending_orders"):
         return False
 
+    # IF TRAP MODE CHANGED IN REAL TIME: RESET ALL TRAPS & REDEPLOY IMMEDIATELY
+    if mode_changed:
+        print(f"[{sym_name}] 🔄 [TRAP MODE RESET & REDEPLOY] Mode changed: {last_mode} → {curr_mode}. Resetting all MT5 traps!")
+        try:
+            self.broker.cancel_all_orders()
+        except Exception:
+            pass
+        if not len(getattr(self.broker, "open_positions", {})):
+            self.deploy_traps(current_price, timestamp, force=True)
+        return True
+
+    # CONTINUOUS TICK ENFORCEMENT FOR ACTIVE MODE
     p_orders = list(self.broker.pending_orders.items())
     has_buy_stops = any(getattr(o, "type", "") == "BUY_STOP" for _, o in p_orders)
     has_sell_stops = any(getattr(o, "type", "") == "SELL_STOP" for _, o in p_orders)
-
     purged = False
 
     if "BUY" in curr_mode and "ONLY" in curr_mode:
@@ -903,7 +915,7 @@ def sync_trap_mode_realtime(self, current_price: float, timestamp: float) -> boo
                     purged = True
                 except Exception:
                     pass
-        if (mode_changed or not has_buy_stops) and not len(getattr(self.broker, "open_positions", {})):
+        if not has_buy_stops and not len(getattr(self.broker, "open_positions", {})):
             self.deploy_traps(current_price, timestamp, force=True)
 
     elif "SELL" in curr_mode and "ONLY" in curr_mode:
@@ -914,12 +926,7 @@ def sync_trap_mode_realtime(self, current_price: float, timestamp: float) -> boo
                     purged = True
                 except Exception:
                     pass
-        if (mode_changed or not has_sell_stops) and not len(getattr(self.broker, "open_positions", {})):
+        if not has_sell_stops and not len(getattr(self.broker, "open_positions", {})):
             self.deploy_traps(current_price, timestamp, force=True)
-
-    elif mode_changed and ("DUAL" in curr_mode or "BOTH" in curr_mode):
-        self.broker.cancel_all_orders()
-        self.deploy_traps(current_price, timestamp, force=True)
-        purged = True
 
     return purged
