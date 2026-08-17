@@ -295,18 +295,22 @@ class MT5Broker:
             if getattr(p_ord, "type", "") == order_type and (timestamp - ord_t) < 15.0:
                 return p_ord
 
-        round_dp = 2 if any(x in str(exness_symbol).upper() for x in ["BTC", "XAU", "GOLD", "PAXG", "ETH"]) else 4
+        sym_u_name = str(exness_symbol).upper()
+        min_gap_dist = 60.0 if "BTC" in sym_u_name else (5.0 if "ETH" in sym_u_name else (5.0 if any(x in sym_u_name for x in ["XAU", "GOLD", "PAXG"]) else 0.0015))
         existing_orders = mt5.orders_get(symbol=exness_symbol) if MT5_AVAILABLE else ()
         if existing_orders:
-            # Prevent placing duplicate orders at the EXACT SAME price level while allowing multi-level grids
+            # Prevent placing duplicate or stacked orders within min_gap_dist proximity
             for ext_o in existing_orders:
-                if ext_o.type == mt5_type and round(ext_o.price_open, round_dp) == round(trigger_price, round_dp):
-                    loc_ord = Order(order_type, ext_o.price_open, getattr(ext_o, "volume_initial", size), getattr(ext_o, "time_setup", timestamp))
-                    loc_ord.order_id = f"mt5_{ext_o.ticket}"
-                    loc_ord.mt5_ticket = ext_o.ticket
-                    self.ticket_to_order_id[ext_o.ticket] = loc_ord.order_id
-                    self.pending_orders[loc_ord.order_id] = loc_ord
-                    return loc_ord
+                is_ext_buy = ext_o.type in [mt5.ORDER_TYPE_BUY_STOP, mt5.ORDER_TYPE_BUY_LIMIT, 2, 4]
+                is_new_buy = mt5_type in [mt5.ORDER_TYPE_BUY_STOP, mt5.ORDER_TYPE_BUY_LIMIT, 2, 4]
+                if is_ext_buy == is_new_buy:
+                    if abs(float(ext_o.price_open) - trigger_price) < (min_gap_dist * 0.75):
+                        loc_ord = Order(order_type, ext_o.price_open, getattr(ext_o, "volume_initial", size), getattr(ext_o, "time_setup", timestamp))
+                        loc_ord.order_id = f"mt5_{ext_o.ticket}"
+                        loc_ord.mt5_ticket = ext_o.ticket
+                        self.ticket_to_order_id[ext_o.ticket] = loc_ord.order_id
+                        self.pending_orders[loc_ord.order_id] = loc_ord
+                        return loc_ord
 
         # Volume alignment
         vol_min = getattr(symbol_info, "volume_min", 0.01) or 0.01
