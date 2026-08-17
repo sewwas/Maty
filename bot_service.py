@@ -165,20 +165,19 @@ def main():
                         logging.info(f"[{sym}] State updated from UI: running={disk_running}")
                         
                         if disk_running:
-                            import MetaTrader5 as mt5_ref
                             brk_inst = markets[sym]["broker"]
-                            ex_s = brk_inst.get_exness_symbol(sym) if hasattr(brk_inst, "get_exness_symbol") else sym
-                            active_mt5_ords = mt5_ref.orders_get(symbol=ex_s) if (mt5_ref.initialize() and ex_s) else None
-                            active_mt5_poss = mt5_ref.positions_get(symbol=ex_s) if (mt5_ref.initialize() and ex_s) else None
-                            
-                            if not active_mt5_ords and not active_mt5_poss:
-                                markets[sym]["bot"].deployed = False
-                                live_px = get_live_price(sym) or markets[sym]["last_price"]
+                            if hasattr(brk_inst, "purge_duplicate_mt5_orders"):
                                 try:
-                                    markets[sym]["bot"].deploy_traps(live_px, now, force=False)
-                                    logging.info(f"[{sym}] Auto-healing trap deployment @ {live_px}")
-                                except Exception as e:
-                                    logging.error(f"[{sym}] Trap deploy error: {e}")
+                                    brk_inst.purge_duplicate_mt5_orders()
+                                except Exception:
+                                    pass
+
+                            live_px = get_live_price(sym) or markets[sym]["last_price"]
+                            try:
+                                markets[sym]["bot"].deploy_traps(live_px, now, force=True)
+                                logging.info(f"[{sym}] Clean Trap Deployment: {len(getattr(brk_inst, 'pending_orders', {}))} traps placed @ {live_px}")
+                            except Exception as e:
+                                logging.error(f"[{sym}] Trap deploy error: {e}")
 
             # Process Ticks
             for sym, m_data in markets.items():
