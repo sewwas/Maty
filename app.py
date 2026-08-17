@@ -444,7 +444,7 @@ if MT5_AVAILABLE:
                         ords = mt5_sys.orders_get(symbol=a_sym)
                         if ords:
                             break
-                    if ords is None:
+                    if not ords:
                         all_o = mt5_sys.orders_get()
                         if all_o:
                             ords = [o for o in all_o if any(a_s in str(o.symbol).upper() for a_s in aliases)]
@@ -466,7 +466,7 @@ if MT5_AVAILABLE:
                         pos_list = mt5_sys.positions_get(symbol=a_sym)
                         if pos_list:
                             break
-                    if pos_list is None:
+                    if not pos_list:
                         all_p = mt5_sys.positions_get()
                         if all_p:
                             pos_list = [p for p in all_p if any(a_s in str(p.symbol).upper() for a_s in aliases)]
