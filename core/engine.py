@@ -1288,14 +1288,44 @@ class BreakoutGridBot:
             if bid_ref <= 0: bid_ref = current_price
 
             # 5. Dynamic Offset & Gap Calculation with Non-Zero Safety Guard
-            buy_offset_val, gap_val = self.calculate_offset_and_gap(current_price)
+            gap_pct = float(getattr(self, "grid_gap", 0.07) or 0.07)
+            offset_pct = float(getattr(self, "trap_offset", 0.07) or 0.07)
+            
+            if getattr(self, "use_auto_reading", False) and hasattr(self, "auto_reading_engine"):
+                try:
+                    from core.data import get_historical_klines, calculate_technical_indicators, get_order_book_depth, get_economic_calendar
+                    klines_df = get_historical_klines(sym_name, interval="1m", limit=100)
+                    tech = calculate_technical_indicators(klines_df) if klines_df is not None else {}
+                    ob = get_order_book_depth(sym_name) if hasattr(core.data, "get_order_book_depth") else {}
+                    news = get_economic_calendar() if hasattr(core.data, "get_economic_calendar") else []
+                    bal = float(getattr(self.broker, "balance", 1000.0) or 1000.0)
+                    
+                    eval_res = self.auto_reading_engine.evaluate_market_and_account(
+                        symbol=sym_name,
+                        current_price=current_price,
+                        account_equity=bal,
+                        tech_indicators=tech,
+                        orderbook_depth=ob,
+                        macro_news=news
+                    )
+                    if eval_res and isinstance(eval_res, dict):
+                        offset_pct = float(eval_res.get("buy_offset_pct", offset_pct) or offset_pct)
+                        gap_pct = float(eval_res.get("dynamic_gap_pct", gap_pct) or gap_pct)
+                except Exception:
+                    pass
+
+            off_ratio = (offset_pct / 100.0) if offset_pct >= 0.005 else offset_pct
+            gap_ratio = (gap_pct / 100.0) if gap_pct >= 0.005 else gap_pct
+
+            buy_offset_val = current_price * off_ratio if off_ratio > 0 else current_price * 0.001
+            gap_val = current_price * gap_ratio if gap_ratio > 0 else current_price * 0.001
             
             # Enforce noise-immune minimum trap offset from current price
             min_offset_dist = 60.0 if "BTC" in sym_name else (5.0 if "ETH" in sym_name else (5.0 if any(x in sym_name for x in ["XAU", "PAXG", "GOLD"]) else 0.0015))
             buy_offset_val = max(float(buy_offset_val), min_offset_dist)
             sell_offset_val = buy_offset_val
             
-            # Enforce minimum gap distance to prevent level price overlap (0.00) and duplicate wipe loops
+            # Enforce minimum gap distance to prevent level price overlap (0.00)
             min_gap_dist = 20.0 if "BTC" in sym_name else (2.0 if "ETH" in sym_name else (2.0 if any(x in sym_name for x in ["XAU", "PAXG", "GOLD"]) else 0.0010))
             gap_val = max(float(gap_val), min_gap_dist)
             buy_offset_val = round(buy_offset_val, digits)
