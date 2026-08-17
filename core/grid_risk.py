@@ -464,6 +464,15 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
             pass
 
         side_cfg = str(getattr(self, "pending_order_side_mode", "AUTO_ADAPTIVE")).upper()
+        if side_cfg == "AUTO_ADAPTIVE" and hasattr(self, "last_auto_eval") and isinstance(self.last_auto_eval, dict):
+            auto_uni = str(self.last_auto_eval.get("unidirectional_mode", "DUAL")).upper()
+            if "BUY" in auto_uni and "ONLY" in auto_uni:
+                side_cfg = "BUY_ONLY"
+            elif "SELL" in auto_uni and "ONLY" in auto_uni:
+                side_cfg = "SELL_ONLY"
+            elif "DUAL" in auto_uni or "BOTH" in auto_uni:
+                side_cfg = "BOTH_SIDES"
+
         if "DUAL" in side_cfg or "BOTH" in side_cfg:
             place_buy, place_sell = True, True
         elif ("BUY" in side_cfg and "ONLY" in side_cfg) or side_cfg == "BUY":
@@ -882,8 +891,16 @@ def sync_trap_mode_realtime(self, current_price: float, timestamp: float) -> boo
     """
     sym_name = str(getattr(self.broker, "symbol", getattr(self, "symbol_code", "XAUUSD"))).upper()
     curr_mode = str(getattr(self, "pending_order_side_mode", "AUTO_ADAPTIVE")).upper()
-    last_mode = getattr(self, "_last_synced_side_mode", None)
+    if curr_mode == "AUTO_ADAPTIVE" and hasattr(self, "last_auto_eval") and isinstance(self.last_auto_eval, dict):
+        auto_uni = str(self.last_auto_eval.get("unidirectional_mode", "DUAL")).upper()
+        if "BUY" in auto_uni and "ONLY" in auto_uni:
+            curr_mode = "BUY_ONLY"
+        elif "SELL" in auto_uni and "ONLY" in auto_uni:
+            curr_mode = "SELL_ONLY"
+        elif "DUAL" in auto_uni or "BOTH" in auto_uni:
+            curr_mode = "BOTH_SIDES"
 
+    last_mode = getattr(self, "_last_synced_side_mode", None)
     mode_changed = (last_mode is not None and curr_mode != last_mode)
     self._last_synced_side_mode = curr_mode
 
