@@ -1419,17 +1419,11 @@ class BreakoutGridBot:
                 major_15m_high = current_price + min_sl_dist
 
             placed_count = 0
-            pt_val = 0.01 if any(x in sym_name for x in ["XAU", "PAXG", "GOLD"]) else (0.1 if "BTC" in sym_name else 0.0001)
-            fast_buy_offset = max(b_min_stop + 0.50, buy_offset_val)
-            fast_sell_offset = max(b_min_stop + 0.50, sell_offset_val)
+            base_start_offset = max(b_min_stop + 1.0, buy_offset_val)
 
             for i in range(effective_levels):
-                if i == 0:
-                    buy_px = round(ask_ref + fast_buy_offset, digits)
-                    sell_px = round(bid_ref - fast_sell_offset, digits)
-                else:
-                    buy_px = round(ask_ref + buy_offset_val + ((i - 1) * gap_val), digits)
-                    sell_px = round(bid_ref - sell_offset_val - ((i - 1) * gap_val), digits)
+                buy_px = round(ask_ref + base_start_offset + (i * gap_val), digits)
+                sell_px = round(bid_ref - base_start_offset - (i * gap_val), digits)
                 
                 buy_size = self.calculate_level_size(self.order_size, self.order_size_multiplier, i)
                 sell_size = self.calculate_level_size(self.order_size, self.order_size_multiplier, i)
