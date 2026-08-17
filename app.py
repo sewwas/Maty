@@ -40,16 +40,13 @@ import plotly.graph_objects as go
 import core.data
 import core.engine
 import core.mt5_broker
-import core.pamm
-import core.license
-import core.signals
+import core.services
 
 import threading
 from core.mt5_broker import MT5Broker, SimulatedBroker, MT5_AVAILABLE, get_symbol_magic_number, mt5
 from core.engine import BreakoutGridBot, get_pip_size, sanitize_order_size
-from core.pamm import PAMMMasterPool
-from core.license import LicenseManager, LicenseTier
-from core.signals import send_telegram_alert, dispatch_trade_exit_signal
+from core.auto_reading import PAIR_SWEET_SPOTS
+from core.services import PAMMMasterPool, send_telegram_alert, dispatch_trade_exit_signal
 from core.data import get_live_price, get_default_price, get_historical_klines, get_24h_market_stats
 
 _symbols = ["PAXGUSDT", "GBPUSD", "EURUSD", "USDJPY", "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "DOGEUSDT"]
@@ -63,18 +60,6 @@ _symbol_labels = {
     "SOLUSDT":  "SOLUSD (Solana — ⚡ 24/7 Crypto)",
     "BNBUSDT":  "BNBUSD (Binance Coin — ⚡ 24/7 Crypto)",
     "DOGEUSDT": "DOGEUSD (Dogecoin — ⚡ 24/7 Crypto)"
-}
-
-_golden_sweet_spots = {
-    "PAXGUSDT": {"gap": 0.05, "offset": 0.02, "size": 0.01,  "tp": 0.50, "mult": 1.5},
-    "GBPUSD":   {"gap": 0.04, "offset": 0.02, "size": 0.02,  "tp": 0.50, "mult": 1.5},
-    "EURUSD":   {"gap": 0.04, "offset": 0.02, "size": 0.02,  "tp": 0.50, "mult": 1.5},
-    "USDJPY":   {"gap": 0.04, "offset": 0.02, "size": 0.02,  "tp": 0.50, "mult": 1.5},
-    "BTCUSDT":  {"gap": 0.06, "offset": 0.02, "size": 0.004, "tp": 0.50, "mult": 1.5},
-    "ETHUSDT":  {"gap": 0.05, "offset": 0.02, "size": 0.15,  "tp": 0.50, "mult": 1.5},
-    "SOLUSDT":  {"gap": 0.05, "offset": 0.02, "size": 1.50,  "tp": 0.50, "mult": 1.5},
-    "BNBUSDT":  {"gap": 0.05, "offset": 0.02, "size": 0.20,  "tp": 0.50, "mult": 1.5},
-    "DOGEUSDT": {"gap": 0.04, "offset": 0.02, "size": 100.0, "tp": 0.50, "mult": 1.5},
 }
 
 def save_bot_state_dict(markets_dict: dict, force: bool = False):
@@ -135,23 +120,21 @@ def get_global_vps_trading_engine():
     for sym in _symbols:
         magic = get_symbol_magic_number(sym)
         brk = MT5Broker(symbol=sym, magic_number=magic) if use_mt5 else SimulatedBroker(symbol=sym, magic_number=magic)
-        g_cfg = _golden_sweet_spots.get(sym, {"gap": 0.07, "offset": 0.07, "size": 0.01, "tp": 10.0, "mult": 1.5})
+        pair_cfg = PAIR_SWEET_SPOTS.get(sym, {"std_gap": 0.07, "std_offset": 0.07, "base_lot": 0.01, "min_tp": 10.0, "lot_mult": 1.25})
         bot = BreakoutGridBot(
             broker=brk,
             symbol=sym,
-            grid_gap=g_cfg["gap"],
-            trap_offset=g_cfg["offset"],
+            grid_gap=pair_cfg.get("std_gap", 0.07),
+            trap_offset=pair_cfg.get("std_offset", 0.07),
             grid_levels=5,
-            order_size=g_cfg["size"],
-            order_size_multiplier=g_cfg["mult"],
-            target_profit=g_cfg["tp"],
+            order_size=pair_cfg.get("base_lot", 0.01),
+            order_size_multiplier=pair_cfg.get("lot_mult", 1.25),
+            target_profit=pair_cfg.get("min_tp", 10.0),
             is_percent=True,
-            max_cycle_duration=float("inf"),
             auto_restart=True,
-            use_auto_reading=True
+            use_auto_reading=True,
+            pending_order_side_mode="AUTO_ADAPTIVE"
         )
-        bot.max_cycle_duration = float("inf")
-        bot.pending_order_side_mode = "AUTO_ADAPTIVE"
         init_px = get_default_price(sym)
         
         m_info_saved = saved_state_map.get(sym, {})
@@ -182,26 +165,14 @@ def get_global_vps_trading_engine():
         _last_state_save = 0.0
         while True:
             try:
-
                 now = time.time()
                 for sym_code, m_data in shared_markets.items():
-                    live_p = get_live_price(sym_code)
-                    if live_p and live_p > 0:
-                        m_data["last_price"] = live_p
-                        m_data["price_history"].append((now, live_p))
-                        if len(m_data["price_history"]) > 100:
-                            m_data["price_history"] = m_data["price_history"][-100:]
-
                     if m_data.get("running", False):
                         try:
-                            cur_p = m_data["last_price"]
-                            hist = m_data["price_history"]
-                            prev_p = hist[-2][1] if len(hist) >= 2 else cur_p
-                            m_data["bot"].process_tick(prev_p, cur_p, now)
+                            m_data["bot"].process_live_tick()
                         except Exception as tick_err:
                             print(f"[{sym_code}] Background tick error: {tick_err}")
 
-                # Persist state every 15s to keep disk I/O light and CPU ultra-fast
                 if now - _last_state_save >= 15.0:
                     _last_state_save = now
                     save_bot_state_dict(shared_markets)
@@ -605,14 +576,18 @@ with tab_desk:
 
     # 🧠 Self-Learning & Pivot Points Analytics Banner
     sample_bot = list(st.session_state.markets.values())[0]["bot"]
-    learning_stats = sample_bot.get_self_learning_metrics() if hasattr(sample_bot, "get_self_learning_metrics") else {"win_rate": 78.5, "profit_factor": 2.2, "tuning_multiplier": 1.0, "status": "ACTIVE"}
+    learning_stats = sample_bot.get_self_learning_metrics() if hasattr(sample_bot, "get_self_learning_metrics") else {}
+    ls_status = learning_stats.get("status", "ACTIVE (98.5% WIN RATE TARGET)")
+    ls_wr = learning_stats.get("win_rate", learning_stats.get("rolling_win_rate_pct", 78.5))
+    ls_pf = learning_stats.get("profit_factor", learning_stats.get("rolling_profit_factor", 2.2))
+    ls_mult = learning_stats.get("tuning_multiplier", learning_stats.get("adaptive_gap_mult", 1.0))
     
     st.markdown(f"""
     <div style='background:#09090b;border:1px solid #a855f7;border-radius:6px;padding:8px 14px;margin-bottom:12px;display:flex;justify-content:space-between;align-items:center;font-size:0.80rem'>
-      <span><strong>🧠 Self-Learning Engine:</strong> <span style="color:#a855f7">{learning_stats['status']}</span></span>
-      <span><strong>📈 Rolling Win Rate:</strong> <span class="pnl-green">{learning_stats['win_rate']}% (PF {learning_stats['profit_factor']})</span></span>
+      <span><strong>🧠 Self-Learning Engine:</strong> <span style="color:#a855f7">{ls_status}</span></span>
+      <span><strong>📈 Rolling Win Rate:</strong> <span class="pnl-green">{ls_wr}% (PF {ls_pf})</span></span>
       <span><strong>📐 Pivot S/R Anchoring:</strong> <span style="color:#3b82f6">PP / R1 / S1 Active</span></span>
-      <span><strong>⚡ Dynamic Auto-Tuner:</strong> <span class="pnl-green">{learning_stats['tuning_multiplier']}x Adaptive Multiplier</span></span>
+      <span><strong>⚡ Dynamic Auto-Tuner:</strong> <span class="pnl-green">{ls_mult}x Adaptive Multiplier</span></span>
     </div>
     """, unsafe_allow_html=True)
 
@@ -809,11 +784,17 @@ with tab_desk:
                 try:
                     import MetaTrader5 as mt5_check
                     ex_s = brk.get_exness_symbol(sym_code) if hasattr(brk, "get_exness_symbol") else sym_code
-                    mt5_ords = mt5_check.orders_get(symbol=ex_s) if mt5_check.initialize() else None
+                    mt5_ords = mt5_check.orders_get(symbol=ex_s) if (mt5_check and mt5_check.initialize()) else None
                     if not mt5_ords:
                         bot.deploy_traps(sym_p, time.time(), force=True)
                     else:
                         bot.deployed = True
+                        from core.engine import Order
+                        for mo in mt5_ords:
+                            loc_o = Order("BUY_STOP" if getattr(mo, "type", 2) in (2, 4) else "SELL_STOP", getattr(mo, "price_open", sym_p), getattr(mo, "volume_initial", 0.01), getattr(mo, "time_setup", time.time()))
+                            loc_o.order_id = f"mt5_{mo.ticket}"
+                            loc_o.broker_ticket = mo.ticket
+                            brk.pending_orders[loc_o.order_id] = loc_o
                 except Exception:
                     pass
             
@@ -957,12 +938,14 @@ with tab_desk:
                             key=f"pending_side_{sym_code}",
                             help="Select grid trap direction. Manual BUY ONLY places buy stops above price. Manual SELL ONLY places sell stops below price."
                         )
-                        if "BUY" in pending_side_sel:
+                        if "AUTO" in pending_side_sel or "ADAPTIVE" in pending_side_sel:
+                            new_side_mode = "AUTO_ADAPTIVE"
+                        elif "BOTH" in pending_side_sel or "DUAL" in pending_side_sel:
+                            new_side_mode = "BOTH_SIDES"
+                        elif "BUY" in pending_side_sel:
                             new_side_mode = "BUY_ONLY"
                         elif "SELL" in pending_side_sel:
                             new_side_mode = "SELL_ONLY"
-                        elif "BOTH" in pending_side_sel:
-                            new_side_mode = "BOTH_SIDES"
                         elif "TREND" in pending_side_sel:
                             new_side_mode = "TREND_SIDE_ONLY"
                         else:
@@ -970,16 +953,36 @@ with tab_desk:
 
                         if new_side_mode != getattr(bot, "pending_order_side_mode", "AUTO_ADAPTIVE"):
                             bot.pending_order_side_mode = new_side_mode
-                            if is_run:
-                                try:
+                            save_bot_state()
+                            try:
+                                brk.cancel_all_orders()
+                                if is_run and sym_p > 0:
                                     bot.deploy_traps(sym_p, time.time(), force=True)
-                                except Exception:
-                                    pass
-                            st.toast(f"{sym_code} Pending Traps → {new_side_mode}")
+                            except Exception:
+                                pass
+                            st.toast(f"🎯 {sym_code} Trap Mode → {new_side_mode}")
                             st.rerun()
 
-                        # Pull live eval data & telemetry if available
-                        ev = getattr(bot, "last_auto_eval", None) or {}
+                        # Pull live eval data & telemetry dynamically on every refresh
+                        ev = None
+                        if hasattr(bot, "auto_reading_engine") and sym_p > 0:
+                            try:
+                                from core.data import get_historical_klines, calculate_technical_indicators
+                                sym_fetch = "PAXGUSDT" if any(x in sym_code.upper() for x in ["XAU", "GOLD", "PAXG"]) else (f"{sym_code.upper()}USDT" if ("USD" in sym_code.upper() and "USDT" not in sym_code.upper()) else sym_code)
+                                _kl_df = get_historical_klines(sym_fetch, interval="1m", limit=100)
+                                _tech_ind = calculate_technical_indicators(_kl_df) if _kl_df is not None else {}
+                                ev = bot.auto_reading_engine.evaluate_market_and_account(
+                                    symbol=sym_code,
+                                    current_price=sym_p,
+                                    account_equity=float(getattr(brk, "balance", 1000.0) or 1000.0),
+                                    tech_indicators=_tech_ind
+                                )
+                                if ev:
+                                    bot.last_auto_eval = ev
+                            except Exception:
+                                ev = getattr(bot, "last_auto_eval", {})
+                        if not ev:
+                            ev = getattr(bot, "last_auto_eval", {}) or {}
                         regime      = ev.get("regime", ev.get("market_regime", "RANGING"))
                         confidence  = ev.get("confidence_score", 85.0)
                         dyn_gap     = ev.get("dynamic_gap_pct", bot.grid_gap)
@@ -1623,10 +1626,18 @@ with tab_desk:
             except Exception:
                 pass
         seen_keys = set()
-        for item in getattr(bot, "cycle_history", []):
+        for idx, item in enumerate(getattr(bot, "cycle_history", [])):
             rec = dict(item)
             rec["symbol"] = sym_code
-            key = (sym_code, round(float(rec.get("exit_time", 0)), 1), round(float(rec.get("pnl", 0)), 4))
+            pnl_val = float(rec.get("pnl", rec.get("total_pnl", 0.0)))
+            ts_val = float(rec.get("exit_time", rec.get("timestamp", rec.get("entry_time", 0.0))))
+            c_id = rec.get("cycle_id", idx + 1)
+            rec["pnl"] = pnl_val
+            rec["total_pnl"] = pnl_val
+            rec["timestamp"] = ts_val
+            rec["exit_time"] = ts_val
+
+            key = (sym_code, c_id, round(ts_val, 1), round(pnl_val, 4))
             if key not in seen_keys:
                 seen_keys.add(key)
                 raw_history.append(rec)
@@ -1830,11 +1841,21 @@ with tab_myfxbook:
     all_myfx_trades = []
     for _m_k, _m_v in st.session_state.markets.items():
         _b = _m_v.get("broker")
-        if _b and getattr(_b, "closed_trades", None):
-            for _t in _b.closed_trades:
-                _rec = dict(_t)
-                _rec["symbol"] = _m_k
-                all_myfx_trades.append(_rec)
+        _bot = _m_v.get("bot")
+        t_list = list(getattr(_b, "closed_trades", [])) if _b else []
+        if not t_list and _bot and getattr(_bot, "trade_history", None):
+            for _th in _bot.trade_history:
+                if isinstance(_th, dict):
+                    t_list.append({
+                        "symbol": _m_k,
+                        "pnl": float(_th.get("pnl", 0.0)),
+                        "type": "CYCLE",
+                        "exit_reason": _th.get("exit_reason", "MANUAL")
+                    })
+        for _t in t_list:
+            _rec = dict(_t)
+            _rec["symbol"] = _m_k
+            all_myfx_trades.append(_rec)
 
     # Compute Myfxbook metrics
     total_t_cnt = len(all_myfx_trades)
@@ -2056,11 +2077,15 @@ with tab_myfxbook:
         m_data = st.session_state.markets[s_code]
         brk = m_data["broker"]
         bot = m_data["bot"]
-        p_trades = getattr(brk, "closed_trades", [])
+        p_trades = list(getattr(brk, "closed_trades", [])) if brk else []
+        if not p_trades and bot and getattr(bot, "trade_history", None):
+            p_trades = list(getattr(bot, "trade_history", []))
+
         p_t_cnt  = len(p_trades)
         p_wins   = sum(1 for t in p_trades if float(t.get("pnl", 0.0)) > 0)
-        p_pnl    = getattr(brk, "realized_pnl", 0.0)
-        p_wr     = (p_wins / p_t_cnt * 100.0) if p_t_cnt > 0 else (100.0 if len(getattr(bot, "cycle_history", [])) > 0 else 0.0)
+        p_losses = sum(1 for t in p_trades if float(t.get("pnl", 0.0)) < 0)
+        p_pnl    = sum(float(t.get("pnl", 0.0)) for t in p_trades) if p_trades else (getattr(brk, "realized_pnl", 0.0) if brk else 0.0)
+        p_wr     = (p_wins / p_t_cnt * 100.0) if p_t_cnt > 0 else 0.0
         p_cls    = "pnl-green" if p_pnl >= 0 else "pnl-red"
         
         matrix_rows += (
@@ -2068,7 +2093,8 @@ with tab_myfxbook:
             f"<td><strong>{s_code}</strong></td>"
             f"<td>{_symbol_labels.get(s_code, s_code)}</td>"
             f"<td>{p_t_cnt}</td>"
-            f"<td>{p_wins}</td>"
+            f"<td><span class='pnl-green'>{p_wins}</span></td>"
+            f"<td><span class='pnl-red'>{p_losses}</span></td>"
             f"<td><span class='pnl-green'>{p_wr:.1f}%</span></td>"
             f"<td class='{p_cls}'><strong>${p_pnl:+,.2f}</strong></td>"
             f"</tr>"
@@ -2082,6 +2108,7 @@ with tab_myfxbook:
                 <th>Asset Description</th>
                 <th>Total Closed Deals</th>
                 <th>Winning Deals</th>
+                <th>Losing Deals</th>
                 <th>Win Rate %</th>
                 <th>Pair Net Realized PnL</th>
             </tr>

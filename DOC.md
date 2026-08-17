@@ -13,19 +13,11 @@ graph TD
         B -->|Pickle Save/Load| C[(bot_state.pkl)]
     end
 
-    subgraph CORE ["Core Trading Engine (core/engine.py)"]
-        D[BreakoutGridBot Manager] -->|Tick Input| E[process_tick Engine]
-        E -->|Check Breakout| F[Smart Runner Mode]
-        E -->|Check Volatility| G[Volatility-Adaptive Gap]
-        E -->|Scan Coverage| H[Grid Repair & Cleanup]
-        E -->|Post-Fill Watch| FO[Fake-Out Guard]
-        D -->|Deploy Traps| SMC[SMC Grid Refinement]
-    end
-
-    subgraph INTEL ["Intelligence Layer (core/data.py + engine.py)"]
-        AR[AutoReadingEngine] -->|Regime + Bias| D
-        SMC_E[SMC + Elliott Wave Engine] -->|OB Snap / FVG Skip / Wave3 Boost| SMC
-        SMC_E -->|Bias Boost| AR
+    subgraph CORE ["Core Modular Engine"]
+        D[BreakoutGridBot (core/engine.py)] -->|Tick Execution| E[Grid & Risk Engine (core/grid_risk.py)]
+        D -->|Trap Deployment| F[Grid Deployment Engine (core/grid_deployment.py)]
+        D -->|Market Regime| G[Auto-Reading Engine (core/auto_reading.py)]
+        D -->|Metrics & History| H[History Tracker Engine (core/history_tracker.py)]
     end
 
     subgraph DATA ["Price Data Provider (core/data.py)"]
@@ -541,7 +533,7 @@ This section details how Profity AI protects real trading capital against the 3 
 
 ### 🎯 11.1 Real-Time Hardware SL/TP & Preservation Shield
 - **Per-Level Dynamic Target Calculation**: Every grid level ($i=0, 1, 2, 3, 4, 5...$) calculates level-specific valid SL and TP targets relative to that order's exact trigger price (`buy_px` / `sell_px`), completely eliminating `Invalid SL/TP` broker rejections.
-- **`BUY_LIMIT` & `SELL_LIMIT` TP Linkage**: `BUY_LIMIT` Take Profit targets are linked directly to opposite `SELL_LIMIT` price levels, and `SELL_LIMIT` Take Profit targets are linked directly to opposite `BUY_LIMIT` price levels for 100% full-range oscillation capture.
+- **`BUY_STOP` & `SELL_STOP` Breakout Matrix**: `BUY_STOP` breakout traps trigger above Ask on bullish momentum, and `SELL_STOP` breakout traps trigger below Bid on bearish momentum for 100% full-range volatility capture.
 - **Dynamic Real-Time Trailing Stop**: Real-time SL ratchets behind live market price (`current_price - trailing_dist` for BUYs, `current_price + trailing_dist` for SELLs) and updates the MT5 server via `TRADE_ACTION_SLTP`. One-way protection guarantees SL **never moves against favorable price action**.
 - **Preservation Shield (`sl=None`, `tp=None`)**: Updating SL alone retains existing `cur_p_tp`, and updating TP alone retains existing `cur_p_sl`, preventing accidental parameter wiping.
 

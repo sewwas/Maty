@@ -2,7 +2,6 @@ import time
 import os
 import sys
 from typing import Dict, List, Optional, Any
-from core.engine import Order, Position
 
 try:
     import MetaTrader5 as mt5
@@ -12,7 +11,6 @@ try:
 except (ImportError, Exception):
     mt5 = None
     MT5_AVAILABLE = False
-
 
 SYMBOL_MAGIC_NUMBERS = {
     "BTCUSDT": 998871,
@@ -46,10 +44,13 @@ class MT5Broker:
     Handles order placement, cancellation, position tracking, and floating PnL.
     """
     def __init__(self, symbol: str = "BTCUSDT", login: Optional[int] = None, password: str = "", server: str = "", symbol_suffix: str = "", magic_number: Optional[int] = None):
+        from core.engine import Order, Position
+        self.OrderClass = Order
+        self.PositionClass = Position
+
         if not MT5_AVAILABLE:
             raise ImportError("MetaTrader5 library is not available.")
 
-        # Safe parsing if symbol was passed positionally or login is string
         if isinstance(symbol, int) and isinstance(login, str):
             symbol, login = login, symbol
 
@@ -60,8 +61,8 @@ class MT5Broker:
         self.symbol_suffix = str(symbol_suffix)
         self.magic_number = magic_number if (magic_number is not None and magic_number != 998877) else get_symbol_magic_number(self.symbol)
 
-        self.pending_orders: Dict[str, Order] = {}
-        self.open_positions: Dict[str, Position] = {}
+        self.pending_orders: Dict[str, Any] = {}
+        self.open_positions: Dict[str, Any] = {}
         self.closed_trades: List[dict] = []
         self.realized_pnl = 0.0
 
@@ -72,7 +73,6 @@ class MT5Broker:
             if not mt5.initialize():
                 print(f"Notice: MT5 initialize status: {mt5.last_error()}")
 
-            # Dynamic real MT5 account binding directly from live logged-in terminal
             acc = mt5.account_info()
             if acc:
                 self.login = int(acc.login)
@@ -99,13 +99,13 @@ class MT5Broker:
             "DOTUSDT": "DOTUSD",
             "LTCUSDT": "LTCUSD",
             "LINKUSDT": "LINKUSD",
-            "PAXGUSDT": "XAUUSD"
+            "PAXGUSDT": "XAUUSD",
+            "GOLD": "XAUUSD"
         }
         base_sym = symbol_map.get(ui_symbol, ui_symbol)
 
         res = ui_symbol
         if MT5_AVAILABLE:
-            # Probe common Exness symbol variations (e.g. SOLUSDm for Exness Standard, SOLUSD, SOLUSDc)
             probes = []
             if self.symbol_suffix:
                 probes.append(f"{base_sym}{self.symbol_suffix}")
@@ -119,7 +119,6 @@ class MT5Broker:
                         break
 
             if res == ui_symbol:
-                # Group search fallback across full broker catalog
                 group_symbols = mt5.symbols_get(group=f"*{base_sym}*")
                 if group_symbols:
                     matching = [s.name for s in group_symbols if s.name.upper().startswith(base_sym.upper())]
@@ -224,7 +223,6 @@ class MT5Broker:
         return 0.0
 
     def get_total_account_orders_count(self) -> int:
-        """Returns total active pending orders + open positions across ALL symbols on MT5 account."""
         if not self.ensure_connected():
             return len(self.pending_orders) + len(self.open_positions)
         try:
@@ -248,7 +246,8 @@ class MT5Broker:
             return min_dist
         return 2.50 if "XAU" in self.symbol.upper() or "GOLD" in self.symbol.upper() else 0.005
 
-    def place_order(self, order_type: str, price: float, size: float, timestamp: float, tp: float = 0.0, sl: float = 0.0) -> Order:
+    def place_order(self, order_type: str, price: float, size: float, timestamp: float, tp: float = 0.0, sl: float = 0.0) -> Any:
+        from core.engine import Order
         if not self.ensure_connected():
             raise RuntimeError("MT5 connection offline.")
 
@@ -260,7 +259,6 @@ class MT5Broker:
         if getattr(symbol_info, "trade_mode", 4) == 0:
             raise TradeDisabledError(f"Exness server has disabled trading for {exness_symbol} on this account.")
 
-        # Minimum stop distance calculation
         point = symbol_info.point
         stops_level = getattr(symbol_info, "trade_stops_level", 0) or 0
         min_stop_dist = max(stops_level * point, point * 50.0)
@@ -288,13 +286,10 @@ class MT5Broker:
         digits = symbol_info.digits
         trigger_price = round(trigger_price, digits)
 
-        # Hard Safety Ceiling: Enforce strict 0.02 max order lot size
         size = round(min(float(size), 0.02), 2)
         if size < 0.01:
             size = 0.01
 
-        # Layer 1 Unbreakable Pre-Placement Duplicate Shield (Strict Level Cap Enforcement)
-        # Open Position Hard Ceiling: If 2 or more open positions exist or cumulative volume >= 0.05 lots, BLOCK new order placement!
         existing_positions = mt5.positions_get(symbol=exness_symbol) if (MT5_AVAILABLE and exness_symbol) else ()
         if existing_positions:
             total_open_vol = sum(float(getattr(p, "volume", 0.0) or 0.0) for p in existing_positions)
@@ -302,15 +297,26 @@ class MT5Broker:
                 return Order(order_type, trigger_price, size, timestamp)
 
         sym_u_name = str(exness_symbol).upper()
-        px_tolerance = 2.0 if "BTC" in sym_u_name else (0.20 if any(x in sym_u_name for x in ["XAU", "GOLD", "PAXG"]) else (0.50 if "ETH" in sym_u_name else 0.0001))
+        px_tolerance = 0.50 if "BTC" in sym_u_name else (0.01 if any(x in sym_u_name for x in ["XAU", "GOLD", "PAXG"]) else (0.05 if "ETH" in sym_u_name else 0.00005))
 
         for p_ord in list(self.pending_orders.values()):
             ord_px = getattr(p_ord, "trigger_price", getattr(p_ord, "price_open", 0.0))
             if getattr(p_ord, "type", "") == order_type and abs(trigger_price - ord_px) <= px_tolerance:
                 return p_ord
-        existing_orders = mt5.orders_get(symbol=exness_symbol) if MT5_AVAILABLE else ()
+        existing_orders = []
+        if MT5_AVAILABLE:
+            for s_alias in set([exness_symbol, self.symbol, f"{exness_symbol}m", f"{exness_symbol}c", "XAUUSD", "XAUUSDm"]):
+                if s_alias:
+                    ords = mt5.orders_get(symbol=s_alias)
+                    if ords:
+                        existing_orders.extend(list(ords))
+            if not existing_orders:
+                all_o = mt5.orders_get()
+                if all_o:
+                    clean_target = "XAU" if any(x in self.symbol.upper() for x in ["XAU", "GOLD", "PAXG"]) else self.symbol.replace("USDT", "").replace("USD", "").upper()
+                    existing_orders = [o for o in all_o if clean_target in str(o.symbol).upper()]
+
         if existing_orders:
-            # Prevent placing duplicate or stacked orders within min_gap_dist proximity
             for ext_o in existing_orders:
                 is_ext_buy = ext_o.type in [mt5.ORDER_TYPE_BUY_STOP, mt5.ORDER_TYPE_BUY_LIMIT, 2, 4]
                 is_new_buy = mt5_type in [mt5.ORDER_TYPE_BUY_STOP, mt5.ORDER_TYPE_BUY_LIMIT, 2, 4]
@@ -323,38 +329,35 @@ class MT5Broker:
                         self.pending_orders[loc_ord.order_id] = loc_ord
                         return loc_ord
 
-        # Volume alignment
         vol_min = getattr(symbol_info, "volume_min", 0.01) or 0.01
         vol_max = getattr(symbol_info, "volume_max", 100.0) or 100.0
         vol_step = getattr(symbol_info, "volume_step", 0.01) or 0.01
         order_size = max(vol_min, min(vol_max, round(round(size / vol_step) * vol_step, 4) if vol_step > 0 else round(size, 4)))
 
-        # Hardware TP & SL Clamping & Default Generation (Guarantees visible TP/SL on MT5 terminal with realistic noise buffer)
         sym_name = str(exness_symbol).upper()
         if "BTC" in sym_name:
-            min_sl_dist = 1200.0   # Ultra-Wide Noise-Immune SL Buffer for BTC ($1,200)
-            min_tp_dist = 1800.0
+            min_sl_dist = 1200.0
+            min_tp_dist = 5.0
         elif any(x in sym_name for x in ["XAU", "GOLD", "PAXG"]):
-            min_sl_dist = 35.0    # Ultra-Wide Noise-Immune SL Buffer for Gold ($35)
-            min_tp_dist = 50.0
+            min_sl_dist = 35.0
+            min_tp_dist = 0.50
         elif "ETH" in sym_name:
-            min_sl_dist = 80.0    # Ultra-Wide Noise-Immune SL Buffer for ETH ($80)
-            min_tp_dist = 120.0
-        elif any(x in sym_name for x in ["EUR", "GBP"]):
-            min_sl_dist = 0.0200  # Ultra-Wide Noise-Immune Buffer for Forex (200 pips)
-            min_tp_dist = 0.0300
+            min_sl_dist = 80.0
+            min_tp_dist = 1.0
+        elif any(x in sym_name for x in ["EUR", "GBP", "JPY"]):
+            min_sl_dist = 0.0050
+            min_tp_dist = 0.0003 if "JPY" not in sym_name else 0.03
         else:
-            min_sl_dist = max(min_stop_dist * 5.0, point * 500.0)
-            min_tp_dist = max(min_stop_dist * 5.0, point * 500.0)
+            min_sl_dist = max(min_stop_dist * 2.0, point * 50.0)
+            min_tp_dist = max(min_stop_dist * 2.0, point * 10.0)
 
         if "BUY" in order_type:
-            tp_val = round(max(tp, trigger_price + min_tp_dist), digits) if tp > 0 else round(trigger_price + min_tp_dist, digits)
+            tp_val = round(tp, digits) if tp > 0 else (round(trigger_price + min_tp_dist, digits) if min_tp_dist > 0 else 0.0)
             sl_val = round(sl, digits) if sl > 0 else 0.0
         else:
-            tp_val = round(min(tp, trigger_price - min_tp_dist), digits) if tp > 0 else round(trigger_price - min_tp_dist, digits)
+            tp_val = round(tp, digits) if tp > 0 else (round(trigger_price - min_tp_dist, digits) if min_tp_dist > 0 else 0.0)
             sl_val = round(sl, digits) if sl > 0 else 0.0
 
-        # Dynamic Exness filling mode detection
         filling_flags = getattr(symbol_info, "filling_mode", 0) or 0
         if filling_flags & 4:
             best_filling = mt5.ORDER_FILLING_RETURN
@@ -381,36 +384,26 @@ class MT5Broker:
 
         result = mt5.order_send(request)
 
-        # Fallback Tier 1: Try alternative filling modes (FOK / IOC / RETURN) if rejected
         if result is None or getattr(result, "retcode", 0) not in [mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_PLACED]:
-            for alt_fill in [mt5.ORDER_FILLING_FOK, mt5.ORDER_FILLING_IOC, mt5.ORDER_FILLING_RETURN]:
+            for alt_fill in [mt5.ORDER_FILLING_RETURN, mt5.ORDER_FILLING_FOK, mt5.ORDER_FILLING_IOC]:
                 if alt_fill != best_filling:
                     request["type_filling"] = alt_fill
                     result = mt5.order_send(request)
                     if result is not None and getattr(result, "retcode", 0) in [mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_PLACED]:
                         break
 
-        # Fallback Tier 2: If Limit order failed on Exness account, convert to Stop breakout trap with valid TP/SL
         if result is None or getattr(result, "retcode", 0) not in [mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_PLACED]:
             if "BUY" in order_type:
                 request["type"] = mt5.ORDER_TYPE_BUY_STOP
                 request["price"] = max(price, ask + min_stop_dist)
-                request["tp"] = round(request["price"] + min_tp_dist, digits) if tp > 0 else 0.0
-                request["sl"] = round(request["price"] - min_sl_dist, digits) if sl > 0 else 0.0
+                request["tp"] = round(tp, digits) if tp > 0 else round(request["price"] + min_tp_dist, digits)
+                request["sl"] = round(sl, digits) if sl > 0 else round(request["price"] - min_sl_dist, digits)
             else:
                 request["type"] = mt5.ORDER_TYPE_SELL_STOP
                 request["price"] = min(price, bid - min_stop_dist)
-                request["tp"] = round(request["price"] - min_tp_dist, digits) if tp > 0 else 0.0
-                request["sl"] = round(request["price"] + min_sl_dist, digits) if sl > 0 else 0.0
+                request["tp"] = round(tp, digits) if tp > 0 else round(request["price"] - min_tp_dist, digits)
+                request["sl"] = round(sl, digits) if sl > 0 else round(request["price"] + min_sl_dist, digits)
             result = mt5.order_send(request)
-
-        # Fallback Tier 3: Try alternative filling modes (FOK / IOC)
-        if result is None or getattr(result, "retcode", 0) not in [mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_PLACED]:
-            for fill_mode in [mt5.ORDER_FILLING_FOK, mt5.ORDER_FILLING_IOC]:
-                request["type_filling"] = fill_mode
-                result = mt5.order_send(request)
-                if result is not None and getattr(result, "retcode", 0) in [mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_PLACED]:
-                    break
 
         is_placed = result is not None and (getattr(result, "retcode", -1) in (0, 10009, 10008, 10004) or getattr(result, "comment", "") == "ok")
         if not is_placed:
@@ -426,16 +419,7 @@ class MT5Broker:
         self.pending_orders[order.order_id] = order
         return order
 
-        self.pending_orders[order_id] = order
-        self.ticket_to_order_id[ticket] = order_id
-        return order
-
     def purge_duplicate_mt5_orders(self) -> int:
-        """
-        Scans MT5 server for pending orders across all symbol aliases.
-        Strictly enforces max 1 BUY order and 1 SELL order (max 2 total pending orders per symbol).
-        Cancels all extra/duplicate pending orders on MT5 immediately.
-        """
         if not self.ensure_connected():
             return 0
         exness_symbol = self.get_exness_symbol(self.symbol)
@@ -459,33 +443,33 @@ class MT5Broker:
         unique_orders_dict = {o.ticket: o for o in orders}
         unique_orders = list(unique_orders_dict.values())
 
-        by_side = {"BUY": [], "SELL": []}
+        sym_info = self.get_cached_symbol_info(exness_symbol)
+        digits = sym_info.digits if sym_info and hasattr(sym_info, "digits") else 2
+
+        by_price = {}
         for o in unique_orders:
             if hasattr(self, "magic_number") and self.magic_number and getattr(o, "magic", 0) != self.magic_number:
                 continue
-            is_buy = o.type in [mt5.ORDER_TYPE_BUY_STOP, mt5.ORDER_TYPE_BUY_LIMIT, 2, 4]
-            side_key = "BUY" if is_buy else "SELL"
-            by_side[side_key].append(o)
+            px_key = (o.type, round(float(getattr(o, "price_open", 0.0)), digits))
+            if px_key not in by_price:
+                by_price[px_key] = []
+            by_price[px_key].append(o)
 
         purged = 0
-        for side_key, side_orders in by_side.items():
-            if len(side_orders) > 1:
-                side_orders.sort(key=lambda x: getattr(x, "time_setup", 0), reverse=True)
-                for extra_o in side_orders[1:]:
+        for px_key, same_price_orders in by_price.items():
+            if len(same_price_orders) > 1:
+                same_price_orders.sort(key=lambda x: getattr(x, "time_setup", 0), reverse=True)
+                for extra_o in same_price_orders[1:]:
                     req = {"action": mt5.TRADE_ACTION_REMOVE, "order": int(extra_o.ticket)}
                     res = mt5.order_send(req)
                     if res and res.retcode in (0, 10009, 10008, 10004):
                         purged += 1
                         self.pending_orders.pop(f"mt5_{extra_o.ticket}", None)
                         self.ticket_to_order_id.pop(extra_o.ticket, None)
+
         return purged
 
     def purge_duplicate_mt5_positions(self) -> int:
-        """
-        Scans MT5 server for open positions on this symbol across all aliases.
-        Strictly enforces max 2 open positions ceiling per symbol.
-        Closes excess duplicate positions beyond 2 immediately.
-        """
         if not self.ensure_connected():
             return 0
         exness_symbol = self.get_exness_symbol(self.symbol)
@@ -530,7 +514,7 @@ class MT5Broker:
                     self.open_positions.pop(pid, None)
         return closed_count
 
-    def cancel_order(self, order_id: str) -> Optional[Order]:
+    def cancel_order(self, order_id: str) -> Any:
         if not self.ensure_connected():
             return None
 
@@ -563,29 +547,28 @@ class MT5Broker:
 
         sym = symbol or self.symbol
         exness_symbol = self.get_exness_symbol(sym)
-        orders_sym = mt5.orders_get(symbol=exness_symbol) if exness_symbol else ()
+
+        orders_list = []
+        for s_alias in set([exness_symbol, sym, f"{exness_symbol}m", f"{exness_symbol}c", "XAUUSD", "XAUUSDm"]):
+            if s_alias and MT5_AVAILABLE:
+                ords = mt5.orders_get(symbol=s_alias)
+                if ords:
+                    orders_list.extend(list(ords))
+
+        if not orders_list and MT5_AVAILABLE:
+            all_o = mt5.orders_get()
+            if all_o:
+                clean_target = "XAU" if any(x in str(sym).upper() for x in ["XAU", "GOLD", "PAXG"]) else str(sym).replace("USDT", "").replace("USD", "").upper()
+                orders_list = [o for o in all_o if clean_target in str(o.symbol).upper()]
 
         all_tks = set()
-        if orders_sym:
-            for o in orders_sym:
-                if hasattr(self, "magic_number") and self.magic_number:
-                    if getattr(o, "magic", 0) == self.magic_number:
-                        all_tks.add(o.ticket)
-                else:
-                    all_tks.add(o.ticket)
+        if orders_list:
+            for o in orders_list:
+                all_tks.add((o.ticket, o.symbol))
 
-        for t in all_tks:
-            req = {"action": mt5.TRADE_ACTION_REMOVE, "order": t, "symbol": exness_symbol}
+        for t, sym_name_tk in all_tks:
+            req = {"action": mt5.TRADE_ACTION_REMOVE, "order": t, "symbol": sym_name_tk}
             mt5.order_send(req)
-
-        # Synchronous verification: wait up to 250ms for MT5 server to confirm order removals
-        for _ in range(5):
-            rem = mt5.orders_get(symbol=exness_symbol) if exness_symbol else None
-            if rem and hasattr(self, "magic_number") and self.magic_number:
-                rem = [o for o in rem if getattr(o, "magic", 0) == self.magic_number]
-            if not rem:
-                break
-            time.sleep(0.05)
 
         self.pending_orders.clear()
         self.ticket_to_order_id.clear()
@@ -643,7 +626,6 @@ class MT5Broker:
         res = mt5.order_send(req)
         is_ok = res is not None and (res.retcode in (0, 10009, 10008, 10004) or getattr(res, "deal", 0) > 0 or getattr(res, "comment", "") == "ok")
         if not is_ok:
-            # Fallback retry with RETURN filling mode for zero-latency execution
             req["type_filling"] = mt5.ORDER_FILLING_RETURN
             res = mt5.order_send(req)
             is_ok = res is not None and (res.retcode in (0, 10009, 10008, 10004) or getattr(res, "deal", 0) > 0 or getattr(res, "comment", "") == "ok")
@@ -677,40 +659,7 @@ class MT5Broker:
             return record
         return None
 
-    def purge_duplicate_mt5_orders(self) -> int:
-        """
-        Scans all active MT5 pending orders for this symbol and purges any duplicate
-        orders that exist at the exact same price level.
-        Returns the number of duplicate orders purged.
-        """
-        if not MT5_AVAILABLE or not self.ensure_connected():
-            return 0
-        
-        ex_sym = self.get_exness_symbol(self.symbol)
-        ords = mt5.orders_get(symbol=ex_sym) if ex_sym else mt5.orders_get()
-        if not ords or len(ords) <= 1:
-            return 0
-        
-        seen_levels = {}
-        purged = 0
-        for o in ords:
-            if getattr(o, "magic", 0) != self.magic_number:
-                continue
-            key = (o.type, round(float(o.price_open), 2))
-            if key in seen_levels:
-                req = {"action": mt5.TRADE_ACTION_REMOVE, "order": int(o.ticket)}
-                mt5.order_send(req)
-                purged += 1
-            else:
-                seen_levels[key] = int(o.ticket)
-        return purged
-
     def modify_position_sl_tp(self, position_id: str, sl: Optional[float] = None, tp: Optional[float] = None) -> bool:
-        """
-        Sends TRADE_ACTION_SLTP or TRADE_ACTION_MODIFY request to MT5 server to update hardware 
-        Stop Loss (SL) and Take Profit (TP) directly on live MT5 positions or pending orders.
-        Guarantees that existing non-zero SL and TP levels are preserved when updating single targets.
-        """
         if not self.ensure_connected():
             return False
 
@@ -724,7 +673,6 @@ class MT5Broker:
         if not ticket and clean_pid.isdigit():
             ticket = int(clean_pid)
 
-        # 1. Try to find open position
         pos = None
         if ticket:
             pos_list = mt5.positions_get(ticket=ticket)
@@ -740,7 +688,6 @@ class MT5Broker:
                         ticket = int(p.ticket)
                         break
 
-        # 2. Handle Open Position SL/TP Modification (TRADE_ACTION_SLTP)
         if pos and ticket:
             symbol_info = self.get_cached_symbol_info(pos.symbol)
             digits = symbol_info.digits if symbol_info else 4
@@ -748,7 +695,6 @@ class MT5Broker:
             cur_p_sl = float(getattr(pos, "sl", 0.0) or 0.0)
             cur_p_tp = float(getattr(pos, "tp", 0.0) or 0.0)
 
-            # Use exact target SL/TP provided by engine, preserving current non-zero levels if None
             final_sl = round(sl, digits) if (sl is not None and sl > 0) else cur_p_sl
             final_tp = round(tp, digits) if (tp is not None and tp > 0) else cur_p_tp
 
@@ -775,18 +721,12 @@ class MT5Broker:
                     pos_obj.tp = final_tp
             return is_ok
 
-        # 3. Pending Orders: Do not attach SL to pending orders
         return True
 
     def modify_order(self, order_id: str, price: Optional[float] = None, sl: Optional[float] = None, tp: Optional[float] = None) -> bool:
-        """Alias method for modify_position_sl_tp to ensure 100% API compatibility."""
         return self.modify_position_sl_tp(order_id, sl=sl, tp=tp)
 
     def close_all_positions(self, exit_price: float = 0.0, timestamp: float = 0.0, symbol: Optional[str] = None, side: Optional[str] = None) -> List[dict]:
-        """
-        Closes positions on MT5 server with 3-tier filling mode fallbacks.
-        side: None (closes ALL), 'BUY' (closes BUY positions only), 'SELL' (closes SELL positions only).
-        """
         if not self.ensure_connected():
             return []
 
@@ -848,21 +788,19 @@ class MT5Broker:
         return closed
 
     def close_buy_positions(self, symbol: Optional[str] = None) -> List[dict]:
-        """Closes ONLY BUY positions on MT5 server."""
         return self.close_all_positions(symbol=symbol, side="BUY")
 
     def close_sell_positions(self, symbol: Optional[str] = None) -> List[dict]:
-        """Closes ONLY SELL positions on MT5 server."""
         return self.close_all_positions(symbol=symbol, side="SELL")
 
-    def process_tick(self, previous_price: float, current_price: float, timestamp: float, symbol: Optional[str] = None) -> List[Position]:
+    def process_tick(self, previous_price: float, current_price: float, timestamp: float, symbol: Optional[str] = None) -> List[Any]:
+        from core.engine import Position
         if not self.ensure_connected():
             return []
 
         sym = symbol or self.symbol
         exness_symbol = self.get_exness_symbol(sym)
 
-        # 1. Active pending orders & duplicate open position purge from MT5
         self.purge_duplicate_mt5_orders()
         self.purge_duplicate_mt5_positions()
         mt5_orders = mt5.orders_get(symbol=exness_symbol) if exness_symbol else None
@@ -871,22 +809,13 @@ class MT5Broker:
             for o in mt5_orders:
                 if o.magic == self.magic_number or getattr(self, "magic_number", None) is None:
                     active_order_tickets.add(o.ticket)
-                    if o.ticket not in self.ticket_to_order_id:
-                        order_type = "BUY_STOP" if o.type in [mt5.ORDER_TYPE_BUY_STOP, 4] else ("BUY_LIMIT" if o.type in [mt5.ORDER_TYPE_BUY_LIMIT, 2] else ("SELL_LIMIT" if o.type in [mt5.ORDER_TYPE_SELL_LIMIT, 3] else "SELL_STOP"))
-                        loc_ord = Order(order_type, o.price_open, o.volume_initial, o.time_setup)
-                        loc_ord.order_id = f"mt5_{o.ticket}"
-                        loc_ord.mt5_ticket = o.ticket
-                        self.ticket_to_order_id[o.ticket] = loc_ord.order_id
-                        self.pending_orders[loc_ord.order_id] = loc_ord
 
-        # Purge local orders ONLY if MT5 query succeeded
         if mt5_orders is not None:
             for ticket, oid in list(self.ticket_to_order_id.items()):
                 if ticket not in active_order_tickets:
                     self.pending_orders.pop(oid, None)
                     self.ticket_to_order_id.pop(ticket, None)
 
-        # 2. Active positions from MT5 filtered strictly for THIS symbol
         mt5_positions = mt5.positions_get(symbol=exness_symbol) if (MT5_AVAILABLE and exness_symbol) else None
         if mt5_positions is None and MT5_AVAILABLE:
             all_poss = mt5.positions_get()
@@ -899,7 +828,6 @@ class MT5Broker:
 
         if mt5_positions:
             for p in mt5_positions:
-                sym_upper = str(p.symbol).upper()
                 active_pos_tickets.add(p.ticket)
                 pid = self.ticket_to_position_id.get(p.ticket)
 
@@ -921,7 +849,6 @@ class MT5Broker:
                         pos_obj.sl = cur_p_sl
                         pos_obj.tp = cur_p_tp
 
-        # Purge local positions ONLY if MT5 query succeeded
         if mt5_positions is not None:
             for ticket, pid in list(self.ticket_to_position_id.items()):
                 if ticket not in active_pos_tickets:
@@ -941,10 +868,6 @@ class MT5Broker:
         return total_pnl
 
     def sync_history_from_mt5(self, days: int = 180, force: bool = False):
-        """
-        Fetches closed deal history directly from MT5 terminal for this bot's magic number,
-        synchronizing closed_trades and realized_pnl. Throttled to max once per 30s to prevent VPS lag.
-        """
         if not self.ensure_connected():
             return
 
@@ -1010,8 +933,8 @@ class SimulatedBroker:
         self.balance = float(initial_balance)
         self.symbol = symbol
         self.magic_number = magic_number
-        self.pending_orders: Dict[str, Order] = {}
-        self.open_positions: Dict[str, Position] = {}
+        self.pending_orders: Dict[str, Any] = {}
+        self.open_positions: Dict[str, Any] = {}
         self.closed_trades: List[dict] = []
         self.realized_pnl = 0.0
 
@@ -1035,7 +958,8 @@ class SimulatedBroker:
     def get_current_spread(self) -> float:
         return 0.0
 
-    def place_order(self, order_type: str, price: float, size: float, timestamp: float, tp: float = 0.0, sl: float = 0.0) -> Order:
+    def place_order(self, order_type: str, price: float, size: float, timestamp: float, tp: float = 0.0, sl: float = 0.0) -> Any:
+        from core.engine import Order
         order_id = f"sim_{int(time.time() * 1000)}_{len(self.pending_orders)+1}"
         order = Order(order_type, price, size, timestamp)
         order.order_id = order_id
@@ -1044,7 +968,7 @@ class SimulatedBroker:
         self.pending_orders[order_id] = order
         return order
 
-    def cancel_order(self, order_id: str) -> Optional[Order]:
+    def cancel_order(self, order_id: str) -> Any:
         return self.pending_orders.pop(order_id, None)
 
     def cancel_all_orders(self, symbol: Optional[str] = None):
@@ -1054,6 +978,9 @@ class SimulatedBroker:
                 self.pending_orders.pop(oid, None)
         else:
             self.pending_orders.clear()
+
+    def purge_duplicate_mt5_orders(self) -> int:
+        return 0
 
     def close_position(self, position_id: str, exit_price: float, timestamp: float) -> Optional[dict]:
         pos = self.open_positions.pop(position_id, None)
@@ -1093,14 +1020,21 @@ class SimulatedBroker:
     def close_sell_positions(self, symbol: Optional[str] = None) -> List[dict]:
         return self.close_all_positions(symbol=symbol, side="SELL")
 
-    def process_tick(self, previous_price: float, current_price: float, timestamp: float, symbol: Optional[str] = None) -> List[Position]:
+    def process_tick(self, previous_price: float, current_price: float, timestamp: float, symbol: Optional[str] = None) -> List[Any]:
+        from core.engine import Position
         triggered = []
         for order_id, order in list(self.pending_orders.items()):
             is_trig = False
             if order.type == "BUY_STOP" and current_price >= order.trigger_price:
                 is_trig = True
                 pos_type = "BUY"
+            elif order.type == "BUY_LIMIT" and current_price <= order.trigger_price:
+                is_trig = True
+                pos_type = "BUY"
             elif order.type == "SELL_STOP" and current_price <= order.trigger_price:
+                is_trig = True
+                pos_type = "SELL"
+            elif order.type == "SELL_LIMIT" and current_price >= order.trigger_price:
                 is_trig = True
                 pos_type = "SELL"
 
@@ -1120,7 +1054,6 @@ class SimulatedBroker:
             pos.profit = pnl
             total += pnl
         return total
-
 
     def sync(self):
         pass

@@ -1,27 +1,38 @@
 # Maty Trading Engine: Quantitative Architecture & Engine Technical Manual
 
 ## Executive Summary
-The **Maty Breakout Grid Engine** is an institutional-grade, multi-asset quantitative trading system engineered for MetaTrader 5 (Exness) and digital asset markets. It combines real-time tick velocity analysis, orderbook market regime detection, volume-weighted average price (WVAP) entry shifting, and a dual-layer hardware/software protection envelope.
+The **Maty Breakout Grid Engine** is an institutional-grade, multi-asset quantitative trading system engineered for MetaTrader 5 (Exness) and digital asset markets. It combines real-time tick velocity analysis, orderbook market regime detection, volume-weighted average price (VWAP) entry shifting, and a dual-layer hardware/software protection envelope.
 
 ---
 
-## 1. Core Architecture & System Components
+## 1. Modular Core Architecture & System Components
 
 ### 1.1 `BreakoutGridBot` Engine ([core/engine.py](file:///c:/Users/User/Desktop/Maty/core/engine.py))
-The `BreakoutGridBot` class orchestrates real-time price monitoring, grid trap generation, trailing profit locks, stop loss scaling, and automated cycle resets.
+The `BreakoutGridBot` class serves as the clean high-level coordinator (~464 lines) delegating heavy specialized workloads to modular sub-engines:
+* **`symbol`**: Asset ticker (e.g. `BTCUSD`, `ETHUSD`, `XAUUSD`, `GBPUSD`).
+* **`grid_levels`**: Number of trap orders deployed per side (default: `5`).
+* **`grid_gap`**: Distance percentage between grid levels (e.g., `0.08%`).
+* **`trap_offset`**: Initial buffer distance percentage from live Ask/Bid prices.
+* **`order_size`**: Baseline lot size per trade (e.g. `0.004 BTC` / `0.15 ETH` / `0.01 Gold`).
+* **`order_size_multiplier`**: Martingale lot expansion factor per level (default: `1.25x`).
+* **`target_profit`**: Baseline cycle profit target in USD (e.g. `$3.50 - $10.00`).
 
-Key Attributes:
-* `symbol`: Asset ticker (e.g. `BTCUSD`, `ETHUSD`, `XAUUSD`, `GBPUSD`).
-* `grid_levels`: Number of trap orders deployed per side (default: `5`).
-* `grid_gap`: Distance percentage between grid levels (e.g., `0.08%`).
-* `trap_offset`: Initial buffer distance percentage from live Ask/Bid prices.
-* `order_size`: Baseline lot size per trade (e.g. `0.004 BTC` / `0.15 ETH` / `0.01 Gold`).
-* `order_size_multiplier`: Martingale lot expansion factor per level (default: `1.25x`).
-* `target_profit`: Baseline cycle profit target in USD (e.g. `$3.50 - $10.00`).
+### 1.2 Sub-Module Engine Ecosystem
+1. **Grid Deployment Engine ([core/grid_deployment.py](file:///c:/Users/User/Desktop/Maty/core/grid_deployment.py)):**
+   - Handles `deploy_traps()`, `repair_grid()`, and `cleanup_stale_grid_orders()`.
+   - Executes full pre-deployment `cancel_all_orders()` order-wipe guards.
+   - Evaluates 100% decisive directional choices (`BUY_ONLY`, `SELL_ONLY`, `DUAL`, `AUTO_ADAPTIVE`).
+2. **Grid & Risk Engine ([core/grid_risk.py](file:///c:/Users/User/Desktop/Maty/core/grid_risk.py)):**
+   - Houses `process_engine_tick()`, pip sizing calculations, lot sanitization, and breakeven ratchets.
+3. **Auto-Reading Engine ([core/auto_reading.py](file:///c:/Users/User/Desktop/Maty/core/auto_reading.py)):**
+   - Houses `AutoReadingEngine`, category lot-clamping (`clamp_symbol_lot_size`), regime detection, SMC / Elliott Wave confluences, and `PAIR_SWEET_SPOTS` registry.
+4. **History & Self-Learning Tracker ([core/history_tracker.py](file:///c:/Users/User/Desktop/Maty/core/history_tracker.py)):**
+   - Records trade outcomes, calculates rolling win-rates and profit factors, and synchronizes cycle histories.
 
-### 1.2 `MT5Broker` Interface ([core/mt5_broker.py](file:///c:/Users/User/Desktop/Maty/core/mt5_broker.py))
+### 1.3 `MT5Broker` Interface ([core/mt5_broker.py](file:///c:/Users/User/Desktop/Maty/core/mt5_broker.py))
 Handles direct communication with the MetaTrader 5 terminal:
-* **0ms Latency Hardware Order Placement:** Places `BUY_STOP` and `SELL_STOP` orders directly on Exness servers.
+* **0ms Latency Hardware Order Placement:** Places `BUY_LIMIT`, `SELL_LIMIT`, `BUY_STOP`, and `SELL_STOP` orders directly on Exness servers.
+* **Multi-Level Order Purge:** Enforces price-level duplicate removal while supporting full `grid_levels` pending order capacity on MT5.
 * **Symbol Magic Number Generation:** Assigns unique magic numbers (`SYMBOL_MAGIC_NUMBERS`) per trading pair for multi-chart isolation.
 * **Auto-Reconnection & Ticket Cache:** Automatically reconciles live broker tickets upon network recovery.
 
@@ -72,7 +83,8 @@ Evaluates live price ticks inside `check_target_profit()`:
 
 ### 4.1 Per-Level Hardware SL/TP & Limit Order Linkage
 * **Per-Level Dynamic Target Calculation:** Every grid level ($i=0, 1, 2, 3, 4, 5...$) calculates level-specific valid SL and TP targets relative to that order's exact trigger price (`buy_px` / `sell_px`), completely eliminating `Invalid SL/TP` broker rejections.
-* **`BUY_LIMIT` & `SELL_LIMIT` TP Linkage:** `BUY_LIMIT` Take Profit targets are linked directly to opposite `SELL_LIMIT` price levels, and `SELL_LIMIT` Take Profit targets are linked directly to opposite `BUY_LIMIT` price levels for 100% full-range oscillation capture.
+* **0ms Latency Hardware Order Placement:** Places `BUY_STOP` and `SELL_STOP` breakout momentum traps directly on Exness servers.
+* **`BUY_STOP` & `SELL_STOP` Breakout Matrix:** `BUY_STOP` breakout traps trigger above Ask on bullish momentum, and `SELL_STOP` breakout traps trigger below Bid on bearish momentum for 100% full-range volatility capture.
 * **Dynamic Real-Time Trailing Stop:** Real-time SL ratchets behind live market price (`current_price - trailing_dist` for BUYs, `current_price + trailing_dist` for SELLs) and updates the MT5 server via `TRADE_ACTION_SLTP`. One-way protection guarantees SL **never moves against favorable price action**.
 * **Preservation Shield (`sl=None`, `tp=None`):** Updating SL alone retains existing `cur_p_tp`, and updating TP alone retains existing `cur_p_sl`, preventing accidental parameter wiping.
 

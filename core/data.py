@@ -476,7 +476,7 @@ def calc_adx(highs: np.ndarray, lows: np.ndarray, closes: np.ndarray, period: in
     ADX < 20.0 -> Weak / Choppy Market
     """
     n = len(closes)
-    if n < period * 2:
+    if n < period + 2:
         return 20.0
     up_moves = []
     down_moves = []
