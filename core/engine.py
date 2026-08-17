@@ -2309,42 +2309,9 @@ class BreakoutGridBot:
             # Basket Whole Unit Architecture: Always keep open positions unified as a single basket.
             # When profit target / reversal is reached, close ALL open positions at once, wipe pending orders, and start over!
 
-            # 5b. DYNAMIC COUNTER-HEDGE REVERSAL LOCK (Converts single-side trend drawdown into market-neutral dual basket)
-            # If a basket enters floating drawdown >= 2% to 6% during a trend surge,
-            # automatically deploy a 1.5x counter-hedge order to flip net volume in favor of the trend!
-            if len(self.broker.open_positions) >= 1 and not hedge_lock_hit:
-                try:
-                    total_buy_lots = sum(p.size for p in buy_positions)
-                    total_sell_lots = sum(p.size for p in sell_positions)
-                    net_vol = total_buy_lots - total_sell_lots
-
-                    # Net Volume Imbalance Counter-Hedge: Instant 2% zero-wait threshold on momentum reversal, 6% standard floor
-                    if abs(net_vol) > 0.0001:
-                        is_fast_surge = is_reversing or (len(getattr(self, "price_history_ticks", [])) >= 3 and abs(avg_delta) >= 0.03)
-                        hedge_pct = 0.02 if is_fast_surge else 0.06
-                        hedge_threshold = effective_stop_loss * hedge_pct
-
-                        hedge_side = "SELL_STOP" if net_vol > 0 else "BUY_STOP"
-                        has_existing_hedge = any(getattr(o, "type", "") == hedge_side for o in self.broker.pending_orders.values())
-                        if float_pnl <= -hedge_threshold and not has_existing_hedge and len(self.broker.pending_orders) < 2:
-                            hedge_dist_pct = getattr(self, "trap_offset", 0.07) * 0.50
-                            hedge_px = round(current_price * (1.0 - hedge_dist_pct / 100.0) if hedge_side == "SELL_STOP" else current_price * (1.0 + hedge_dist_pct / 100.0), 2)
-                            hedge_size = max(0.01, round(abs(net_vol) * 1.50, 4))
-                            
-                            sym_n = str(getattr(self.broker, "symbol", "")).upper()
-                            if "BTC" in sym_n: h_tp_dist = 50.0
-                            elif any(x in sym_n for x in ["XAU", "GOLD", "PAXG"]): h_tp_dist = 3.00
-                            elif "ETH" in sym_n: h_tp_dist = 3.00
-                            elif "SOL" in sym_n: h_tp_dist = 0.50
-                            else: h_tp_dist = current_price * 0.001
-                            
-                            hedge_tp_px = round(hedge_px - h_tp_dist if hedge_side == "SELL_STOP" else hedge_px + h_tp_dist, 2)
-                            try:
-                                self.broker.place_order(hedge_side, hedge_px, hedge_size, timestamp, tp=hedge_tp_px)
-                            except Exception:
-                                pass
-                except Exception as hedge_calc_err:
-                    print(f"Notice: Counter-hedge evaluation guard: {hedge_calc_err}")
+            # 5b. Basket Whole Unit Architecture:
+            # All grid orders are placed exclusively by deploy_traps(). Secondary order placement pathways are disabled.
+            pass
 
             # 5c. 4+ FILLS UNFILLED PENDING TRAP PURGE & MATHEMATICAL RECOVERY ENGINE
             # Permanently disabled to eliminate order wiping loops and allow stationary grid traps to remain.
