@@ -146,6 +146,7 @@ def main():
 
     logging.info(f"Initialized {len(markets)} pairs. Starting 24/7 execution loop...")
 
+    last_state_save = 0.0
     try:
         while True:
             now = time.time()
