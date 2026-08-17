@@ -1053,6 +1053,40 @@ with tab_desk:
 
                         open_pos  = len(brk.open_positions)
                         pend_ord  = len(brk.pending_orders)
+
+                        if MT5_AVAILABLE:
+                            try:
+                                import MetaTrader5 as mt5_chk
+                                ex_s_chk = getattr(brk, "get_exness_symbol", lambda x: x)(sym_code) or sym_code
+                                chk_aliases = {ex_s_chk.upper(), sym_code.upper()}
+                                if any(x in sym_code.upper() for x in ["PAXG", "XAU", "GOLD"]):
+                                    chk_aliases.update(["XAUUSD", "GOLD", "PAXGUSDT", "XAUUSDm", "XAUUSDc"])
+                                
+                                live_o = None
+                                for _a in chk_aliases:
+                                    live_o = mt5_chk.orders_get(symbol=_a)
+                                    if live_o:
+                                        break
+                                if not live_o:
+                                    _all_o = mt5_chk.orders_get()
+                                    if _all_o:
+                                        live_o = [o for o in _all_o if any(_a in str(o.symbol).upper() for _a in chk_aliases)]
+                                if live_o:
+                                    pend_ord = max(pend_ord, len(live_o))
+                                    
+                                live_p = None
+                                for _a in chk_aliases:
+                                    live_p = mt5_chk.positions_get(symbol=_a)
+                                    if live_p:
+                                        break
+                                if not live_p:
+                                    _all_p = mt5_chk.positions_get()
+                                    if _all_p:
+                                        live_p = [p for p in _all_p if any(_a in str(p.symbol).upper() for _a in chk_aliases)]
+                                if live_p:
+                                    open_pos = max(open_pos, len(live_p))
+                            except Exception:
+                                pass
                         realized  = getattr(brk, "realized_pnl", 0.0)
                         cycles    = len(getattr(bot, "cycle_history", []))
 
