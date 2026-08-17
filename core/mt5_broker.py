@@ -301,13 +301,13 @@ class MT5Broker:
             if len(existing_positions) >= 2 or (total_open_vol + size) > 0.05:
                 return Order(order_type, trigger_price, size, timestamp)
 
-        for p_ord in list(self.pending_orders.values()):
-            ord_t = getattr(p_ord, "timestamp", getattr(p_ord, "time", 0.0))
-            if getattr(p_ord, "type", "") == order_type and (timestamp - ord_t) < 15.0:
-                return p_ord
-
         sym_u_name = str(exness_symbol).upper()
-        min_gap_dist = 60.0 if "BTC" in sym_u_name else (5.0 if "ETH" in sym_u_name else (5.0 if any(x in sym_u_name for x in ["XAU", "GOLD", "PAXG"]) else 0.0015))
+        px_tolerance = 2.0 if "BTC" in sym_u_name else (0.20 if any(x in sym_u_name for x in ["XAU", "GOLD", "PAXG"]) else (0.50 if "ETH" in sym_u_name else 0.0001))
+
+        for p_ord in list(self.pending_orders.values()):
+            ord_px = getattr(p_ord, "trigger_price", getattr(p_ord, "price_open", 0.0))
+            if getattr(p_ord, "type", "") == order_type and abs(trigger_price - ord_px) <= px_tolerance:
+                return p_ord
         existing_orders = mt5.orders_get(symbol=exness_symbol) if MT5_AVAILABLE else ()
         if existing_orders:
             # Prevent placing duplicate or stacked orders within min_gap_dist proximity
@@ -315,7 +315,7 @@ class MT5Broker:
                 is_ext_buy = ext_o.type in [mt5.ORDER_TYPE_BUY_STOP, mt5.ORDER_TYPE_BUY_LIMIT, 2, 4]
                 is_new_buy = mt5_type in [mt5.ORDER_TYPE_BUY_STOP, mt5.ORDER_TYPE_BUY_LIMIT, 2, 4]
                 if is_ext_buy == is_new_buy:
-                    if abs(float(ext_o.price_open) - trigger_price) < (min_gap_dist * 0.75):
+                    if abs(float(ext_o.price_open) - trigger_price) <= px_tolerance:
                         loc_ord = Order(order_type, ext_o.price_open, getattr(ext_o, "volume_initial", size), getattr(ext_o, "time_setup", timestamp))
                         loc_ord.order_id = f"mt5_{ext_o.ticket}"
                         loc_ord.mt5_ticket = ext_o.ticket
