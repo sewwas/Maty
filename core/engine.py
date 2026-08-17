@@ -1753,13 +1753,9 @@ class BreakoutGridBot:
         cur_open = len(self.broker.open_positions)
         self._prev_open_pos_count = cur_open
 
-        # ── MAX 2 ACTIVE OPEN POSITIONS HARD CAP ──────────────────────────────────
-        # As soon as 2 positions fill, instantly cancel remaining pending traps to prevent over-exposure!
-        if cur_open >= 2 and len(self.broker.pending_orders) > 0:
-            try:
-                self.broker.cancel_all_orders()
-            except Exception:
-                pass
+        # ── ACTIVE POSITION RUNNER SHIELD ──────────────────────────────────────────
+        # Pending orders stay placed on MT5 so price can fill opposite traps cleanly!
+        pass
 
         if self.deployed and had_open > 0 and cur_open == 0:
             try:
