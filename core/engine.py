@@ -1322,8 +1322,16 @@ class BreakoutGridBot:
                 except Exception:
                     pass
 
-            off_ratio = (offset_pct / 100.0) if offset_pct >= 0.005 else offset_pct
-            gap_ratio = (gap_pct / 100.0) if gap_pct >= 0.005 else gap_pct
+            off_ratio = (offset_pct / 100.0) if offset_pct >= 0.50 else (offset_pct if offset_pct < 0.01 else offset_pct / 100.0)
+            gap_ratio = (gap_pct / 100.0) if gap_pct >= 0.50 else (gap_pct if gap_pct < 0.01 else gap_pct / 100.0)
+
+            # Symbol-specific tight percentage clamping for realistic grid gaps
+            if any(x in sym_name for x in ["XAU", "PAXG", "GOLD"]):
+                gap_ratio = min(0.0015, max(0.0005, gap_ratio))     # Gold grid gap: $2.20 to $6.60 per level
+                off_ratio = min(0.0015, max(0.0005, off_ratio))
+            elif "BTC" in sym_name:
+                gap_ratio = min(0.0020, max(0.0005, gap_ratio))     # BTC grid gap: $31.70 to $120.00 per level
+                off_ratio = min(0.0020, max(0.0005, off_ratio))
 
             buy_offset_val = current_price * off_ratio if off_ratio > 0 else current_price * 0.001
             gap_val = current_price * gap_ratio if gap_ratio > 0 else current_price * 0.001
@@ -1412,8 +1420,8 @@ class BreakoutGridBot:
 
             placed_count = 0
             pt_val = 0.01 if any(x in sym_name for x in ["XAU", "PAXG", "GOLD"]) else (0.1 if "BTC" in sym_name else 0.0001)
-            fast_buy_offset = max(b_min_stop + (pt_val * 5.0), buy_offset_val * 0.15)
-            fast_sell_offset = max(b_min_stop + (pt_val * 5.0), sell_offset_val * 0.15)
+            fast_buy_offset = max(b_min_stop + 0.50, buy_offset_val)
+            fast_sell_offset = max(b_min_stop + 0.50, sell_offset_val)
 
             for i in range(effective_levels):
                 if i == 0:
