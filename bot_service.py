@@ -198,8 +198,11 @@ def main():
                     except Exception as tick_err:
                         logging.error(f"[{sym}] Tick error: {tick_err}")
 
-            save_state(markets)
-            time.sleep(2.0)
+            if now - last_state_save >= 15.0:
+                last_state_save = now
+                save_state(markets)
+
+            time.sleep(1.0)
 
     except KeyboardInterrupt:
         logging.info("Shutting down bot service...")

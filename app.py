@@ -178,10 +178,15 @@ def get_global_vps_trading_engine():
         }
 
     def _vps_daemon_worker():
-        print("⚡ [Profity AI Engine] 24/7 VPS Background Daemon Started! Processing ticks 24/7 at 0.5s ultra-speed...")
+        print("⚡ [Profity AI Engine] Streamlit Background Monitor Active!")
         _last_state_save = 0.0
         while True:
             try:
+                # If dedicated 24/7 bot_service daemon is running, skip duplicate tick processing
+                if os.path.exists("bot_service.lock"):
+                    time.sleep(2.0)
+                    continue
+
                 now = time.time()
                 for sym_code, m_data in shared_markets.items():
                     live_p = get_live_price(sym_code)
@@ -200,14 +205,14 @@ def get_global_vps_trading_engine():
                         except Exception as tick_err:
                             print(f"[{sym_code}] Background tick error: {tick_err}")
 
-                # Persist state every 10s to keep disk I/O light and CPU ultra-fast
-                if now - _last_state_save >= 10.0:
+                # Persist state every 15s to keep disk I/O light and CPU ultra-fast
+                if now - _last_state_save >= 15.0:
                     _last_state_save = now
                     save_bot_state_dict(shared_markets)
             except Exception as daemon_err:
                 print(f"[Profity AI Engine] Daemon loop notice: {daemon_err}")
 
-            time.sleep(0.50)  # 500ms Ultra-Fast High-Speed VPS Tick Loop
+            time.sleep(1.0)
 
     t = threading.Thread(target=_vps_daemon_worker, daemon=True)
 
