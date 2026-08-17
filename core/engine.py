@@ -1328,8 +1328,19 @@ class BreakoutGridBot:
             buy_offset_val = current_price * off_ratio if off_ratio > 0 else current_price * 0.001
             gap_val = current_price * gap_ratio if gap_ratio > 0 else current_price * 0.001
             
-            # Enforce noise-immune minimum trap offset from current price
-            min_offset_dist = 60.0 if "BTC" in sym_name else (5.0 if "ETH" in sym_name else (5.0 if any(x in sym_name for x in ["XAU", "PAXG", "GOLD"]) else 0.0015))
+            # Enforce noise-immune minimum trap offset from current price, respecting live broker trade_stops_level
+            b_min_stop = 0.0
+            if hasattr(self.broker, "get_cached_symbol_info") and hasattr(self.broker, "get_exness_symbol"):
+                try:
+                    ex_s = self.broker.get_exness_symbol(sym_name)
+                    s_info = self.broker.get_cached_symbol_info(ex_s)
+                    if s_info:
+                        b_min_stop = max((getattr(s_info, "trade_stops_level", 0) or 0) * s_info.point, s_info.point * 50.0)
+                except Exception:
+                    pass
+
+            base_min_off = 60.0 if "BTC" in sym_name else (5.0 if "ETH" in sym_name else (5.0 if any(x in sym_name for x in ["XAU", "PAXG", "GOLD"]) else 0.0015))
+            min_offset_dist = max(b_min_stop + (gap_val * 0.5), base_min_off)
             buy_offset_val = max(float(buy_offset_val), min_offset_dist)
             sell_offset_val = buy_offset_val
             
@@ -1399,8 +1410,8 @@ class BreakoutGridBot:
                 major_15m_high = current_price + min_sl_dist
 
             placed_count = 0
-            fast_buy_offset = max(min_offset_dist * 0.35, buy_offset_val * 0.25)
-            fast_sell_offset = max(min_offset_dist * 0.35, sell_offset_val * 0.25)
+            fast_buy_offset = max(b_min_stop + 0.50, buy_offset_val * 0.50)
+            fast_sell_offset = max(b_min_stop + 0.50, sell_offset_val * 0.50)
 
             for i in range(effective_levels):
                 if i == 0:
