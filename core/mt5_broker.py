@@ -418,30 +418,52 @@ class MT5Broker:
 
     def purge_duplicate_mt5_orders(self) -> int:
         """
-        Scans MT5 server for duplicate pending orders (same symbol, type, and rounded price level)
-        and cancels redundant duplicates, keeping exactly 1 unique order per price level.
+        Scans MT5 server for pending orders across all symbol aliases.
+        Strictly enforces max 1 BUY order and 1 SELL order (max 2 total pending orders per symbol).
+        Cancels all extra/duplicate pending orders on MT5 immediately.
         """
         if not self.ensure_connected():
             return 0
         exness_symbol = self.get_exness_symbol(self.symbol)
-        orders = mt5.orders_get(symbol=exness_symbol) if exness_symbol else None
+
+        orders = []
+        for s_alias in set([exness_symbol, self.symbol, f"{exness_symbol}m", f"{exness_symbol}c", "XAUUSD", "XAUUSDm"]):
+            if s_alias and MT5_AVAILABLE:
+                ords = mt5.orders_get(symbol=s_alias)
+                if ords:
+                    orders.extend(list(ords))
+
+        if not orders and MT5_AVAILABLE:
+            all_o = mt5.orders_get()
+            if all_o:
+                clean_target = "XAU" if any(x in self.symbol.upper() for x in ["XAU", "GOLD", "PAXG"]) else self.symbol.replace("USDT", "").replace("USD", "")
+                orders = [o for o in all_o if clean_target in str(o.symbol).upper()]
+
         if not orders:
             return 0
 
-        seen_prices = {}
-        purged = 0
-        for o in list(orders):
+        unique_orders_dict = {o.ticket: o for o in orders}
+        unique_orders = list(unique_orders_dict.values())
+
+        by_side = {"BUY": [], "SELL": []}
+        for o in unique_orders:
             if hasattr(self, "magic_number") and self.magic_number and getattr(o, "magic", 0) != self.magic_number:
                 continue
-            round_dp = 2 if "BTC" in str(o.symbol).upper() or "XAU" in str(o.symbol).upper() else 4
-            key = (o.symbol, o.type, round(o.price_open, round_dp))
-            if key in seen_prices:
-                req = {"action": mt5.TRADE_ACTION_REMOVE, "order": int(o.ticket)}
-                res = mt5.order_send(req)
-                if res and res.retcode in (0, 10009, 10008, 10004):
-                    purged += 1
-            else:
-                seen_prices[key] = o.ticket
+            is_buy = o.type in [mt5.ORDER_TYPE_BUY_STOP, mt5.ORDER_TYPE_BUY_LIMIT, 2, 4]
+            side_key = "BUY" if is_buy else "SELL"
+            by_side[side_key].append(o)
+
+        purged = 0
+        for side_key, side_orders in by_side.items():
+            if len(side_orders) > 1:
+                side_orders.sort(key=lambda x: getattr(x, "time_setup", 0), reverse=True)
+                for extra_o in side_orders[1:]:
+                    req = {"action": mt5.TRADE_ACTION_REMOVE, "order": int(extra_o.ticket)}
+                    res = mt5.order_send(req)
+                    if res and res.retcode in (0, 10009, 10008, 10004):
+                        purged += 1
+                        self.pending_orders.pop(f"mt5_{extra_o.ticket}", None)
+                        self.ticket_to_order_id.pop(extra_o.ticket, None)
         return purged
 
     def purge_duplicate_mt5_positions(self) -> int:
