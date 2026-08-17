@@ -244,7 +244,7 @@ class MT5Broker:
             positions = mt5.positions_get(symbol=exness_symbol) if exness_symbol else mt5.positions_get()
             # Filter by magic number so multi-symbol bots don't block each other
             n_orders = sum(1 for o in orders if getattr(o, "magic", 0) == self.magic_number) if orders else 0
-            n_positions = len(positions) if positions else 0
+            n_positions = sum(1 for p in positions if getattr(p, "magic", 0) == self.magic_number) if positions else 0
             return n_orders + n_positions
         except Exception:
             return len(self.pending_orders) + len(self.open_positions)
@@ -1102,8 +1102,27 @@ class SimulatedBroker:
             if is_trig:
                 self.pending_orders.pop(order_id, None)
                 pos = Position(pos_type, order.trigger_price, order.size, timestamp)
+                pos.tp = float(getattr(order, "tp", 0.0) or 0.0)  # Transfer TP from order
+                pos.sl = float(getattr(order, "sl", 0.0) or 0.0)  # Transfer SL from order
                 self.open_positions[pos.position_id] = pos
                 triggered.append(pos)
+
+        # Software-side TP/SL enforcement for simulated broker
+        for pid, pos in list(self.open_positions.items()):
+            pos_tp = float(getattr(pos, "tp", 0.0) or 0.0)
+            pos_sl = float(getattr(pos, "sl", 0.0) or 0.0)
+            pos_type_str = str(getattr(pos, "type", "")).upper()
+            if "BUY" in pos_type_str:
+                if pos_tp > 0 and current_price >= pos_tp:
+                    self.close_position(pid, current_price, timestamp)
+                elif pos_sl > 0 and current_price <= pos_sl:
+                    self.close_position(pid, current_price, timestamp)
+            elif "SELL" in pos_type_str:
+                if pos_tp > 0 and current_price <= pos_tp:
+                    self.close_position(pid, current_price, timestamp)
+                elif pos_sl > 0 and current_price >= pos_sl:
+                    self.close_position(pid, current_price, timestamp)
+
         return triggered
 
     def get_floating_pnl(self, current_price: float) -> float:

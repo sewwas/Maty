@@ -109,6 +109,9 @@ def enforce_position_tp(self, current_price: float, timestamp: float) -> int:
                 tp_hit = True
 
             if tp_hit:
+                # Skip if runner mode is active — let check_target_profit handle the basket exit
+                if getattr(self, "in_runner_mode", False):
+                    continue
                 print(f"[{sym_name}] ✅ [SOFTWARE TP HIT] {pos_type} #{pos_id} | Price: {current_price:.{digits}f} | TP: {pos_tp:.{digits}f} — Force closing!")
                 try:
                     self.broker.close_position(pos_id, current_price, timestamp)
@@ -151,7 +154,9 @@ def check_target_profit(self, current_price: float, timestamp: float) -> Optiona
         exit_reason = "STOP_LOSS"
     elif self.in_runner_mode:
         lock_pct = float(getattr(self, "profit_lock_pct", 0.80) or 0.80)
-        trailing_floor = max(max_pnl * lock_pct, 0.10)   # Min $0.10 floor: never exit runner mode at a net loss
+        # Floor: at least 50% of target OR 80% of peak — prevents near-zero exits that lose on spread+commission
+        min_floor = max(effective_target * 0.50, 0.50)
+        trailing_floor = max(max_pnl * lock_pct, min_floor)
         if total_pnl <= trailing_floor:
             exit_triggered = True
             exit_reason = "RUNNER_MODE_TRAILING_LOCK"
@@ -214,10 +219,12 @@ def process_engine_tick(self, previous_price: float, current_price: float, times
     has_orders = len(self.broker.pending_orders) > 0 or len(self.broker.open_positions) > 0
     if not has_orders and hasattr(self.broker, "ensure_connected"):
         try:
+            if not self.broker.ensure_connected():
+                return None
             ex_s = self.broker.get_exness_symbol(self.symbol) if hasattr(self.broker, "get_exness_symbol") else self.symbol
             if hasattr(self.broker, "pending_orders") and hasattr(self.broker, "ticket_to_order_id"):
                 import MetaTrader5 as mt5_tick_check
-                mt5_o = mt5_tick_check.orders_get(symbol=ex_s) if (mt5_tick_check and mt5_tick_check.initialize()) else None
+                mt5_o = mt5_tick_check.orders_get(symbol=ex_s) if mt5_tick_check else None
                 if mt5_o:
                     has_orders = True
                     self.deployed = True
@@ -311,9 +318,17 @@ def process_engine_tick(self, previous_price: float, current_price: float, times
         self.deploy_price = 0.0
         self.breakeven_activated = False
         self.in_runner_mode = False
+        self.max_floating_pnl = -float("inf")  # Reset peak PnL tracker for next cycle
         self._runner_exit_cooldown_until = 0.0
         self._last_deploy_error_time = 0.0
         self._prev_open_pos_count = 0
+
+        # Sync broker state before redeploying to avoid position cap stall from delayed MT5 reporting
+        if hasattr(self.broker, "process_tick"):
+            try:
+                self.broker.process_tick(current_price, current_price, timestamp)
+            except Exception:
+                pass
 
         if getattr(self, "auto_restart", True):
             self.deploy_traps(current_price, timestamp, force=True)
@@ -385,11 +400,19 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
         
         if getattr(self, "use_auto_reading", False) and hasattr(self, "auto_reading_engine"):
             try:
-                from core.data import get_historical_klines, calculate_technical_indicators, get_order_book_depth, get_economic_calendar
+                from core.data import get_historical_klines, calculate_technical_indicators
+                try:
+                    from core.data import get_order_book_depth
+                    ob = get_order_book_depth(sym_name)
+                except (ImportError, AttributeError, Exception):
+                    ob = {}
+                try:
+                    from core.data import get_economic_calendar
+                    news = get_economic_calendar()
+                except (ImportError, AttributeError, Exception):
+                    news = []
                 klines_df = get_historical_klines(sym_name, interval="1m", limit=100)
                 tech = calculate_technical_indicators(klines_df) if klines_df is not None else {}
-                ob = get_order_book_depth(sym_name) if hasattr(core.data, "get_order_book_depth") else {}
-                news = get_economic_calendar() if hasattr(core.data, "get_economic_calendar") else []
                 bal = float(getattr(self.broker, "balance", 1000.0) or 1000.0)
                 
                 eval_res = self.auto_reading_engine.evaluate_market_and_account(
@@ -574,6 +597,7 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
 
         if placed_count > 0 or len(self.broker.pending_orders) > 0:
             self.deployed = True
+            self.deploy_price = current_price  # Store deploy center for stale order cleanup
             self.last_deploy_time = timestamp
             print(f"[{sym_name}] ⚡ [GRID DEPLOYED] {placed_count} Traps @ ${current_price:,.2f} | Gap: ${gap_val:.2f} | Offset: ${buy_offset_val:.2f} | Lot: {self.order_size}")
         else:
@@ -626,9 +650,9 @@ def cleanup_stale_grid_orders(self, current_price: float) -> int:
             )
             if eval_res and isinstance(eval_res, dict):
                 self.last_auto_eval = eval_res
-            buy_offset_val = center_price * (eval_res["buy_offset_pct"] / 100.0)
-            sell_offset_val = center_price * (eval_res["sell_offset_pct"] / 100.0)
-            gap_val = center_price * (eval_res["dynamic_gap_pct"] / 100.0)
+            buy_offset_val = center_price * (float(eval_res.get("buy_offset_pct", 0.07)) / 100.0)
+            sell_offset_val = center_price * (float(eval_res.get("sell_offset_pct", 0.07)) / 100.0)
+            gap_val         = center_price * (float(eval_res.get("dynamic_gap_pct", 0.07)) / 100.0)
         except Exception:
             buy_offset_val, gap_val = self.calculate_offset_and_gap(center_price, self.grid_gap, self.trap_offset)
             sell_offset_val = buy_offset_val
@@ -704,15 +728,30 @@ def record_trade_outcome(self, pnl: float, exit_reason: str, duration: float):
         self.cycle_history = []
 
     now_ts = time.time()
+    # Collect current price context from broker for portal traceability
+    deploy_px = float(getattr(self, "deploy_price", 0.0) or 0.0)
+    sym_name = str(getattr(self.broker, "symbol", getattr(self, "symbol_code", "")))
+
+    # Gather entry/exit price from closed_trades if available
+    entry_px, exit_px = 0.0, 0.0
+    if hasattr(self.broker, "closed_trades") and self.broker.closed_trades:
+        last_trade = self.broker.closed_trades[-1]
+        entry_px = float(last_trade.get("entry_price", 0.0))
+        exit_px  = float(last_trade.get("exit_price",  0.0))
+
     outcome = {
-        "timestamp": now_ts,
-        "exit_time": now_ts,
-        "pnl": round(float(pnl), 2),
-        "total_pnl": round(float(pnl), 2),
-        "exit_reason": exit_reason,
-        "duration": round(float(duration), 1),
-        "is_win": pnl > 0.0,
-        "cycle_id": getattr(self, "current_cycle_id", len(self.cycle_history) + 1)
+        "timestamp":    now_ts,
+        "exit_time":    now_ts,
+        "symbol":       sym_name,
+        "pnl":          round(float(pnl), 2),
+        "total_pnl":    round(float(pnl), 2),
+        "exit_reason":  exit_reason,
+        "duration":     round(float(duration), 1),
+        "is_win":       pnl > 0.0,
+        "cycle_id":     getattr(self, "current_cycle_id", len(self.cycle_history) + 1),
+        "deploy_price": deploy_px,
+        "entry_price":  entry_px,
+        "exit_price":   exit_px,
     }
     self.trade_history.append(outcome)
     if len(self.trade_history) > 100:
@@ -828,7 +867,6 @@ def trail_stop_loss_5m_structure(self, current_price: float, timestamp: float) -
     last_trail_time = getattr(self, "_last_5m_sl_trail_time", 0.0)
     if now_ts - last_trail_time < 0.5:
         return 0
-
     self._last_5m_sl_trail_time = now_ts
 
     sym_name = str(getattr(self.broker, "symbol", getattr(self, "symbol_code", "BTCUSDT"))).upper()
@@ -838,7 +876,17 @@ def trail_stop_loss_5m_structure(self, current_price: float, timestamp: float) -
         import numpy as np
         from core.data import get_historical_klines
         sym_fetch = "PAXGUSDT" if any(x in sym_name for x in ["XAU", "GOLD", "PAXG"]) else (f"{sym_name}USDT" if ("USD" in sym_name and "USDT" not in sym_name) else sym_name)
-        df_5m = get_historical_klines(sym_fetch, interval="5m", limit=20)
+
+        # Only refresh 5m klines every 60s — 5m candles close every 300s, fetching every 0.5s is wasteful
+        _klines_cache = getattr(self, "_5m_klines_cache", None)
+        _klines_ts    = getattr(self, "_5m_klines_ts", 0.0)
+        if _klines_cache is None or (now_ts - _klines_ts) > 60.0:
+            df_5m = get_historical_klines(sym_fetch, interval="5m", limit=20)
+            self._5m_klines_cache = df_5m
+            self._5m_klines_ts    = now_ts
+        else:
+            df_5m = _klines_cache
+
         if df_5m is None or df_5m.empty or len(df_5m) < 5:
             return 0
 
@@ -925,9 +973,15 @@ def align_basket_take_profits(self, current_price: float, timestamp: float) -> i
                 cur_tp = round(float(getattr(pos_obj, "tp", 0.0) or 0.0), digits)
                 if cur_tp != nearest_tp:
                     cur_sl = float(getattr(pos_obj, "sl", 0.0) or 0.0)
+                    # Skip if MT5 already has this TP set (avoid redundant round-trips)
+                    last_set_tp = getattr(pos_obj, "_last_set_tp", None)
+                    if last_set_tp == nearest_tp:
+                        setattr(pos_obj, "tp", nearest_tp)
+                        continue
                     try:
                         if self.broker.modify_position_sl_tp(pos_id, sl=cur_sl if cur_sl > 0 else None, tp=nearest_tp):
                             setattr(pos_obj, "tp", nearest_tp)
+                            setattr(pos_obj, "_last_set_tp", nearest_tp)
                             modified_count += 1
                             print(f"[{sym_name}] 🎯 [BASKET TP ALIGNED] BUY Position #{pos_id} TP unified to nearest target: ${nearest_tp:,.3f}")
                     except Exception:
@@ -942,9 +996,15 @@ def align_basket_take_profits(self, current_price: float, timestamp: float) -> i
                 cur_tp = round(float(getattr(pos_obj, "tp", 0.0) or 0.0), digits)
                 if cur_tp != nearest_tp:
                     cur_sl = float(getattr(pos_obj, "sl", 0.0) or 0.0)
+                    # Skip if MT5 already has this TP set (avoid redundant round-trips)
+                    last_set_tp = getattr(pos_obj, "_last_set_tp", None)
+                    if last_set_tp == nearest_tp:
+                        setattr(pos_obj, "tp", nearest_tp)
+                        continue
                     try:
                         if self.broker.modify_position_sl_tp(pos_id, sl=cur_sl if cur_sl > 0 else None, tp=nearest_tp):
                             setattr(pos_obj, "tp", nearest_tp)
+                            setattr(pos_obj, "_last_set_tp", nearest_tp)
                             modified_count += 1
                             print(f"[{sym_name}] 🎯 [BASKET TP ALIGNED] SELL Position #{pos_id} TP unified to nearest target: ${nearest_tp:,.3f}")
                     except Exception:

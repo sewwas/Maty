@@ -24,6 +24,8 @@ class Order:
         self.trigger_price = trigger_price
         self.size = size
         self.timestamp = timestamp
+        self.tp = 0.0   # Take Profit price (0 = not set)
+        self.sl = 0.0   # Stop Loss price (0 = not set)
 
     def to_dict(self):
         return {
