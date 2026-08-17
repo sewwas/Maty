@@ -901,6 +901,7 @@ def sync_trap_mode_realtime(self, current_price: float, timestamp: float) -> boo
             curr_mode = "BOTH_SIDES"
 
     last_mode = getattr(self, "_last_synced_side_mode", None)
+
     mode_changed = (last_mode is not None and curr_mode != last_mode)
     self._last_synced_side_mode = curr_mode
 
