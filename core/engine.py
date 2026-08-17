@@ -2349,6 +2349,7 @@ class BreakoutGridBot:
                         sym_n = str(getattr(self.broker, "symbol", "")).upper()
                         digits = 4 if any(x in sym_n for x in ["DOGE", "GBP", "EUR"]) else 2
                         min_sl_dist = 1200.0 if "BTC" in sym_n else (80.0 if "ETH" in sym_n else (35.0 if any(x in sym_n for x in ["XAU", "PAXG", "GOLD"]) else 0.0200))
+                        min_tp_dist = 1800.0 if "BTC" in sym_n else (120.0 if "ETH" in sym_n else (50.0 if any(x in sym_n for x in ["XAU", "PAXG", "GOLD"]) else 0.0300))
                         
                         # Fetch 5m Market Structure Highs & Lows (5m Swing Low & 5m Swing High)
                         try:
@@ -2372,21 +2373,48 @@ class BreakoutGridBot:
                             cur_sl = getattr(pos, 'sl', 0.0)
                             cur_tp = getattr(pos, 'tp', 0.0)
                             
-                            # BUY Trailing SL: Anchors below 5m Swing Low, maintaining full min_sl_dist breathing distance
+                            # BUY Trailing SL & Dynamic TP Outward Expansion:
                             if pos.type == "BUY" and current_price > e_px:
                                 struct_sl = round(min(struct_low, current_price - min_sl_dist), digits)
-                                if struct_sl > cur_sl and (current_price - struct_sl) >= (min_sl_dist * 0.9):
+                                
+                                # Dynamic TP Trailing & Outward Expansion in Confirmed Trend
+                                new_tp = cur_tp
+                                if cur_tp > 0 and (cur_tp - current_price) <= (min_tp_dist * 0.40):
+                                    new_tp = round(current_price + min_tp_dist, digits)
+
+                                sl_improved = (struct_sl > cur_sl and (current_price - struct_sl) >= (min_sl_dist * 0.9))
+                                tp_expanded = (new_tp > cur_tp)
+                                
+                                if sl_improved or tp_expanded:
+                                    target_sl = max(cur_sl, struct_sl) if cur_sl > 0 else struct_sl
+                                    target_tp = max(cur_tp, new_tp) if cur_tp > 0 else new_tp
                                     try:
                                         if hasattr(self.broker, "modify_position_sl_tp"):
-                                            self.broker.modify_position_sl_tp(pos_id, struct_sl, cur_tp)
+                                            self.broker.modify_position_sl_tp(pos_id, target_sl, target_tp)
+                                            pos.sl = target_sl
+                                            pos.tp = target_tp
                                     except Exception: pass
-                            # SELL Trailing SL: Anchors above 5m Swing High, maintaining full min_sl_dist breathing distance
+
+                            # SELL Trailing SL & Dynamic TP Outward Expansion:
                             elif pos.type == "SELL" and current_price < e_px:
                                 struct_sl = round(max(struct_high, current_price + min_sl_dist), digits)
-                                if (cur_sl == 0.0 or struct_sl < cur_sl) and (struct_sl - current_price) >= (min_sl_dist * 0.9):
+                                
+                                # Dynamic TP Trailing & Outward Expansion in Confirmed Trend
+                                new_tp = cur_tp
+                                if cur_tp > 0 and (current_price - cur_tp) <= (min_tp_dist * 0.40):
+                                    new_tp = round(current_price - min_tp_dist, digits)
+
+                                sl_improved = ((cur_sl == 0.0 or struct_sl < cur_sl) and (struct_sl - current_price) >= (min_sl_dist * 0.9))
+                                tp_expanded = (new_tp < cur_tp and new_tp > 0)
+                                
+                                if sl_improved or tp_expanded:
+                                    target_sl = min(cur_sl, struct_sl) if cur_sl > 0 else struct_sl
+                                    target_tp = min(cur_tp, new_tp) if cur_tp > 0 else new_tp
                                     try:
                                         if hasattr(self.broker, "modify_position_sl_tp"):
-                                            self.broker.modify_position_sl_tp(pos_id, struct_sl, cur_tp)
+                                            self.broker.modify_position_sl_tp(pos_id, target_sl, target_tp)
+                                            pos.sl = target_sl
+                                            pos.tp = target_tp
                                     except Exception: pass
 
 
