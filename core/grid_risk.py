@@ -149,9 +149,22 @@ def check_target_profit(self, current_price: float, timestamp: float) -> Optiona
     exit_reason = ""
 
     sl_limit = float(getattr(self, "stop_loss", 0.0) or 0.0)
-    if sl_limit > 0 and total_pnl <= -abs(sl_limit):
-        exit_triggered = True
-        exit_reason = "STOP_LOSS"
+    if sl_limit > 0:
+        # Enforce a per-symbol minimum meaningful stop loss floor.
+        # Prevents the basket SL from triggering on spread cost alone.
+        sym_u = str(getattr(self.broker, "symbol", getattr(self, "symbol_code", ""))).upper()
+        if any(x in sym_u for x in ["XAU", "GOLD", "PAXG"]):
+            min_sl_floor = 5.0     # Gold: minimum $5 basket SL (spread ~$0.5)
+        elif "BTC" in sym_u:
+            min_sl_floor = 20.0    # BTC: minimum $20 basket SL
+        elif "ETH" in sym_u:
+            min_sl_floor = 3.0     # ETH: minimum $3 basket SL
+        else:
+            min_sl_floor = 0.50    # Forex/alts: minimum $0.50
+        effective_sl = max(sl_limit, min_sl_floor)
+        if total_pnl <= -abs(effective_sl):
+            exit_triggered = True
+            exit_reason = "STOP_LOSS"
     elif self.in_runner_mode:
         lock_pct = float(getattr(self, "profit_lock_pct", 0.80) or 0.80)
         # Floor: at least 50% of target OR 80% of peak — prevents near-zero exits that lose on spread+commission
@@ -289,6 +302,20 @@ def process_engine_tick(self, previous_price: float, current_price: float, times
             pass
 
     if getattr(self, "_fakeout_guard_enabled", True) and self._fakeout_recent_fills:
+        # Per-symbol minimum distance before declaring a fakeout.
+        # Without this, a 1-pip wick after fill closes positions immediately.
+        sym_u = str(getattr(self.broker, "symbol", getattr(self, "symbol_code", ""))).upper()
+        if any(x in sym_u for x in ["XAU", "GOLD", "PAXG"]):
+            fakeout_min_dist = 3.0    # Gold: need $3 move past entry to count as fakeout
+        elif "BTC" in sym_u:
+            fakeout_min_dist = 80.0   # BTC: need $80 move past entry
+        elif "ETH" in sym_u:
+            fakeout_min_dist = 5.0    # ETH: need $5 move
+        elif any(x in sym_u for x in ["SOL", "BNB"]):
+            fakeout_min_dist = 1.0
+        else:
+            fakeout_min_dist = 0.0003  # Forex
+
         expired_f_pids = []
         for f_pid, (entry_px, p_type, fill_tick) in list(self._fakeout_recent_fills.items()):
             ticks_elapsed = self._tick_counter - fill_tick
@@ -300,9 +327,16 @@ def process_engine_tick(self, previous_price: float, current_price: float, times
                 continue
 
             pos = self.broker.open_positions[f_pid]
-            is_fakeout = (p_type == "BUY" and current_price < entry_px) or (p_type == "SELL" and current_price > entry_px)
+            # Only flag fakeout if price has moved a meaningful distance past entry
+            if p_type == "BUY":
+                is_fakeout = current_price < (entry_px - fakeout_min_dist)
+            elif p_type == "SELL":
+                is_fakeout = current_price > (entry_px + fakeout_min_dist)
+            else:
+                is_fakeout = False
+
             if is_fakeout:
-                print(f"[{self.symbol}] 🚨 [FAKEOUT GUARD] Fake breakout detected on {p_type} position #{f_pid} ({ticks_elapsed} ticks after fill). Closing early.")
+                print(f"[{self.symbol}] 🚨 [FAKEOUT GUARD] {p_type} #{f_pid} reversed ${abs(current_price - entry_px):.2f} past entry after {ticks_elapsed} ticks. Closing.")
                 self.broker.close_position(f_pid, current_price, timestamp)
                 expired_f_pids.append(f_pid)
 

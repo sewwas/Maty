@@ -963,8 +963,19 @@ class MT5Broker:
                                 "exit_time": ex_sec,
                                 "timestamp": ex_sec,
                                 "duration": max(1, int(ex_sec - e_sec)),
-                                "commission": float(getattr(d, "commission", 0.0))
+                                "commission": float(getattr(d, "commission", 0.0)),
+                                # Use MT5 deal reason code to label exit correctly:
+                                # reason=3 → broker TP hit, reason=4 → broker SL hit,
+                                # reason=0/1/2 → manual/bot/expert close
+                                "exit_reason": (
+                                    "TARGET_PROFIT"  if getattr(d, "reason", -1) == 3 else
+                                    "STOP_LOSS"      if getattr(d, "reason", -1) == 4 else
+                                    "TARGET_PROFIT"  if pnl > 0 else
+                                    "BOT_CLOSE"      if getattr(d, "reason", -1) in (0, 1, 2) else
+                                    "STOP_LOSS"
+                                )
                             }
+
                             synced_trades.append(t_record)
                             synced_pnl += pnl
                 if synced_trades:
