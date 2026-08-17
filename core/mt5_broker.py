@@ -45,16 +45,20 @@ class MT5Broker:
     Clean, simplified MT5 Broker interface for Exness MetaTrader 5 trading.
     Handles order placement, cancellation, position tracking, and floating PnL.
     """
-    def __init__(self, login: Optional[int] = None, password: str = "", server: str = "", symbol: str = "BTCUSDT", symbol_suffix: str = "", magic_number: Optional[int] = None):
+    def __init__(self, symbol: str = "BTCUSDT", login: Optional[int] = None, password: str = "", server: str = "", symbol_suffix: str = "", magic_number: Optional[int] = None):
         if not MT5_AVAILABLE:
             raise ImportError("MetaTrader5 library is not available.")
 
-        self.login = int(login) if login is not None else 0
+        # Safe parsing if symbol was passed positionally or login is string
+        if isinstance(symbol, int) and isinstance(login, str):
+            symbol, login = login, symbol
+
+        self.symbol = str(symbol)
+        self.login = int(login) if (login is not None and str(login).isdigit()) else 0
         self.password = str(password)
         self.server = str(server)
-        self.symbol = str(symbol)
         self.symbol_suffix = str(symbol_suffix)
-        self.magic_number = magic_number if (magic_number is not None and magic_number != 998877) else get_symbol_magic_number(symbol)
+        self.magic_number = magic_number if (magic_number is not None and magic_number != 998877) else get_symbol_magic_number(self.symbol)
 
         self.pending_orders: Dict[str, Order] = {}
         self.open_positions: Dict[str, Position] = {}
