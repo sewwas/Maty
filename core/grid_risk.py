@@ -230,7 +230,7 @@ def process_engine_tick(self, previous_price: float, current_price: float, times
 
     if len(getattr(self.broker, "open_positions", {})) > 0:
         try:
-            trail_stop_loss_1m_structure(self, current_price, timestamp)
+            trail_stop_loss_5m_structure(self, current_price, timestamp)
             align_basket_take_profits(self, current_price, timestamp)
         except Exception:
             pass
@@ -395,7 +395,20 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
         sell_offset_val = round(sell_offset_val, digits)
         gap_val = round(gap_val, digits)
 
-        min_sl_dist = 1200.0 if "BTC" in sym_name else (80.0 if "ETH" in sym_name else (35.0 if any(x in sym_name for x in ["XAU", "PAXG", "GOLD"]) else 0.0200))
+        if "BTC" in sym_name:
+            min_sl_dist = 380.0
+        elif "ETH" in sym_name:
+            min_sl_dist = 22.50
+        elif any(x in sym_name for x in ["XAU", "PAXG", "GOLD"]):
+            min_sl_dist = 35.00
+        elif any(x in sym_name for x in ["EUR", "GBP"]):
+            min_sl_dist = 0.0018
+        elif "JPY" in sym_name:
+            min_sl_dist = 1.80
+        elif "SOL" in sym_name:
+            min_sl_dist = 2.80
+        else:
+            min_sl_dist = max(b_min_stop * 2.5, point * 50.0)
 
         acc_eq = self.broker.get_equity() if hasattr(self.broker, "get_equity") else 1000.0
         base_cfg_levels = getattr(self, "grid_levels", 5) or 5
@@ -713,11 +726,11 @@ def sync_cycle_history_from_trades(self):
                 })
 
 
-def trail_stop_loss_1m_structure(self, current_price: float, timestamp: float) -> int:
+def trail_stop_loss_5m_structure(self, current_price: float, timestamp: float) -> int:
     """
-    1-Minute Chart Structural Trailing Stop Loss Engine.
-    • For BUY positions: Modifies & trails MT5 Stop Loss (SL) up to the 1m Higher Low (HL) swing level.
-    • For SELL positions: Modifies & trails MT5 Stop Loss (SL) down to the 1m Lower High (LH) swing level.
+    5-Minute Chart Structural Trailing Stop Loss Engine.
+    • For BUY positions: Modifies & trails MT5 Stop Loss (SL) up to the 5m Higher Low (HL) swing level.
+    • For SELL positions: Modifies & trails MT5 Stop Loss (SL) down to the 5m Lower High (LH) swing level.
     """
     if not hasattr(self.broker, "open_positions") or not self.broker.open_positions:
         return 0
@@ -726,11 +739,11 @@ def trail_stop_loss_1m_structure(self, current_price: float, timestamp: float) -
         return 0
 
     now_ts = timestamp or time.time()
-    last_trail_time = getattr(self, "_last_1m_sl_trail_time", 0.0)
+    last_trail_time = getattr(self, "_last_5m_sl_trail_time", 0.0)
     if now_ts - last_trail_time < 3.0:
         return 0
 
-    self._last_1m_sl_trail_time = now_ts
+    self._last_5m_sl_trail_time = now_ts
 
     sym_name = str(getattr(self.broker, "symbol", getattr(self, "symbol_code", "BTCUSDT"))).upper()
     digits = 4 if any(x in sym_name for x in ["DOGE", "GBP", "EUR"]) else (3 if any(x in sym_name for x in ["XAU", "GOLD", "PAXG"]) else 2)
@@ -738,17 +751,18 @@ def trail_stop_loss_1m_structure(self, current_price: float, timestamp: float) -
     try:
         import numpy as np
         from core.data import get_historical_klines
-        df_1m = get_historical_klines(sym_name, interval="1m", limit=20)
-        if df_1m is None or df_1m.empty or len(df_1m) < 5:
+        sym_fetch = "PAXGUSDT" if any(x in sym_name for x in ["XAU", "GOLD", "PAXG"]) else (f"{sym_name}USDT" if ("USD" in sym_name and "USDT" not in sym_name) else sym_name)
+        df_5m = get_historical_klines(sym_fetch, interval="5m", limit=20)
+        if df_5m is None or df_5m.empty or len(df_5m) < 5:
             return 0
 
-        highs = df_1m["high"].values
-        lows = df_1m["low"].values
+        highs = df_5m["high"].values
+        lows = df_5m["low"].values
     except Exception:
         return 0
 
-    recent_hl = float(np.min(lows[-5:]))    # 1m Higher Low (Swing Low of last 5 1m candles)
-    recent_lh = float(np.max(highs[-5:]))   # 1m Lower High (Swing High of last 5 1m candles)
+    recent_hl = float(np.min(lows[-5:]))    # 5m Higher Low (Swing Low of last 5 5m candles)
+    recent_lh = float(np.max(highs[-5:]))   # 5m Lower High (Swing High of last 5 5m candles)
 
     buf = current_price * 0.0005            # 0.05% safety buffer offset
     modified_count = 0
@@ -765,7 +779,7 @@ def trail_stop_loss_1m_structure(self, current_price: float, timestamp: float) -
                     if self.broker.modify_position_sl_tp(pos_id, sl=target_sl):
                         setattr(pos_obj, "sl", target_sl)
                         modified_count += 1
-                        print(f"[{sym_name}] 🛡️ [1M STRUCTURE TRAILING] BUY Position #{pos_id} SL updated to 1m Higher Low (HL): ${target_sl:,.3f}")
+                        print(f"[{sym_name}] 🛡️ [5M STRUCTURE TRAILING] BUY Position #{pos_id} SL updated to 5m Higher Low (HL): ${target_sl:,.3f}")
                 except Exception:
                     pass
         elif "SELL" in pos_type:
@@ -775,7 +789,7 @@ def trail_stop_loss_1m_structure(self, current_price: float, timestamp: float) -
                     if self.broker.modify_position_sl_tp(pos_id, sl=target_sl):
                         setattr(pos_obj, "sl", target_sl)
                         modified_count += 1
-                        print(f"[{sym_name}] 🛡️ [1M STRUCTURE TRAILING] SELL Position #{pos_id} SL updated to 1m Lower High (LH): ${target_sl:,.3f}")
+                        print(f"[{sym_name}] 🛡️ [5M STRUCTURE TRAILING] SELL Position #{pos_id} SL updated to 5m Lower High (LH): ${target_sl:,.3f}")
                 except Exception:
                     pass
 
