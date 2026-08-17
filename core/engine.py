@@ -1882,9 +1882,9 @@ class BreakoutGridBot:
         
         num_open_positions = len(self.broker.open_positions)
         
-        # OCO Sweep Trigger: Explicit user toggle ON, emergency 4+ fills trend purge, or 100% Confirmed Unidirectional Trend
+        # OCO Sweep Trigger: Explicit user toggle ON or emergency 4+ fills trend purge
         unidirectional = getattr(self, "unidirectional_mode", "DUAL")
-        should_sweep_oco = cancel_opp or (num_open_positions >= 4) or (unidirectional in ("BUY_ONLY", "SELL_ONLY"))
+        should_sweep_oco = cancel_opp or (num_open_positions >= 4)
         if should_sweep_oco:
             buy_pos_active = [p for p in self.broker.open_positions.values() if p.type == "BUY"]
             sell_pos_active = [p for p in self.broker.open_positions.values() if p.type == "SELL"]
