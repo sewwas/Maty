@@ -1320,8 +1320,8 @@ class BreakoutGridBot:
             sell_offset_val = round(sell_offset_val, digits)
             gap_val = round(gap_val, digits)
 
-            min_sl_dist = 450.0 if "BTC" in sym_name else (30.0 if "ETH" in sym_name else (12.0 if any(x in sym_name for x in ["XAU", "PAXG", "GOLD"]) else 0.0075))
-            min_tp_dist = 750.0 if "BTC" in sym_name else (50.0 if "ETH" in sym_name else (25.0 if any(x in sym_name for x in ["XAU", "PAXG", "GOLD"]) else 0.0150))
+            min_sl_dist = 650.0 if "BTC" in sym_name else (45.0 if "ETH" in sym_name else (20.0 if any(x in sym_name for x in ["XAU", "PAXG", "GOLD"]) else 0.0120))
+            min_tp_dist = 950.0 if "BTC" in sym_name else (75.0 if "ETH" in sym_name else (35.0 if any(x in sym_name for x in ["XAU", "PAXG", "GOLD"]) else 0.0200))
             sl_buffer = min_sl_dist
 
             # Dynamic Account-Size Grid Allocator: 3 to 5 grid levels on trading side based on account equity
@@ -2519,9 +2519,9 @@ class BreakoutGridBot:
                     ratchet_pnl = float(getattr(self, "ratchet_floor", 0.0))
                     r_usd = (ratchet_pnl / 100.0) if is_cent else ratchet_pnl
 
-                    # Hardware SL & TP Buffer: Clean Structural SL ($450 BTC / $30 ETH / $12 GOLD) & TP ($750 BTC / $50 ETH / $25 GOLD)
-                    min_sl_dist = 450.0 if "BTC" in sym_name else (30.0 if "ETH" in sym_name else (12.0 if any(x in sym_name for x in ["XAU", "PAXG", "GOLD"]) else 0.0075))
-                    min_tp_dist = 750.0 if "BTC" in sym_name else (50.0 if "ETH" in sym_name else (25.0 if any(x in sym_name for x in ["XAU", "PAXG", "GOLD"]) else 0.0150))
+                    # Hardware SL & TP Buffer: Wide Noise-Immune Structural SL ($650 BTC / $45 ETH / $20 GOLD) & TP ($950 BTC / $75 ETH / $35 GOLD)
+                    min_sl_dist = 650.0 if "BTC" in sym_name else (45.0 if "ETH" in sym_name else (20.0 if any(x in sym_name for x in ["XAU", "PAXG", "GOLD"]) else 0.0120))
+                    min_tp_dist = 950.0 if "BTC" in sym_name else (75.0 if "ETH" in sym_name else (35.0 if any(x in sym_name for x in ["XAU", "PAXG", "GOLD"]) else 0.0200))
 
                     ts_dist = float(getattr(self, "trailing_stop_distance", 0.0) or 0.0)
                     ts_dist_px = (ts_dist * 100.0) if is_cent else ts_dist
