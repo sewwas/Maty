@@ -41,10 +41,11 @@ env/
 .DS_Store
 Thumbs.db
 
-# Project logs
+# Project logs & runtime locks
 *.log
 .system_generated/
 *.pkl
+*.lock
 last_error.txt
 tmp*
 
