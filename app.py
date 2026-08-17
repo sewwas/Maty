@@ -1098,6 +1098,7 @@ with tab_desk:
                                         live_p = [p for p in _all_p if any(_a in str(p.symbol).upper() for _a in chk_aliases)]
                                 if live_p:
                                     open_pos = max(open_pos, len(live_p))
+                                    pair_pnl = sum(float(getattr(p, "profit", 0.0) or 0.0) for p in live_p)
                                     if not brk.open_positions:
                                         for p in live_p:
                                             pos_id = str(getattr(p, "ticket", getattr(p, "position_id", id(p))))
@@ -1108,6 +1109,10 @@ with tab_desk:
                                             pos_obj = Position(p_type, p_entry, p_vol, getattr(p, "time", time.time()), pos_id)
                                             pos_obj.profit = p_pnl
                                             brk.open_positions[pos_id] = pos_obj
+                                else:
+                                    pair_pnl = sum(float(getattr(p, "profit", 0.0) or 0.0) for p in brk.open_positions.values()) if brk.open_positions else 0.0
+                                
+                                pnl_cls = "pnl-green" if pair_pnl >= 0 else "pnl-red"
                             except Exception:
                                 pass
                         realized  = getattr(brk, "realized_pnl", 0.0)
