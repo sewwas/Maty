@@ -284,11 +284,18 @@ class MT5Broker:
         digits = symbol_info.digits
         trigger_price = round(trigger_price, digits)
 
+        # Hard Safety Ceiling: Enforce strict 0.02 max order lot size
+        size = round(min(float(size), 0.02), 2)
+        if size < 0.01:
+            size = 0.01
+
         # Layer 1 Unbreakable Pre-Placement Duplicate Shield (Strict Level Cap Enforcement)
-        # Open Position Hard Ceiling: If 2 or more open positions exist for this symbol on MT5, BLOCK new order placement!
+        # Open Position Hard Ceiling: If 2 or more open positions exist or cumulative volume >= 0.05 lots, BLOCK new order placement!
         existing_positions = mt5.positions_get(symbol=exness_symbol) if (MT5_AVAILABLE and exness_symbol) else ()
-        if existing_positions and len(existing_positions) >= 2:
-            return Order(order_type, trigger_price, size, timestamp)
+        if existing_positions:
+            total_open_vol = sum(float(getattr(p, "volume", 0.0) or 0.0) for p in existing_positions)
+            if len(existing_positions) >= 2 or (total_open_vol + size) > 0.05:
+                return Order(order_type, trigger_price, size, timestamp)
 
         for p_ord in list(self.pending_orders.values()):
             ord_t = getattr(p_ord, "timestamp", getattr(p_ord, "time", 0.0))

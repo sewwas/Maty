@@ -1125,28 +1125,14 @@ class BreakoutGridBot:
             if size <= prev_size:
                 size = prev_size + 0.01
 
-            # Clamp to safe max order size cap per symbol category
-            sym_str = getattr(self.broker, "symbol", getattr(self, "symbol", "")).upper()
-            if any(x in sym_str for x in ["XAU", "GOLD", "PAXG"]):
-                default_max_cap = 0.05  # Gold strict safety limit: max 0.05 lots per order
-            elif any(x in sym_str for x in ["BTC"]):
-                default_max_cap = 0.10  # BTC max 0.10 BTC per order
-            elif any(x in sym_str for x in ["ETH"]):
-                default_max_cap = 1.00  # ETH max 1.00 ETH per order
-            elif any(x in sym_str for x in ["SOL"]):
-                default_max_cap = 5.00  # SOL max 5.00 SOL per order
-            else:
-                default_max_cap = 1.0
-
-            max_cap = min(getattr(self, "max_order_size", default_max_cap), base_size * 4.0)
-            if max_cap > 0 and size > max_cap:
-                size = max_cap
+            # Strict Safety Ceiling: Hard cap max order size to 0.02 lots for all pairs
+            size = min(size, 0.02)
         else:
-            # Anti-Martingale (mult < 1.0): Ensure size doesn't drop below 0.001
-            if size < 0.001:
-                size = 0.001
+            # Anti-Martingale (mult < 1.0): Ensure size doesn't drop below 0.01
+            if size < 0.01:
+                size = 0.01
 
-        return round(size, 8)
+        return round(min(size, 0.02), 2)
 
     def ensure_attributes_initialized(self):
         """
