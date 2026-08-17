@@ -963,6 +963,13 @@ with tab_desk:
                             st.toast(f"🎯 {sym_code} Trap Mode → {new_side_mode}")
                             st.rerun()
 
+                        # Execute live bot engine tick when RUN BOT is active
+                        if is_run and sym_p > 0:
+                            try:
+                                bot.process_engine_tick(sym_p, sym_p, time.time())
+                            except Exception:
+                                pass
+
                         # Pull live eval data & telemetry dynamically on every refresh
                         ev = None
                         if hasattr(bot, "auto_reading_engine") and sym_p > 0:
