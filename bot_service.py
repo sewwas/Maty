@@ -38,24 +38,27 @@ LOCK_PATH = os.path.join(BASE_DIR, "bot_service.lock")
 _symbols = ["PAXGUSDT", "GBPUSD", "EURUSD", "USDJPY", "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "DOGEUSDT"]
 
 _golden_sweet_spots = {
-    "PAXGUSDT": {"gap": 0.07, "offset": 0.07, "size": 0.01,  "tp": 10.0, "mult": 1.5},
-    "GBPUSD":   {"gap": 0.05, "offset": 0.05, "size": 0.02,  "tp": 9.0,  "mult": 1.5},
-    "EURUSD":   {"gap": 0.05, "offset": 0.05, "size": 0.02,  "tp": 8.0,  "mult": 1.5},
-    "USDJPY":   {"gap": 0.05, "offset": 0.05, "size": 0.02,  "tp": 9.0,  "mult": 1.5},
-    "BTCUSDT":  {"gap": 0.10, "offset": 0.10, "size": 0.001, "tp": 10.0, "mult": 1.5},
-    "ETHUSDT":  {"gap": 0.07, "offset": 0.07, "size": 0.05,  "tp": 10.0, "mult": 1.5},
-    "SOLUSDT":  {"gap": 0.07, "offset": 0.07, "size": 0.50,  "tp": 10.0, "mult": 1.5},
-    "BNBUSDT":  {"gap": 0.07, "offset": 0.07, "size": 0.05,  "tp": 10.0, "mult": 1.5},
-    "DOGEUSDT": {"gap": 0.07, "offset": 0.07, "size": 100.0, "tp": 10.0, "mult": 1.5},
+    "PAXGUSDT": {"gap": 0.07, "offset": 0.07, "size": 0.01,  "tp": 10.0, "mult": 1.25},
+    "GBPUSD":   {"gap": 0.05, "offset": 0.05, "size": 0.02,  "tp": 9.0,  "mult": 1.25},
+    "EURUSD":   {"gap": 0.05, "offset": 0.05, "size": 0.02,  "tp": 8.0,  "mult": 1.25},
+    "USDJPY":   {"gap": 0.05, "offset": 0.05, "size": 0.02,  "tp": 9.0,  "mult": 1.25},
+    "BTCUSDT":  {"gap": 0.02, "offset": 0.015, "size": 0.04, "tp": 10.0, "mult": 1.25},
+    "ETHUSDT":  {"gap": 0.04, "offset": 0.02, "size": 1.00,  "tp": 10.0, "mult": 1.25},
+    "SOLUSDT":  {"gap": 0.07, "offset": 0.07, "size": 1.50,  "tp": 10.0, "mult": 1.25},
+    "BNBUSDT":  {"gap": 0.07, "offset": 0.07, "size": 0.20,  "tp": 10.0, "mult": 1.25},
+    "DOGEUSDT": {"gap": 0.07, "offset": 0.07, "size": 100.0, "tp": 10.0, "mult": 1.25},
 }
 
 def load_saved_state() -> Dict[str, dict]:
     if os.path.exists(STATE_PATH):
-        try:
-            with open(STATE_PATH, "rb") as f:
-                return pickle.load(f).get("markets", {})
-        except Exception as e:
-            logging.error(f"Error loading state: {e}")
+        for _ in range(3):
+            try:
+                with open(STATE_PATH, "rb") as f:
+                    data = pickle.load(f)
+                    if isinstance(data, dict):
+                        return data.get("markets", {})
+            except Exception:
+                time.sleep(0.05)
     return {}
 
 def save_state(markets: dict):
@@ -78,8 +81,14 @@ def save_state(markets: dict):
                 "realized_pnl": getattr(brk, "realized_pnl", 0.0) if brk else 0.0,
                 "cycle_history": getattr(bot, "cycle_history", []) if bot else []
             }
-        with open(STATE_PATH, "wb") as f:
-            pickle.dump(state_data, f)
+        # Safe retry write on Windows to handle file lock contention cleanly
+        for attempt in range(3):
+            try:
+                with open(STATE_PATH, "wb") as f:
+                    pickle.dump(state_data, f)
+                break
+            except (PermissionError, OSError):
+                time.sleep(0.05)
     except Exception as e:
         logging.error(f"Error saving state: {e}")
 
@@ -116,8 +125,16 @@ def main():
 
         if is_running:
             bot.auto_restart = True
-            if has_orders:
-                bot.deployed = True
+            bot.use_breakeven = False
+            bot.use_trailing_stop = True
+            bot.trailing_stop_distance = 0.35
+            if not bot.deployed:
+                live_px = get_live_price(sym) or init_px
+                try:
+                    bot.deploy_traps(live_px, time.time(), force=True)
+                    logging.info(f"[{sym}] Startup Trap Deployment: {len(brk.pending_orders)} traps placed @ {live_px}")
+                except Exception as e:
+                    logging.error(f"[{sym}] Startup deploy error: {e}")
 
         markets[sym] = {
             "broker": brk,
@@ -145,12 +162,22 @@ def main():
                     if markets[sym]["running"] != disk_running:
                         markets[sym]["running"] = disk_running
                         logging.info(f"[{sym}] State updated from UI: running={disk_running}")
-                        if disk_running and not markets[sym]["bot"].deployed:
-                            live_px = get_live_price(sym) or markets[sym]["last_price"]
-                            try:
-                                markets[sym]["bot"].deploy_traps(live_px, now, force=True)
-                            except Exception as e:
-                                logging.error(f"[{sym}] Trap deploy error: {e}")
+                        
+                        if disk_running:
+                            import MetaTrader5 as mt5_ref
+                            brk_inst = markets[sym]["broker"]
+                            ex_s = brk_inst.get_exness_symbol(sym) if hasattr(brk_inst, "get_exness_symbol") else sym
+                            active_mt5_ords = mt5_ref.orders_get(symbol=ex_s) if (mt5_ref.initialize() and ex_s) else None
+                            active_mt5_poss = mt5_ref.positions_get(symbol=ex_s) if (mt5_ref.initialize() and ex_s) else None
+                            
+                            if not active_mt5_ords and not active_mt5_poss:
+                                markets[sym]["bot"].deployed = False
+                                live_px = get_live_price(sym) or markets[sym]["last_price"]
+                                try:
+                                    markets[sym]["bot"].deploy_traps(live_px, now, force=True)
+                                    logging.info(f"[{sym}] Auto-healing trap deployment @ {live_px}")
+                                except Exception as e:
+                                    logging.error(f"[{sym}] Trap deploy error: {e}")
 
             # Process Ticks
             for sym, m_data in markets.items():

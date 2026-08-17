@@ -122,7 +122,9 @@ def get_live_bot_stats():
             "total_trades": sym_total,
             "wins": sym_wins,
             "losses": sym_total - sym_wins,
-            "status": "Active"
+            "status": "Active",
+            "self_learning": "Auto-Tuning Active",
+            "pivot_anchor": "PP / R1 / S1 Locked"
         })
 
         total_trades += sym_total

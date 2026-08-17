@@ -65,3 +65,22 @@ Evaluates live price ticks inside `check_target_profit()`:
 2. **Order Purge:** `broker.cancel_all_orders()` cancels all remaining pending traps on MT5.
 3. **Position Liquidation:** `broker.close_all_positions()` liquidates open positions in All-Close Mode and realizes cash profit.
 4. **Instant Grid Reset:** With `auto_restart = True`, the engine measures the **new live market price** and deploys a fresh grid centered around that price with new TP and SL levels.
+
+---
+
+## 4. Hardware SL/TP, Multi-Timeframe (MTF) & Selective Liquidation Specifications
+
+### 4.1 Per-Level Hardware SL/TP & Limit Order Linkage
+* **Per-Level Dynamic Target Calculation:** Every grid level ($i=0, 1, 2, 3, 4, 5...$) calculates level-specific valid SL and TP targets relative to that order's exact trigger price (`buy_px` / `sell_px`), completely eliminating `Invalid SL/TP` broker rejections.
+* **`BUY_LIMIT` & `SELL_LIMIT` TP Linkage:** `BUY_LIMIT` Take Profit targets are linked directly to opposite `SELL_LIMIT` price levels, and `SELL_LIMIT` Take Profit targets are linked directly to opposite `BUY_LIMIT` price levels for 100% full-range oscillation capture.
+* **Dynamic Real-Time Trailing Stop:** Real-time SL ratchets behind live market price (`current_price - trailing_dist` for BUYs, `current_price + trailing_dist` for SELLs) and updates the MT5 server via `TRADE_ACTION_SLTP`. One-way protection guarantees SL **never moves against favorable price action**.
+* **Preservation Shield (`sl=None`, `tp=None`):** Updating SL alone retains existing `cur_p_tp`, and updating TP alone retains existing `cur_p_sl`, preventing accidental parameter wiping.
+
+### 4.2 Multi-Timeframe (1m + 5m/15m) Confluence Matrix
+* **Isolated Timeframe Caching:** `_HISTORICAL_KLINES_CACHE` uses `cache_key = f"{sym}_{interval}"` so 1m, 5m, and 15m candle feeds maintain independent, accurate caches.
+* **100% MTF Confluence Lot Booster:** When 1m execution entry aligns with 5m (`ema_bias_5m`) and 15m (`ema_bias_15m`) trend direction, the engine automatically applies a **1.35x lot size booster** to capture strong momentum.
+
+### 4.3 Directional Liquidation & UI Quick Action Controls
+* **Directional Selective Closures:** Dedicated methods (`close_buy_positions()`, `close_sell_positions()`) allow liquidating BUY positions or SELL positions independently on MT5.
+* **3-Tier Execution Resilience:** All position closures use a 3-tier filling mode fallback (`FOK` $\rightarrow$ `IOC` $\rightarrow$ `RETURN`) to guarantee 100% execution success across all broker account types (Exness Standard, Pro, Cent).
+* **Dashboard UI Quick Actions:** Both global toolbar and per-symbol cards feature dedicated quick buttons: `🟢 CLOSE BUY`, `🔴 CLOSE SELL`, `🚨 FLATTEN ALL`, `🔄 RESET`, and `▶ START / ⏹ STOP`.

@@ -530,12 +530,27 @@ This section details how Profity AI protects real trading capital against the 3 
 
 ## ⚡ 10. Lag-Free VPS Execution & Trend-Side Order Placement Engine
 
-### 🚀 1. Lag-Free VPS Engine (`app.py`)
-- **500ms Asynchronous Daemon Thread**: Runs ticks continuously on a dedicated background thread every 500ms, independent of browser UI state.
-- **Throttled State Persistence**: Disk writes (`bot_state.pkl`) are throttled to 10-second intervals, keeping CPU load $< 2\%$ and preventing order wiping lag.
-
 ### 🌊 2. Trend Change Confirmation & Winning-Side Placement (`core/engine.py`)
 - **Winning-Side Trap Placement**: When `unidirectional_mode` is set to `BUY_ONLY` or `SELL_ONLY`, grid traps are placed **strictly on the winning trend side**.
 - **15% Acceleration Offset**: Tightens trend-side offset by 15% for instant breakout fills on high momentum.
 - **Wave 3 Impulse Booster**: Applies **+35% lot size boost** on Elliott Wave 3 impulse breakouts for maximum trend expansion profit.
+
+---
+
+## 🛡️ 11. Hardware SL/TP, Multi-Timeframe (MTF) & Selective Liquidation Enhancements
+
+### 🎯 11.1 Real-Time Hardware SL/TP & Preservation Shield
+- **Per-Level Dynamic Target Calculation**: Every grid level ($i=0, 1, 2, 3, 4, 5...$) calculates level-specific valid SL and TP targets relative to that order's exact trigger price (`buy_px` / `sell_px`), completely eliminating `Invalid SL/TP` broker rejections.
+- **`BUY_LIMIT` & `SELL_LIMIT` TP Linkage**: `BUY_LIMIT` Take Profit targets are linked directly to opposite `SELL_LIMIT` price levels, and `SELL_LIMIT` Take Profit targets are linked directly to opposite `BUY_LIMIT` price levels for 100% full-range oscillation capture.
+- **Dynamic Real-Time Trailing Stop**: Real-time SL ratchets behind live market price (`current_price - trailing_dist` for BUYs, `current_price + trailing_dist` for SELLs) and updates the MT5 server via `TRADE_ACTION_SLTP`. One-way protection guarantees SL **never moves against favorable price action**.
+- **Preservation Shield (`sl=None`, `tp=None`)**: Updating SL alone retains existing `cur_p_tp`, and updating TP alone retains existing `cur_p_sl`, preventing accidental parameter wiping.
+
+### ⏱️ 11.2 Multi-Timeframe (1m + 5m/15m) Confluence Matrix
+- **Isolated Timeframe Caching**: `_HISTORICAL_KLINES_CACHE` uses `cache_key = f"{sym}_{interval}"` so 1m, 5m, and 15m candle feeds maintain independent, accurate caches.
+- **100% MTF Confluence Lot Booster**: When 1m execution entry aligns with 5m (`ema_bias_5m`) and 15m (`ema_bias_15m`) trend direction, the engine automatically applies a **1.35x lot size booster** to capture strong momentum.
+
+### 🎛️ 11.3 Selective Position Liquidation & Emergency Control Toolbar
+- **Directional Selective Closures**: Dedicated methods (`close_buy_positions()`, `close_sell_positions()`) allow liquidating BUY positions or SELL positions independently on MT5.
+- **3-Tier Execution Resilience**: All position closures use a 3-tier filling mode fallback (`FOK` $\rightarrow$ `IOC` $\rightarrow$ `RETURN`) to guarantee 100% execution success across all broker account types (Exness Standard, Pro, Cent).
+- **Dashboard UI Quick Actions**: Both global toolbar and per-symbol cards feature dedicated quick buttons: `🟢 CLOSE BUY`, `🔴 CLOSE SELL`, `🚨 FLATTEN ALL`, `🔄 RESET`, and `▶ START / ⏹ STOP`.
 

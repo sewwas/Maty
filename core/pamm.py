@@ -3,9 +3,9 @@ from typing import Dict, List, Optional
 
 class PAMMMasterPool:
     """
-    Manages institutional PAMM Master Pool state bound to Exness MT5 Account 279696908.
+    Manages institutional PAMM Master Pool state bound to Exness MT5 Account 433909448.
     """
-    def __init__(self, master_account: int = 279696908):
+    def __init__(self, master_account: int = 433909448):
         self.master_account = int(master_account)
         self.total_aum = 1266.34
         self.investors_count = 42
@@ -40,7 +40,7 @@ class PAMMMasterPool:
             self.investor_portfolio["roi_pct"] = float(((curr - dep) / dep) * 100.0)
 
     def sync_live_equity(self, live_equity: float):
-        """Syncs PAMM Pool AUM directly from Exness MT5 Account 279696908 equity."""
+        """Syncs PAMM Pool AUM directly from Exness MT5 Account 433909448 equity."""
         if live_equity > 0:
             self.total_aum = float(live_equity)
             self.investor_portfolio["current_equity"] = float(live_equity)

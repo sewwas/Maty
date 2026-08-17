@@ -1,4 +1,9 @@
 import sys, os, numpy as np
+if hasattr(sys.stdout, 'reconfigure'):
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+    except Exception:
+        pass
 sys.path.insert(0, r'c:\Users\User\Desktop\Maty')
 os.chdir(r'c:\Users\User\Desktop\Maty')
 
@@ -8,12 +13,14 @@ print('=' * 65)
 
 errors = []
 
+import core.data as cdata
+import core.engine as cengine
+import core.mt5_broker as cbroker
+ei = cengine.AutoReadingEngine()
+
 # 1. Core imports
 print('\n[1/9] Core module imports...')
 try:
-    import core.data as cdata
-    import core.engine as cengine
-    import core.mt5_broker as cbroker
     print('  OK  core.data, core.engine, core.mt5_broker')
 except Exception as e:
     errors.append('Core imports FAILED: ' + str(e)); print('  FAIL  ' + str(e))
@@ -191,6 +198,36 @@ try:
 except Exception as e:
     errors.append('VWAP+Ratchet FAILED: ' + str(e)); print('  FAIL  ' + str(e))
 
+# 10. Weekend Shield 30-Minute Rules Verification
+print('\n[10/10] Weekend Shield: 30m pre-close Friday & 30m post-open Sunday...')
+try:
+    import datetime
+    bot_xau = cengine.BreakoutGridBot(broker=None)
+    bot_xau.use_weekend_shutdown = True
+    # Test A: Friday 20:25 UTC (Active)
+    t_fri_active = datetime.datetime(2026, 8, 14, 20, 25, tzinfo=datetime.timezone.utc)  # Friday
+    assert not bot_xau.is_weekend_market_paused(t_fri_active), "Friday 20:25 UTC should be active"
+    # Test B: Friday 20:30 UTC (Paused - 30m before close)
+    t_fri_pause = datetime.datetime(2026, 8, 14, 20, 30, tzinfo=datetime.timezone.utc)
+    assert bot_xau.is_weekend_market_paused(t_fri_pause), "Friday 20:30 UTC should be paused"
+    # Test C: Saturday 12:00 UTC (Paused)
+    t_sat = datetime.datetime(2026, 8, 15, 12, 0, tzinfo=datetime.timezone.utc)
+    assert bot_xau.is_weekend_market_paused(t_sat), "Saturday should be paused"
+    # Test D: Sunday 21:00 UTC (Paused - market open spread spike protection)
+    t_sun_open = datetime.datetime(2026, 8, 16, 21, 0, tzinfo=datetime.timezone.utc)
+    assert bot_xau.is_weekend_market_paused(t_sun_open), "Sunday 21:00 UTC should be paused"
+    # Test E: Sunday 22:30 UTC (Active - 30m after market open)
+    t_sun_resumed = datetime.datetime(2026, 8, 16, 22, 30, tzinfo=datetime.timezone.utc)
+    assert not bot_xau.is_weekend_market_paused(t_sun_resumed), "Sunday 22:30 UTC should be active"
+    
+    print('  OK  Friday 20:25 UTC -> ACTIVE')
+    print('  OK  Friday 20:30 UTC -> PAUSED (30m before close)')
+    print('  OK  Saturday        -> PAUSED')
+    print('  OK  Sunday 21:00 UTC -> PAUSED (initial open spread spike protection)')
+    print('  OK  Sunday 22:30 UTC -> RESUMED (30m after market open)')
+except Exception as e:
+    errors.append('Weekend Shield 30m Rules FAILED: ' + str(e)); print('  FAIL  ' + str(e))
+
 print()
 print('=' * 65)
 if errors:
@@ -199,5 +236,5 @@ if errors:
     sys.exit(1)
 else:
     print('  FULL SYSTEM AUDIT COMPLETED CLEANLY!')
-    print('  ALL 9/9 SYSTEMS 100% OPERATIONAL - ZERO ERRORS!')
+    print('  ALL 10/10 SYSTEMS 100% OPERATIONAL - ZERO ERRORS!')
 print('=' * 65)

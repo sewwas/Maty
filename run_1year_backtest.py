@@ -1,5 +1,16 @@
 import os
 import sys
+if hasattr(sys.stdout, 'reconfigure'):
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+    except Exception:
+        pass
+if hasattr(sys.stderr, 'reconfigure'):
+    try:
+        sys.stderr.reconfigure(encoding='utf-8')
+    except Exception:
+        pass
+
 import time
 import math
 import random
@@ -32,12 +43,16 @@ class BacktestBroker:
     def get_min_stop_distance(self):
         sym_u = self.symbol.upper()
         if "XAU" in sym_u or "GOLD" in sym_u:
-            return 2.50
+            return 0.50
         elif "BTC" in sym_u:
             return 5.00
         elif "ETH" in sym_u:
             return 0.50
-        return 0.05
+        elif "EURUSD" in sym_u:
+            return 0.0001
+        elif "USDJPY" in sym_u:
+            return 0.01
+        return 0.0001
 
     def place_order(self, order_type: str, price: float, size: float, timestamp: float, tp: float = 0.0, sl: float = 0.0):
         order_id = f"ord_{len(self.pending_orders)+1}_{int(timestamp)}"
@@ -142,16 +157,40 @@ class BacktestBroker:
         return triggered
 
     def process_tick(self, prev_px: float, cur_px: float, ts: float):
-        spread = 5.00 if "BTC" in self.symbol.upper() else 0.40
+        sym_u = self.symbol.upper()
+        if "BTC" in sym_u:
+            spread = 20.00
+        elif "ETH" in sym_u:
+            spread = 1.50
+        elif "EURUSD" in sym_u:
+            spread = 0.00015
+        elif "USDJPY" in sym_u:
+            spread = 0.015
+        else:
+            spread = 0.25  # Gold default
         ask = cur_px + spread
         bid = cur_px
         return self.update_tick(ask, bid, ts)
 
 
 def generate_high_precision_candles(symbol: str, num_bars: int = 50000):
-    random.seed(42 if "BTC" in symbol else 101)
-    base_price = 65000.0 if "BTC" in symbol else 3200.0
-    volatility = 0.0006 if "BTC" in symbol else 0.0008
+    sym_u = symbol.upper()
+    random.seed(42 if "BTC" in sym_u else (101 if "ETH" in sym_u else (202 if "EUR" in sym_u else 303)))
+    if "BTC" in sym_u:
+        base_price = 65000.0
+        volatility = 0.0006
+    elif "ETH" in sym_u:
+        base_price = 3400.0
+        volatility = 0.0008
+    elif "EURUSD" in sym_u:
+        base_price = 1.0900
+        volatility = 0.0003
+    elif "USDJPY" in sym_u:
+        base_price = 150.00
+        volatility = 0.0004
+    else:
+        base_price = 2700.0
+        volatility = 0.0008
     
     start_ts = time.time() - (num_bars * 60)
     rates = []
@@ -182,8 +221,8 @@ def generate_high_precision_candles(symbol: str, num_bars: int = 50000):
     return rates
 
 
-def run_high_precision_backtest(sym_name: str):
-    rates = generate_high_precision_candles(sym_name, 50000)
+def run_high_precision_backtest(sym_name: str, num_bars: int = 5000):
+    rates = generate_high_precision_candles(sym_name, num_bars)
     
     total_bars = len(rates)
     first_time = datetime.datetime.fromtimestamp(rates[0]['time'])
@@ -193,17 +232,37 @@ def run_high_precision_backtest(sym_name: str):
     print(f"[OK] Loaded {total_bars:,} Intrabar M1 Candles ({days_covered:.1f} Days)")
 
     broker = BacktestBroker(initial_balance=5000.0, symbol=sym_name)
-    base_order_size = 0.004 if "BTC" in sym_name.upper() else 0.15
-    
+    sym_u = sym_name.upper()
+    if "BTC" in sym_u:
+        base_order_size = 0.01
+        g_gap = 0.06
+        t_off = 0.02
+        t_prof = 0.50
+    elif "ETH" in sym_u:
+        base_order_size = 0.10
+        g_gap = 0.05
+        t_off = 0.02
+        t_prof = 0.50
+    elif "EURUSD" in sym_u or "USDJPY" in sym_u or "GBPUSD" in sym_u:
+        base_order_size = 0.02
+        g_gap = 0.04
+        t_off = 0.02
+        t_prof = 0.50
+    else:  # Gold / XAUUSD
+        base_order_size = 0.01
+        g_gap = 0.05
+        t_off = 0.02
+        t_prof = 0.50
+
     bot = BreakoutGridBot(
         broker=broker,
         symbol=sym_name,
         grid_levels=5,
-        grid_gap=0.08,
-        trap_offset=0.08,
+        grid_gap=g_gap,
+        trap_offset=t_off,
         order_size=base_order_size,
         order_size_multiplier=1.25,
-        target_profit=3.50,
+        target_profit=t_prof,
         auto_restart=True,
         use_auto_reading=True
     )
@@ -223,7 +282,20 @@ def run_high_precision_backtest(sym_name: str):
         
         # Intrabar tick sequence: High -> Low -> Close to simulate real candle wicks
         for px in [h_px, l_px, c_px]:
-            spread = 5.00 if "BTC" in sym_name.upper() else 0.40
+            sym_u = sym_name.upper()
+            if "BTC" in sym_u:
+                spread = 5.00
+            elif "ETH" in sym_u:
+                spread = 0.50
+            elif "EURUSD" in sym_u:
+                spread = 0.00015
+            elif "USDJPY" in sym_u:
+                spread = 0.015
+            elif "XAU" in sym_u or "GOLD" in sym_u:
+                spread = 0.25
+            else:
+                spread = 0.10
+
             broker.update_tick(px + spread, px, ts)
             
             eq = broker.account_equity
@@ -268,6 +340,9 @@ def run_high_precision_backtest(sym_name: str):
     print(f"Max Equity Drawdown : -${max_dd_usd:,.2f} USD ({max_dd_pct:.2f}%)")
     print("=" * 70)
 
-run_high_precision_backtest("XAUUSD")
-run_high_precision_backtest("BTCUSD")
-run_high_precision_backtest("ETHUSD")
+if __name__ == "__main__":
+    import sys
+    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    target_symbols = args if args else ["XAUUSD", "BTCUSD", "ETHUSD", "EURUSD", "USDJPY"]
+    for sym in target_symbols:
+        run_high_precision_backtest(sym)

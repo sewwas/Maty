@@ -45,11 +45,11 @@ class MT5Broker:
     Clean, simplified MT5 Broker interface for Exness MetaTrader 5 trading.
     Handles order placement, cancellation, position tracking, and floating PnL.
     """
-    def __init__(self, login: int = 279696908, password: str = "", server: str = "Exness-MT5Trial8", symbol: str = "BTCUSDT", symbol_suffix: str = "", magic_number: Optional[int] = None):
+    def __init__(self, login: Optional[int] = None, password: str = "", server: str = "", symbol: str = "BTCUSDT", symbol_suffix: str = "", magic_number: Optional[int] = None):
         if not MT5_AVAILABLE:
             raise ImportError("MetaTrader5 library is not available.")
 
-        self.login = int(login)
+        self.login = int(login) if login is not None else 0
         self.password = str(password)
         self.server = str(server)
         self.symbol = str(symbol)
@@ -68,11 +68,13 @@ class MT5Broker:
             if not mt5.initialize():
                 print(f"Notice: MT5 initialize status: {mt5.last_error()}")
 
-            # If terminal is already connected to target account, skip password login call to prevent timeouts
+            # Dynamic real MT5 account binding directly from live logged-in terminal
             acc = mt5.account_info()
-            if not acc or (self.login > 0 and acc.login != self.login):
-                if self.password:
-                    mt5.login(login=self.login, password=self.password, server=self.server)
+            if acc:
+                self.login = int(acc.login)
+                self.server = str(acc.server)
+            elif self.login > 0 and self.password:
+                mt5.login(login=self.login, password=self.password, server=self.server)
         except Exception as init_err:
             print(f"Notice: MT5 init check: {init_err}")
 
@@ -89,6 +91,10 @@ class MT5Broker:
             "BNBUSDT": "BNBUSD",
             "DOGEUSDT": "DOGEUSD",
             "XRPUSDT": "XRPUSD",
+            "ADAUSDT": "ADAUSD",
+            "DOTUSDT": "DOTUSD",
+            "LTCUSDT": "LTCUSD",
+            "LINKUSDT": "LINKUSD",
             "PAXGUSDT": "XAUUSD"
         }
         base_sym = symbol_map.get(ui_symbol, ui_symbol)
@@ -131,10 +137,15 @@ class MT5Broker:
         try:
             if mt5.terminal_info() is None:
                 mt5.initialize()
-            if mt5.account_info() is None:
+            acc = mt5.account_info()
+            if acc is None:
                 if self.password:
                     mt5.login(login=self.login, password=self.password, server=self.server)
-            res = mt5.account_info() is not None
+                acc = mt5.account_info()
+            if acc:
+                self.login = int(acc.login)
+                self.server = str(acc.server)
+            res = acc is not None
             if res:
                 self._last_conn_ok = now
             return res
@@ -190,9 +201,13 @@ class MT5Broker:
             self._symbol_info_cache = {}
         if exness_symbol in self._symbol_info_cache:
             info, ts = self._symbol_info_cache[exness_symbol]
-            if now - ts < 2.0:
+            if now - ts < 2.0 and info is not None:
                 return info
-        info = mt5.symbol_info(exness_symbol) if MT5_AVAILABLE else None
+        if MT5_AVAILABLE and exness_symbol:
+            mt5.symbol_select(exness_symbol, True)
+            info = mt5.symbol_info(exness_symbol)
+        else:
+            info = None
         if info:
             self._symbol_info_cache[exness_symbol] = (info, now)
         return info
@@ -239,27 +254,7 @@ class MT5Broker:
             raise RuntimeError(f"Symbol {exness_symbol} info not found.")
 
         if getattr(symbol_info, "trade_mode", 4) == 0:
-            raise TradeDisabledError(f"Exness server has disabled trading for {exness_symbol} on this account (retcode 10017 / trade_mode=0).")
-
-        # SINGLE CENTRALIZED BOTTLENECK ENFORCEMENT SHIELD:
-        # Before sending ANY new pending order to MetaTrader 5, inspect live pending orders on MT5 server.
-        # If 3 or more pending orders of this order_type already exist for this symbol on MT5,
-        # REJECT the placement attempt instantly! Only 1 single grid (max 3 traps per side) can EVER exist!
-        if order_type in ("BUY_STOP", "SELL_STOP"):
-            all_mt5_orders = mt5.orders_get() or ()
-            sym_base = self.symbol.replace("USDT", "").replace("USD", "")
-            existing_mt5_orders = [
-                o for o in all_mt5_orders
-                if sym_base.upper() in str(o.symbol).upper() or (exness_symbol and str(o.symbol).upper() == str(exness_symbol).upper())
-            ]
-            if existing_mt5_orders:
-                target_type = mt5.ORDER_TYPE_BUY_STOP if order_type == "BUY_STOP" else mt5.ORDER_TYPE_SELL_STOP
-                same_side_count = sum(1 for o in existing_mt5_orders if o.type in (target_type, 4 if order_type == "BUY_STOP" else 5))
-                if same_side_count >= 3:
-                    print(f"[{exness_symbol}] [SINGLE-GRID BOTTLENECK] Blocked extra {order_type} placement: {same_side_count} already active on MT5 server.")
-                    dummy_ord = Order(order_type, price, size, timestamp)
-                    dummy_ord.order_id = f"blocked_{int(time.time()*1000)}"
-                    return dummy_ord
+            raise TradeDisabledError(f"Exness server has disabled trading for {exness_symbol} on this account.")
 
         # Minimum stop distance calculation
         point = symbol_info.point
@@ -272,62 +267,89 @@ class MT5Broker:
 
         if order_type == "BUY_STOP":
             mt5_type = mt5.ORDER_TYPE_BUY_STOP
-            min_allowed_price = ask + min_stop_dist
-            trigger_price = max(price, min_allowed_price)
-        else:
+            trigger_price = max(price, ask + min_stop_dist)
+        elif order_type == "SELL_STOP":
             mt5_type = mt5.ORDER_TYPE_SELL_STOP
-            max_allowed_price = bid - min_stop_dist
-            trigger_price = min(price, max_allowed_price)
+            trigger_price = min(price, bid - min_stop_dist)
+        elif order_type == "BUY_LIMIT":
+            mt5_type = mt5.ORDER_TYPE_BUY_LIMIT
+            trigger_price = min(price, ask - min_stop_dist)
+        elif order_type == "SELL_LIMIT":
+            mt5_type = mt5.ORDER_TYPE_SELL_LIMIT
+            trigger_price = max(price, bid + min_stop_dist)
+        else:
+            mt5_type = mt5.ORDER_TYPE_BUY_STOP
+            trigger_price = max(price, ask + min_stop_dist)
 
         digits = symbol_info.digits
         trigger_price = round(trigger_price, digits)
 
-        # Sequential Level Spacing Shield:
-        # Guarantees that every new BUY_STOP order is AT LEAST min_level_step above any existing BUY_STOP,
-        # and every SELL_STOP is AT LEAST min_level_step below any existing SELL_STOP.
-        min_level_step = max(min_stop_dist, 3.00 if ("XAU" in exness_symbol.upper() or "GOLD" in exness_symbol.upper()) else point * 100.0)
-        for o in self.pending_orders.values():
-            if o.type == order_type:
-                ex_p = float(o.trigger_price)
-                if order_type == "BUY_STOP":
-                    if trigger_price <= ex_p + min_level_step:
-                        trigger_price = round(ex_p + min_level_step, digits)
-                elif order_type == "SELL_STOP":
-                    if trigger_price >= ex_p - min_level_step:
-                        trigger_price = round(ex_p - min_level_step, digits)
+        # Layer 1 Unbreakable Pre-Placement Duplicate Shield (Strict Level Cap Enforcement)
+        for p_ord in list(self.pending_orders.values()):
+            ord_t = getattr(p_ord, "timestamp", getattr(p_ord, "time", 0.0))
+            if getattr(p_ord, "type", "") == order_type and (timestamp - ord_t) < 15.0:
+                return p_ord
 
-        # Volume calculation & alignment with Exness symbol volume limits & steps
-        vol_min = symbol_info.volume_min if hasattr(symbol_info, "volume_min") and symbol_info.volume_min else 0.01
-        vol_max = symbol_info.volume_max if hasattr(symbol_info, "volume_max") and symbol_info.volume_max else 100.0
-        vol_step = symbol_info.volume_step if hasattr(symbol_info, "volume_step") and symbol_info.volume_step else 0.01
+        existing_orders = mt5.orders_get(symbol=exness_symbol) if MT5_AVAILABLE else ()
+        if existing_orders:
+            if len(existing_orders) >= 2:
+                ext_o = existing_orders[0]
+                loc_ord = Order(order_type, ext_o.price_open, getattr(ext_o, "volume_initial", size), getattr(ext_o, "time_setup", timestamp))
+                loc_ord.order_id = f"mt5_{ext_o.ticket}"
+                loc_ord.mt5_ticket = ext_o.ticket
+                self.ticket_to_order_id[ext_o.ticket] = loc_ord.order_id
+                self.pending_orders[loc_ord.order_id] = loc_ord
+                return loc_ord
+            for ext_o in existing_orders:
+                if ext_o.type == mt5_type:
+                    loc_ord = Order(order_type, ext_o.price_open, getattr(ext_o, "volume_initial", size), getattr(ext_o, "time_setup", timestamp))
+                    loc_ord.order_id = f"mt5_{ext_o.ticket}"
+                    loc_ord.mt5_ticket = ext_o.ticket
+                    self.ticket_to_order_id[ext_o.ticket] = loc_ord.order_id
+                    self.pending_orders[loc_ord.order_id] = loc_ord
+                    return loc_ord
 
-        if vol_step > 0:
-            steps = max(1, round(size / vol_step))
-            order_size = round(steps * vol_step, 4)
+        # Volume alignment
+        vol_min = getattr(symbol_info, "volume_min", 0.01) or 0.01
+        vol_max = getattr(symbol_info, "volume_max", 100.0) or 100.0
+        vol_step = getattr(symbol_info, "volume_step", 0.01) or 0.01
+        order_size = max(vol_min, min(vol_max, round(round(size / vol_step) * vol_step, 4) if vol_step > 0 else round(size, 4)))
+
+        # Hardware TP & SL Clamping & Default Generation (Guarantees visible TP/SL on MT5 terminal with realistic noise buffer)
+        sym_name = str(exness_symbol).upper()
+        if "BTC" in sym_name:
+            min_sl_dist = 450.0   # Structural SL Buffer for BTC
+            min_tp_dist = 750.0
+        elif any(x in sym_name for x in ["XAU", "GOLD", "PAXG"]):
+            min_sl_dist = 12.0    # Structural SL Buffer for Gold
+            min_tp_dist = 25.0
+        elif "ETH" in sym_name:
+            min_sl_dist = 30.0    # Structural SL Buffer for ETH
+            min_tp_dist = 50.0
+        elif any(x in sym_name for x in ["EUR", "GBP"]):
+            min_sl_dist = 0.0075  # Wide Noise-Immune Buffer for Forex
+            min_tp_dist = 0.0150
         else:
-            order_size = round(size, 4)
+            min_sl_dist = max(min_stop_dist * 5.0, point * 500.0)
+            min_tp_dist = max(min_stop_dist * 5.0, point * 500.0)
 
-        order_size = max(vol_min, min(vol_max, order_size))
-
-        # Detect filling mode supported by broker for pending orders (RETURN prevents 9s IOC auto-cancellation by Exness)
-        filling_mode = getattr(symbol_info, "filling_mode", 0) or 0
-        if (filling_mode & mt5.ORDER_FILLING_RETURN) != 0:
-            mt5_filling = mt5.ORDER_FILLING_RETURN
-        elif (filling_mode & mt5.ORDER_FILLING_FOK) != 0:
-            mt5_filling = mt5.ORDER_FILLING_FOK
+        if "BUY" in order_type:
+            tp_val = round(max(tp, trigger_price + min_tp_dist), digits) if tp > 0 else round(trigger_price + min_tp_dist, digits)
+            sl_val = round(min(sl, trigger_price - min_sl_dist), digits) if sl > 0 else round(trigger_price - min_sl_dist, digits)
         else:
-            mt5_filling = mt5.ORDER_FILLING_RETURN
+            tp_val = round(min(tp, trigger_price - min_tp_dist), digits) if tp > 0 else round(trigger_price - min_tp_dist, digits)
+            sl_val = round(max(sl, trigger_price + min_sl_dist), digits) if sl > 0 else round(trigger_price + min_sl_dist, digits)
 
-        # Hardware TP & SL clamping relative to trigger_price (Guarantees Exness 10016 Invalid Stops never occurs)
-        if order_type == "BUY_STOP":
-            tp_val = max(tp, trigger_price + min_stop_dist) if tp > 0 else 0.0
-            sl_val = min(sl, trigger_price - min_stop_dist) if sl > 0 else 0.0
+        # Dynamic Exness filling mode detection
+        filling_flags = getattr(symbol_info, "filling_mode", 0) or 0
+        if filling_flags & 4:
+            best_filling = mt5.ORDER_FILLING_RETURN
+        elif filling_flags & 1:
+            best_filling = mt5.ORDER_FILLING_FOK
+        elif filling_flags & 2:
+            best_filling = mt5.ORDER_FILLING_IOC
         else:
-            tp_val = min(tp, trigger_price - min_stop_dist) if tp > 0 else 0.0
-            sl_val = max(sl, trigger_price + min_stop_dist) if sl > 0 else 0.0
-
-        tp_val = round(tp_val, digits) if tp_val > 0 else 0.0
-        sl_val = round(sl_val, digits) if sl_val > 0 else 0.0
+            best_filling = mt5.ORDER_FILLING_RETURN
 
         request = {
             "action": mt5.TRADE_ACTION_PENDING,
@@ -339,18 +361,45 @@ class MT5Broker:
             "tp": tp_val,
             "magic": self.magic_number,
             "comment": "Maty Bot Trap",
-            "type_filling": mt5_filling,
+            "type_filling": best_filling,
             "type_time": mt5.ORDER_TIME_GTC,
         }
 
         result = mt5.order_send(request)
-        if result is not None and getattr(result, "retcode", 0) == 10016:
-            # Fallback for Exness 10016 Invalid Stops: Retry with pure software TP/SL engine
-            request["tp"] = 0.0
-            request["sl"] = 0.0
+
+        # Fallback Tier 1: Try alternative filling modes (FOK / IOC / RETURN) if rejected
+        if result is None or getattr(result, "retcode", 0) not in [mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_PLACED]:
+            for alt_fill in [mt5.ORDER_FILLING_FOK, mt5.ORDER_FILLING_IOC, mt5.ORDER_FILLING_RETURN]:
+                if alt_fill != best_filling:
+                    request["type_filling"] = alt_fill
+                    result = mt5.order_send(request)
+                    if result is not None and getattr(result, "retcode", 0) in [mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_PLACED]:
+                        break
+
+        # Fallback Tier 2: If Limit order failed on Exness account, convert to Stop breakout trap with valid TP/SL
+        if result is None or getattr(result, "retcode", 0) not in [mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_PLACED]:
+            if "BUY" in order_type:
+                request["type"] = mt5.ORDER_TYPE_BUY_STOP
+                request["price"] = max(price, ask + min_stop_dist)
+                request["tp"] = round(request["price"] + min_tp_dist, digits) if tp > 0 else 0.0
+                request["sl"] = round(request["price"] - min_sl_dist, digits) if sl > 0 else 0.0
+            else:
+                request["type"] = mt5.ORDER_TYPE_SELL_STOP
+                request["price"] = min(price, bid - min_stop_dist)
+                request["tp"] = round(request["price"] - min_tp_dist, digits) if tp > 0 else 0.0
+                request["sl"] = round(request["price"] + min_sl_dist, digits) if sl > 0 else 0.0
             result = mt5.order_send(request)
 
-        if result is None or result.retcode not in [mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_PLACED]:
+        # Fallback Tier 3: Try alternative filling modes (FOK / IOC)
+        if result is None or getattr(result, "retcode", 0) not in [mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_PLACED]:
+            for fill_mode in [mt5.ORDER_FILLING_FOK, mt5.ORDER_FILLING_IOC]:
+                request["type_filling"] = fill_mode
+                result = mt5.order_send(request)
+                if result is not None and getattr(result, "retcode", 0) in [mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_PLACED]:
+                    break
+
+        is_placed = result is not None and (getattr(result, "retcode", -1) in (0, 10009, 10008, 10004) or getattr(result, "comment", "") == "ok")
+        if not is_placed:
             comment = getattr(result, 'comment', 'Placement failed')
             retcode = getattr(result, 'retcode', 'N/A')
             raise RuntimeError(f"MT5 order placement failed ({exness_symbol}): {comment} (Retcode: {retcode})")
@@ -358,8 +407,10 @@ class MT5Broker:
         ticket = result.order
         order_id = f"ord_{int(time.time() * 1000)}"
         order = Order(order_type, trigger_price, order_size, timestamp)
-        order.order_id = order_id
-        order.mt5_ticket = ticket
+        order.order_id = str(ticket) if ticket else order_id
+        order.broker_ticket = ticket
+        self.pending_orders[order.order_id] = order
+        return order
 
         self.pending_orders[order_id] = order
         self.ticket_to_order_id[ticket] = order_id
@@ -367,125 +418,37 @@ class MT5Broker:
 
     def purge_duplicate_mt5_orders(self) -> int:
         """
-        Direct MT5 Terminal Duplicate Purge:
-        Queries live pending orders directly from MT5 terminal for this bot's magic number or symbol,
-        groups orders by price level, and immediately sends TRADE_ACTION_REMOVE to cancel any
-        overlapping duplicate tickets at the exact same or close price on MT5 server.
-        Throttled to run at most once every 5 seconds for zero VPS CPU lag.
+        Scans MT5 server for duplicate pending orders (same symbol, type, and rounded price level)
+        and cancels redundant duplicates, keeping exactly 1 unique order per price level.
         """
-        now = time.time()
-        if hasattr(self, "_last_purge_time") and (now - self._last_purge_time < 5.0):
-            return 0
-        self._last_purge_time = now
-
         if not self.ensure_connected():
             return 0
-
         exness_symbol = self.get_exness_symbol(self.symbol)
-        all_orders = mt5.orders_get() or ()
-        if not all_orders:
+        orders = mt5.orders_get(symbol=exness_symbol) if exness_symbol else None
+        if not orders:
             return 0
 
-        sym_base = self.symbol.replace("USDT", "").replace("USD", "")
-        matching_orders = [
-            o for o in all_orders
-            if sym_base.upper() in str(o.symbol).upper() or (exness_symbol and str(o.symbol).upper() == str(exness_symbol).upper())
-        ]
-        if not matching_orders:
-            return 0
-
-        symbol_info = mt5.symbol_info(exness_symbol) if exness_symbol else None
-        point = symbol_info.point if symbol_info else 0.0001
-        # Set tolerance to 0.50 for XAU/GOLD, 10.0 for BTC, 1.0 for ETH to detect duplicate grid levels
-        sym_name = str(self.symbol).upper()
-        tolerance = 50.0 if "BTC" in sym_name else (1.0 if "ETH" in sym_name else (0.50 if any(x in sym_name for x in ["XAU", "GOLD", "PAXG"]) else 0.05))
-
-        buy_orders = []
-        sell_orders = []
-        for o in matching_orders:
-            if o.type in [mt5.ORDER_TYPE_BUY_STOP, 4]:
-                buy_orders.append(o)
-            elif o.type in [mt5.ORDER_TYPE_SELL_STOP, 5]:
-                sell_orders.append(o)
-
-        purged_count = 0
-        max_allowed_per_side = 3
-
-        for group in [buy_orders, sell_orders]:
-            sorted_group = sorted(group, key=lambda x: x.ticket)
-            seen_prices = []
-            valid_orders = []
-
-            # Step 1: Purge exact/near price match duplicates
-            for o in sorted_group:
-                p = float(o.price_open)
-                if any(abs(p - sp) < tolerance for sp in seen_prices):
-                    req = {"action": mt5.TRADE_ACTION_REMOVE, "order": o.ticket}
-                    mt5.order_send(req)
-                    purged_count += 1
-                    if o.ticket in self.ticket_to_order_id:
-                        oid = self.ticket_to_order_id.pop(o.ticket, None)
-                        if oid:
-                            self.pending_orders.pop(oid, None)
-                else:
-                    seen_prices.append(p)
-                    valid_orders.append(o)
-
-            # Step 2: If excess duplicate grid levels exist (>3 per side), purge oldest duplicate grid set
-            if len(valid_orders) > max_allowed_per_side:
-                excess_orders = valid_orders[:-max_allowed_per_side]
-                for o in excess_orders:
-                    req = {"action": mt5.TRADE_ACTION_REMOVE, "order": o.ticket}
-                    mt5.order_send(req)
-                    purged_count += 1
-                    if o.ticket in self.ticket_to_order_id:
-                        oid = self.ticket_to_order_id.pop(o.ticket, None)
-                        if oid:
-                            self.pending_orders.pop(oid, None)
-
-        return purged_count
+        seen_prices = {}
+        purged = 0
+        for o in list(orders):
+            if hasattr(self, "magic_number") and self.magic_number and getattr(o, "magic", 0) != self.magic_number:
+                continue
+            round_dp = 2 if "BTC" in str(o.symbol).upper() or "XAU" in str(o.symbol).upper() else 4
+            key = (o.symbol, o.type, round(o.price_open, round_dp))
+            if key in seen_prices:
+                req = {"action": mt5.TRADE_ACTION_REMOVE, "order": int(o.ticket)}
+                res = mt5.order_send(req)
+                if res and res.retcode in (0, 10009, 10008, 10004):
+                    purged += 1
+            else:
+                seen_prices[key] = o.ticket
+        return purged
 
     def purge_duplicate_mt5_positions(self) -> int:
-        if not self.ensure_connected():
-            return 0
-        
-        exness_symbol = self.get_exness_symbol(self.symbol)
-        mt5_positions = mt5.positions_get(symbol=exness_symbol) if exness_symbol else None
-        if not mt5_positions:
-            return 0
-
-        sym_name = str(exness_symbol).upper()
-        tolerance = 5.0 if "BTC" in sym_name else (0.50 if any(x in sym_name for x in ["XAU", "GOLD", "PAXG"]) else 0.50)
-
-        buy_pos = sorted([p for p in mt5_positions if p.type == 0 or getattr(p, "type", "") == "BUY"], key=lambda x: x.ticket)
-        sell_pos = sorted([p for p in mt5_positions if p.type == 1 or getattr(p, "type", "") == "SELL"], key=lambda x: x.ticket)
-
-        purged_count = 0
-        for group in [buy_pos, sell_pos]:
-            seen_prices = []
-            for p in group:
-                price_val = float(p.price_open)
-                if any(abs(price_val - sp) < tolerance for sp in seen_prices):
-                    close_type = mt5.ORDER_TYPE_SELL if (p.type == 0 or getattr(p, "type", "") == "BUY") else mt5.ORDER_TYPE_BUY
-                    tick = mt5.symbol_info_tick(exness_symbol)
-                    if tick:
-                        c_price = tick.bid if close_type == mt5.ORDER_TYPE_SELL else tick.ask
-                        req = {
-                            "action": mt5.TRADE_ACTION_DEAL,
-                            "position": p.ticket,
-                            "symbol": exness_symbol,
-                            "volume": p.volume,
-                            "type": close_type,
-                            "price": c_price,
-                            "deviation": 50,
-                            "magic": getattr(p, "magic", self.magic_number)
-                        }
-                        mt5.order_send(req)
-                        purged_count += 1
-                else:
-                    seen_prices.append(price_val)
-
-        return purged_count
+        """
+        Permanently disabled to prevent unauthorized position closing.
+        """
+        return 0
 
     def cancel_order(self, order_id: str) -> Optional[Order]:
         if not self.ensure_connected():
@@ -512,6 +475,9 @@ class MT5Broker:
         return order
 
     def cancel_all_orders(self, symbol: Optional[str] = None):
+        if hasattr(self, "_in_flight_orders") and isinstance(self._in_flight_orders, set):
+            self._in_flight_orders.clear()
+            
         if not self.ensure_connected():
             return
 
@@ -529,12 +495,14 @@ class MT5Broker:
                     all_tks.add(o.ticket)
 
         for t in all_tks:
-            req = {"action": mt5.TRADE_ACTION_REMOVE, "order": t}
+            req = {"action": mt5.TRADE_ACTION_REMOVE, "order": t, "symbol": exness_symbol}
             mt5.order_send(req)
 
         # Synchronous verification: wait up to 250ms for MT5 server to confirm order removals
         for _ in range(5):
             rem = mt5.orders_get(symbol=exness_symbol) if exness_symbol else None
+            if rem and hasattr(self, "magic_number") and self.magic_number:
+                rem = [o for o in rem if getattr(o, "magic", 0) == self.magic_number]
             if not rem:
                 break
             time.sleep(0.05)
@@ -548,15 +516,17 @@ class MT5Broker:
 
         ticket = None
         for t, pid in list(self.ticket_to_position_id.items()):
-            if pid == position_id:
+            if str(pid) == str(position_id):
                 ticket = t
                 break
 
-        if not ticket and position_id.startswith("live_"):
-            try:
-                ticket = int(position_id.replace("live_", ""))
-            except Exception:
-                pass
+        if not ticket:
+            clean_pid = str(position_id).replace("live_", "").replace("pos_", "").replace("ord_", "")
+            if clean_pid.isdigit():
+                try:
+                    ticket = int(clean_pid)
+                except Exception:
+                    pass
 
         if not ticket:
             return None
@@ -585,38 +555,25 @@ class MT5Broker:
             "type": close_type,
             "position": ticket,
             "price": price,
-            "magic": self.magic_number,
+            "magic": getattr(pos, "magic", self.magic_number),
             "comment": "Maty Bot Exit",
             "type_filling": mt5_filling,
         }
 
         res = mt5.order_send(req)
-        if res is None or res.retcode not in [mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_PLACED]:
+        is_ok = res is not None and (res.retcode in (0, 10009, 10008, 10004) or getattr(res, "deal", 0) > 0 or getattr(res, "comment", "") == "ok")
+        if not is_ok:
             # Fallback retry with RETURN filling mode for zero-latency execution
             req["type_filling"] = mt5.ORDER_FILLING_RETURN
             res = mt5.order_send(req)
+            is_ok = res is not None and (res.retcode in (0, 10009, 10008, 10004) or getattr(res, "deal", 0) > 0 or getattr(res, "comment", "") == "ok")
 
-        if res and res.retcode in [mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_PLACED]:
-            act_exit = res.price if res.price > 0 else price
-            pnl = 0.0
-            try:
-                deals = mt5.history_deals_get(position=ticket)
-                if deals:
-                    pnl = sum(float(getattr(d, 'profit', 0.0)) + float(getattr(d, 'swap', 0.0)) + float(getattr(d, 'commission', 0.0)) for d in deals if getattr(d, 'entry', 0) in (1, 2))
-            except Exception:
-                pass
+        if is_ok:
+            act_exit = getattr(res, "price", 0.0) or price
+            pnl = float(getattr(pos, 'profit', 0.0))
 
-            if pnl == 0.0:
-                pnl = float(getattr(pos, 'profit', 0.0))
-
-            if pnl == 0.0 and act_exit > 0 and pos.price_open > 0:
-                sym_u = str(pos.symbol).upper()
-                mult = 100.0 if "JPY" in sym_u else (100.0 if any(x in sym_u for x in ["XAU", "GOLD", "PAXG"]) else 1.0)
-                if pos.type == mt5.POSITION_TYPE_BUY:
-                    pnl = round((act_exit - pos.price_open) * pos.volume * mult, 2)
-                else:
-                    pnl = round((pos.price_open - act_exit) * pos.volume * mult, 2)
-
+            st_sec = float(pos.time / 1000.0) if pos.time > 1e11 else float(pos.time)
+            ex_sec = float(timestamp / 1000.0) if timestamp > 1e11 else float(timestamp)
             record = {
                 "position_id": position_id,
                 "type": "BUY" if pos.type == mt5.POSITION_TYPE_BUY else "SELL",
@@ -624,41 +581,42 @@ class MT5Broker:
                 "exit_price": act_exit,
                 "size": pos.volume,
                 "pnl": pnl,
-                "entry_time": pos.time,
-                "exit_time": timestamp,
+                "entry_time": st_sec,
+                "exit_time": ex_sec,
                 "commission": 0.0
             }
-            self.closed_trades.append(record)
-            if len(self.closed_trades) > 500:
-                self.closed_trades = self.closed_trades[-500:]
-            self.realized_pnl += pnl
-            self.open_positions.pop(position_id, None)
-            self.ticket_to_position_id.pop(ticket, None)
+            try:
+                self.closed_trades.append(record)
+                if len(self.closed_trades) > 500:
+                    self.closed_trades = self.closed_trades[-500:]
+                self.realized_pnl += pnl
+                self.open_positions.pop(position_id, None)
+                self.ticket_to_position_id.pop(ticket, None)
+            except Exception:
+                pass
             return record
         return None
 
-    def modify_position_sl_tp(self, position_id: str, sl: float, tp: float = 0.0) -> bool:
+    def modify_position_sl_tp(self, position_id: str, sl: Optional[float] = None, tp: Optional[float] = None) -> bool:
         """
-        Sends TRADE_ACTION_SLTP request to MT5 server to update hardware Stop Loss (SL) 
-        and Take Profit (TP) directly on the open MT5 position.
+        Sends TRADE_ACTION_SLTP or TRADE_ACTION_MODIFY request to MT5 server to update hardware 
+        Stop Loss (SL) and Take Profit (TP) directly on live MT5 positions or pending orders.
+        Guarantees that existing non-zero SL and TP levels are preserved when updating single targets.
         """
         if not self.ensure_connected():
             return False
 
+        clean_pid = str(position_id).replace("live_", "").replace("pos_", "").replace("ord_", "").replace("mt5_", "")
         ticket = None
         for t, pid in list(self.ticket_to_position_id.items()):
-            if pid == position_id:
-                ticket = t
+            if pid == position_id or str(t) == clean_pid:
+                ticket = int(t)
                 break
 
-        if not ticket:
-            clean_pid = str(position_id).replace("live_", "").replace("pos_", "").replace("ord_", "")
-            if clean_pid.isdigit():
-                try:
-                    ticket = int(clean_pid)
-                except Exception:
-                    pass
+        if not ticket and clean_pid.isdigit():
+            ticket = int(clean_pid)
 
+        # 1. Try to find open position
         pos = None
         if ticket:
             pos_list = mt5.positions_get(ticket=ticket)
@@ -666,84 +624,192 @@ class MT5Broker:
                 pos = pos_list[0]
 
         if not pos:
-            exness_symbol = self.get_exness_symbol(self.symbol)
-            pos_list = mt5.positions_get(symbol=exness_symbol) if exness_symbol else ()
+            pos_list = mt5.positions_get() if MT5_AVAILABLE else ()
             if pos_list:
                 for p in pos_list:
-                    if hasattr(self, "magic_number") and self.magic_number:
-                        if getattr(p, "magic", 0) == self.magic_number:
-                            pos = p
-                            ticket = p.ticket
-                            break
-                    else:
+                    if getattr(p, "ticket", None) == ticket or str(getattr(p, "ticket", "")) == clean_pid:
                         pos = p
-                        ticket = p.ticket
+                        ticket = int(p.ticket)
                         break
 
-        if not pos or not ticket:
-            return False
+        # 2. Handle Open Position SL/TP Modification (TRADE_ACTION_SLTP)
+        if pos and ticket:
+            symbol_info = self.get_cached_symbol_info(pos.symbol)
+            digits = symbol_info.digits if symbol_info else 4
+            point = symbol_info.point if symbol_info else 0.0001
+            stops_lvl = getattr(symbol_info, "trade_stops_level", 0) or 0
+            min_stop_dist = max(stops_lvl * point, point * 50.0, 0.10 if any(x in str(pos.symbol).upper() for x in ["XAU", "GOLD"]) else 0.0001)
 
-        symbol_info = mt5.symbol_info(pos.symbol)
-        digits = symbol_info.digits if symbol_info else 4
-        point = symbol_info.point if symbol_info else 0.0001
-        stops_lvl = getattr(symbol_info, "stops_level", 0) or 0
-        min_stop_dist = max(stops_lvl * point, point * 10.0, 0.10 if any(x in str(pos.symbol).upper() for x in ["XAU", "GOLD"]) else 0.0001)
+            tick_info = mt5.symbol_info_tick(pos.symbol)
+            bid_px = getattr(tick_info, "bid", 0.0) or getattr(pos, "price_current", 0.0)
+            ask_px = getattr(tick_info, "ask", 0.0) or getattr(pos, "price_current", 0.0)
 
-        tick_info = mt5.symbol_info_tick(pos.symbol)
-        bid_px = getattr(tick_info, "bid", 0.0) or 0.0
-        ask_px = getattr(tick_info, "ask", 0.0) or 0.0
+            cur_p_sl = float(getattr(pos, "sl", 0.0) or 0.0)
+            cur_p_tp = float(getattr(pos, "tp", 0.0) or 0.0)
 
-        final_sl = round(sl, digits) if sl > 0 else 0.0
-        final_tp = round(tp, digits) if tp > 0 else 0.0
+            # Preserve existing SL level if sl is not provided or <= 0
+            if sl is None:
+                final_sl = cur_p_sl
+            elif sl > 0:
+                final_sl = round(sl, digits)
+            else:
+                final_sl = cur_p_sl if cur_p_sl > 0 else 0.0
 
-        # Exness Stops Level Clamping: ensure SL & TP satisfy broker minimum distance from live price
-        if pos.type == mt5.POSITION_TYPE_BUY:
-            if final_tp > 0 and ask_px > 0:
-                final_tp = max(final_tp, round(ask_px + min_stop_dist, digits))
-            if final_sl > 0 and bid_px > 0:
-                final_sl = min(final_sl, round(bid_px - min_stop_dist, digits))
-        else:
-            if final_tp > 0 and bid_px > 0:
-                final_tp = min(final_tp, round(bid_px - min_stop_dist, digits))
-            if final_sl > 0 and ask_px > 0:
-                final_sl = max(final_sl, round(ask_px + min_stop_dist, digits))
+            # Preserve existing TP level if tp is not provided or <= 0, or compute default TP if missing
+            if tp is None:
+                final_tp = cur_p_tp
+            elif tp > 0:
+                final_tp = round(tp, digits)
+            else:
+                if cur_p_tp > 0:
+                    final_tp = cur_p_tp
+                else:
+                    lot_v = float(getattr(pos, "volume", 0.01) or 0.01)
+                    c_mult = 100.0 if any(x in str(pos.symbol).upper() for x in ["XAU", "GOLD"]) else 1.0
+                    tp_dist = max(min_stop_dist * 2.0, 2.0 / max(0.001, lot_v * c_mult))
+                    if pos.type == mt5.POSITION_TYPE_BUY:
+                        final_tp = round(pos.price_open + tp_dist, digits)
+                    else:
+                        final_tp = round(pos.price_open - tp_dist, digits)
 
-        req = {
-            "action": mt5.TRADE_ACTION_SLTP,
-            "symbol": pos.symbol,
-            "position": ticket,
-            "sl": final_sl,
-            "tp": final_tp,
-        }
+            # Exness Stops Level Clamping: ensure SL & TP satisfy broker minimum distance from live price
+            if pos.type == mt5.POSITION_TYPE_BUY:
+                if final_tp > 0 and ask_px > 0:
+                    final_tp = max(final_tp, round(ask_px + min_stop_dist, digits))
+                if final_sl > 0 and bid_px > 0:
+                    final_sl = min(final_sl, round(bid_px - min_stop_dist, digits))
+            else:
+                if final_tp > 0 and bid_px > 0:
+                    final_tp = min(final_tp, round(bid_px - min_stop_dist, digits))
+                if final_sl > 0 and ask_px > 0:
+                    final_sl = max(final_sl, round(ask_px + min_stop_dist, digits))
 
-        res = mt5.order_send(req)
-        if res is not None and res.retcode in [mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_PLACED]:
-            return True
-        else:
-            req["magic"] = getattr(pos, "magic", self.magic_number)
+            req = {
+                "action": mt5.TRADE_ACTION_SLTP,
+                "symbol": pos.symbol,
+                "position": int(ticket),
+                "sl": float(final_sl),
+                "tp": float(final_tp),
+            }
+
             res = mt5.order_send(req)
-            return res is not None and res.retcode in [mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_PLACED]
-            ret_code = getattr(res, 'retcode', 'N/A')
-            ret_comment = getattr(res, 'comment', 'N/A')
-            print(f"[{pos.symbol}] [SL/TP MODIFY NOTICE] Ticket {ticket} SL/TP modification notice: {ret_comment} (Retcode: {ret_code})")
-            return False
+            is_ok = res is not None and (getattr(res, "retcode", -1) in (0, 10009, 10008, 10004) or getattr(res, "comment", "") == "ok")
+            if not is_ok:
+                req["magic"] = int(getattr(pos, "magic", self.magic_number) or self.magic_number)
+                res = mt5.order_send(req)
+                is_ok = res is not None and (getattr(res, "retcode", -1) in (0, 10009, 10008, 10004) or getattr(res, "comment", "") == "ok")
 
-    def close_all_positions(self, exit_price: float, timestamp: float, symbol: Optional[str] = None) -> List[dict]:
+            if is_ok:
+                # Update local position tracking
+                pid_key = self.ticket_to_position_id.get(ticket, f"live_{ticket}")
+                pos_obj = self.open_positions.get(pid_key)
+                if pos_obj:
+                    pos_obj.sl = final_sl
+                    pos_obj.tp = final_tp
+            return is_ok
+
+        # 3. Fallback: Pending Order Modification (TRADE_ACTION_MODIFY)
+        if ticket:
+            ord_list = mt5.orders_get(ticket=ticket) if MT5_AVAILABLE else ()
+            if ord_list:
+                ord_item = ord_list[0]
+                symbol_info = self.get_cached_symbol_info(ord_item.symbol)
+                digits = symbol_info.digits if symbol_info else 4
+                cur_ord_sl = float(getattr(ord_item, "sl", 0.0) or 0.0)
+                cur_ord_tp = float(getattr(ord_item, "tp", 0.0) or 0.0)
+
+                final_sl = round(sl, digits) if (sl is not None and sl > 0) else cur_ord_sl
+                final_tp = round(tp, digits) if (tp is not None and tp > 0) else cur_ord_tp
+
+                req = {
+                    "action": mt5.TRADE_ACTION_MODIFY,
+                    "order": int(ticket),
+                    "price": float(ord_item.price_open),
+                    "sl": float(final_sl),
+                    "tp": float(final_tp),
+                    "type_time": mt5.ORDER_TIME_GTC,
+                }
+                res = mt5.order_send(req)
+                return res is not None and (getattr(res, "retcode", -1) in (0, 10009, 10008, 10004) or getattr(res, "comment", "") == "ok")
+
+        return False
+
+    def modify_order(self, order_id: str, price: Optional[float] = None, sl: Optional[float] = None, tp: Optional[float] = None) -> bool:
+        """Alias method for modify_position_sl_tp to ensure 100% API compatibility."""
+        return self.modify_position_sl_tp(order_id, sl=sl, tp=tp)
+
+    def close_all_positions(self, exit_price: float = 0.0, timestamp: float = 0.0, symbol: Optional[str] = None, side: Optional[str] = None) -> List[dict]:
+        """
+        Closes positions on MT5 server with 3-tier filling mode fallbacks.
+        side: None (closes ALL), 'BUY' (closes BUY positions only), 'SELL' (closes SELL positions only).
+        """
         if not self.ensure_connected():
             return []
 
-        sym = symbol or self.symbol
-        exness_symbol = self.get_exness_symbol(sym)
-        positions = mt5.positions_get(symbol=exness_symbol) if exness_symbol else None
+        if symbol:
+            exness_symbol = self.get_exness_symbol(symbol)
+            positions = mt5.positions_get(symbol=exness_symbol) if exness_symbol else None
+        else:
+            positions = mt5.positions_get() if MT5_AVAILABLE else None
+
         closed = []
         if positions:
-            for pos in positions:
-                if getattr(pos, "magic", 0) == self.magic_number or getattr(pos, "symbol", "") == exness_symbol:
-                    pid = self.ticket_to_position_id.get(pos.ticket, f"live_{pos.ticket}")
-                    rec = self.close_position(pid, exit_price, timestamp)
-                    if rec:
-                        closed.append(rec)
+            for pos in list(positions):
+                try:
+                    pos_side = "BUY" if pos.type == mt5.POSITION_TYPE_BUY else "SELL"
+                    if side and str(side).upper() != pos_side:
+                        continue
+
+                    close_type = mt5.ORDER_TYPE_SELL if pos.type == mt5.POSITION_TYPE_BUY else mt5.ORDER_TYPE_BUY
+                    tick = mt5.symbol_info_tick(pos.symbol)
+                    price = (tick.bid if close_type == mt5.ORDER_TYPE_SELL else tick.ask) if tick else getattr(pos, "price_current", exit_price)
+                    
+                    symbol_info = self.get_cached_symbol_info(pos.symbol)
+                    filling_mode = getattr(symbol_info, "filling_mode", 0) or 0
+                    
+                    best_filling = mt5.ORDER_FILLING_IOC
+                    if (filling_mode & mt5.ORDER_FILLING_FOK) != 0:
+                        best_filling = mt5.ORDER_FILLING_FOK
+                    elif (filling_mode & mt5.ORDER_FILLING_RETURN) != 0:
+                        best_filling = mt5.ORDER_FILLING_RETURN
+
+                    req = {
+                        "action": mt5.TRADE_ACTION_DEAL,
+                        "symbol": pos.symbol,
+                        "volume": pos.volume,
+                        "type": close_type,
+                        "position": int(pos.ticket),
+                        "price": price,
+                        "magic": getattr(pos, "magic", self.magic_number),
+                        "comment": f"Maty Close {pos_side}",
+                        "type_filling": best_filling,
+                    }
+
+                    res = mt5.order_send(req)
+                    if res is None or getattr(res, "retcode", -1) not in (0, 10009, 10008, 10004):
+                        for alt_fill in [mt5.ORDER_FILLING_FOK, mt5.ORDER_FILLING_IOC, mt5.ORDER_FILLING_RETURN]:
+                            req["type_filling"] = alt_fill
+                            res = mt5.order_send(req)
+                            if res is not None and getattr(res, "retcode", -1) in (0, 10009, 10008, 10004):
+                                break
+
+                    is_ok = res is not None and (getattr(res, "retcode", -1) in (0, 10009, 10008, 10004) or getattr(res, "deal", 0) > 0 or getattr(res, "comment", "") == "ok")
+                    if is_ok:
+                        closed.append({"position_id": f"live_{pos.ticket}", "pnl": float(getattr(pos, "profit", 0.0)), "side": pos_side})
+                        self.open_positions.pop(f"live_{pos.ticket}", None)
+                        self.open_positions.pop(str(pos.ticket), None)
+                        self.ticket_to_position_id.pop(pos.ticket, None)
+                except Exception:
+                    pass
         return closed
+
+    def close_buy_positions(self, symbol: Optional[str] = None) -> List[dict]:
+        """Closes ONLY BUY positions on MT5 server."""
+        return self.close_all_positions(symbol=symbol, side="BUY")
+
+    def close_sell_positions(self, symbol: Optional[str] = None) -> List[dict]:
+        """Closes ONLY SELL positions on MT5 server."""
+        return self.close_all_positions(symbol=symbol, side="SELL")
 
     def process_tick(self, previous_price: float, current_price: float, timestamp: float, symbol: Optional[str] = None) -> List[Position]:
         if not self.ensure_connected():
@@ -759,10 +825,46 @@ class MT5Broker:
         active_order_tickets = set()
         if mt5_orders:
             for o in mt5_orders:
-                if o.magic == self.magic_number:
+                if o.magic == self.magic_number or getattr(self, "magic_number", None) is None:
                     active_order_tickets.add(o.ticket)
+                    # Auto-attach hardware SL/TP to existing live MT5 pending orders if missing (sl == 0.0 or tp == 0.0)
+                    cur_o_sl = float(getattr(o, "sl", 0.0) or 0.0)
+                    cur_o_tp = float(getattr(o, "tp", 0.0) or 0.0)
+                    if cur_o_sl == 0.0 or cur_o_tp == 0.0:
+                        symbol_info = self.get_cached_symbol_info(o.symbol)
+                        digits = symbol_info.digits if symbol_info else 2
+                        point = symbol_info.point if symbol_info else 0.01
+                        stops_lvl = getattr(symbol_info, "trade_stops_level", 0) or 0
+                        sym_u = str(o.symbol).upper()
+                        if "BTC" in sym_u:
+                            sl_dist = 250.0
+                            tp_dist = 450.0
+                        elif "ETH" in sym_u:
+                            sl_dist = 20.0
+                            tp_dist = 40.0
+                        elif any(x in sym_u for x in ["XAU", "GOLD"]):
+                            sl_dist = 6.0
+                            tp_dist = 12.0
+                        elif any(x in sym_u for x in ["EUR", "GBP"]):
+                            sl_dist = 0.0035
+                            tp_dist = 0.0070
+                        else:
+                            sl_dist = max(stops_lvl * point, point * 500.0, 1.0)
+                            tp_dist = max(stops_lvl * point, point * 500.0, 1.0)
+
+                        is_buy = o.type in [mt5.ORDER_TYPE_BUY_STOP, mt5.ORDER_TYPE_BUY_LIMIT, 2, 4]
+                        px = float(o.price_open)
+                        calc_tp = round(px + tp_dist if is_buy else px - tp_dist, digits)
+                        calc_sl = round(px - sl_dist if is_buy else px + sl_dist, digits)
+                        t_tp = cur_o_tp if cur_o_tp > 0 else calc_tp
+                        t_sl = cur_o_sl if cur_o_sl > 0 else calc_sl
+                        try:
+                            self.modify_position_sl_tp(str(o.ticket), t_sl, t_tp)
+                        except Exception:
+                            pass
+
                     if o.ticket not in self.ticket_to_order_id:
-                        order_type = "BUY_STOP" if o.type in [mt5.ORDER_TYPE_BUY_STOP, 4] else "SELL_STOP"
+                        order_type = "BUY_STOP" if o.type in [mt5.ORDER_TYPE_BUY_STOP, 4] else ("BUY_LIMIT" if o.type in [mt5.ORDER_TYPE_BUY_LIMIT, 2] else ("SELL_LIMIT" if o.type in [mt5.ORDER_TYPE_SELL_LIMIT, 3] else "SELL_STOP"))
                         loc_ord = Order(order_type, o.price_open, o.volume_initial, o.time_setup)
                         loc_ord.order_id = f"mt5_{o.ticket}"
                         loc_ord.mt5_ticket = o.ticket
@@ -776,30 +878,69 @@ class MT5Broker:
                     self.pending_orders.pop(oid, None)
                     self.ticket_to_order_id.pop(ticket, None)
 
-        # 2. Active positions from MT5
-        mt5_positions = mt5.positions_get(symbol=exness_symbol) if exness_symbol else None
+        # 2. Active positions from MT5 across ALL symbols
+        mt5_positions = mt5.positions_get() if MT5_AVAILABLE else None
         active_pos_tickets = set()
         triggered_positions = []
 
         if mt5_positions:
             for p in mt5_positions:
-                if getattr(p, "magic", 0) == self.magic_number or getattr(p, "magic", 0) == 0:
-                    active_pos_tickets.add(p.ticket)
-                    pid = self.ticket_to_position_id.get(p.ticket)
-                    if not pid:
-                        pos_type = "BUY" if p.type == mt5.POSITION_TYPE_BUY else "SELL"
-                        new_pos = Position(pos_type, p.price_open, p.volume, p.time)
-                        new_pos.position_id = f"live_{p.ticket}"
-                        new_pos.sl = float(getattr(p, "sl", 0.0) or 0.0)
-                        new_pos.tp = float(getattr(p, "tp", 0.0) or 0.0)
-                        self.ticket_to_position_id[p.ticket] = new_pos.position_id
-                        self.open_positions[new_pos.position_id] = new_pos
-                        triggered_positions.append(new_pos)
-                    else:
-                        pos_obj = self.open_positions.get(pid)
-                        if pos_obj:
-                            pos_obj.sl = float(getattr(p, "sl", 0.0) or 0.0)
-                            pos_obj.tp = float(getattr(p, "tp", 0.0) or 0.0)
+                sym_upper = str(p.symbol).upper()
+                active_pos_tickets.add(p.ticket)
+                pid = self.ticket_to_position_id.get(p.ticket)
+
+                symbol_info = self.get_cached_symbol_info(p.symbol)
+                digits = symbol_info.digits if symbol_info else (4 if any(x in sym_upper for x in ["DOGE", "GBP", "EUR"]) else 2)
+                point = symbol_info.point if symbol_info else (0.01 if "BTC" in sym_upper else 0.0001)
+                stops_lvl = getattr(symbol_info, "trade_stops_level", 0) or 0
+                if "BTC" in sym_upper:
+                    sl_dist_floor = 250.0
+                    tp_dist_floor = 450.0
+                elif any(x in sym_upper for x in ["XAU", "GOLD"]):
+                    sl_dist_floor = 6.0
+                    tp_dist_floor = 12.0
+                elif "ETH" in sym_upper:
+                    sl_dist_floor = 20.0
+                    tp_dist_floor = 40.0
+                elif any(x in sym_upper for x in ["EUR", "GBP"]):
+                    sl_dist_floor = 0.0035
+                    tp_dist_floor = 0.0070
+                else:
+                    sl_dist_floor = max(stops_lvl * point, point * 500.0, 1.0)
+                    tp_dist_floor = max(stops_lvl * point, point * 500.0, 1.0)
+
+                # Auto-attach SL/TP to live MT5 position if missing (sl == 0.0 or tp == 0.0)
+                cur_p_sl = float(getattr(p, "sl", 0.0) or 0.0)
+                cur_p_tp = float(getattr(p, "tp", 0.0) or 0.0)
+
+                if cur_p_sl == 0.0 or cur_p_tp == 0.0:
+                    is_buy = (p.type == mt5.POSITION_TYPE_BUY)
+                    p_open = float(p.price_open)
+                    calc_tp = round(p_open + tp_dist_floor if is_buy else p_open - tp_dist_floor, digits)
+                    calc_sl = round(p_open - sl_dist_floor if is_buy else p_open + sl_dist_floor, digits)
+                    target_tp = cur_p_tp if cur_p_tp > 0 else calc_tp
+                    target_sl = cur_p_sl if cur_p_sl > 0 else calc_sl
+                    try:
+                        self.modify_position_sl_tp(str(p.ticket), target_sl, target_tp)
+                        cur_p_sl = target_sl
+                        cur_p_tp = target_tp
+                    except Exception:
+                        pass
+
+                if not pid:
+                    pos_type = "BUY" if p.type == mt5.POSITION_TYPE_BUY else "SELL"
+                    new_pos = Position(pos_type, p.price_open, p.volume, p.time)
+                    new_pos.position_id = f"live_{p.ticket}"
+                    new_pos.sl = cur_p_sl
+                    new_pos.tp = cur_p_tp
+                    self.ticket_to_position_id[p.ticket] = new_pos.position_id
+                    self.open_positions[new_pos.position_id] = new_pos
+                    triggered_positions.append(new_pos)
+                else:
+                    pos_obj = self.open_positions.get(pid)
+                    if pos_obj:
+                        pos_obj.sl = cur_p_sl
+                        pos_obj.tp = cur_p_tp
 
         # Purge local positions ONLY if MT5 query succeeded
         if mt5_positions is not None:
@@ -813,13 +954,11 @@ class MT5Broker:
     def get_floating_pnl(self, current_price: float) -> float:
         if not self.ensure_connected():
             return 0.0
-        exness_symbol = self.get_exness_symbol(self.symbol)
-        positions = mt5.positions_get(symbol=exness_symbol) if exness_symbol else None
+        positions = mt5.positions_get() if MT5_AVAILABLE else None
         total_pnl = 0.0
         if positions:
             for p in positions:
-                if p.magic == self.magic_number:
-                    total_pnl += p.profit
+                total_pnl += float(getattr(p, "profit", 0.0) or 0.0)
         return total_pnl
 
     def sync_history_from_mt5(self, days: int = 180, force: bool = False):
@@ -851,7 +990,13 @@ class MT5Broker:
                     if d_sym and (d_sym in target_syms or any(ts in d_sym or d_sym in ts for ts in target_syms if ts)):
                         pnl = float(getattr(d, "profit", 0.0)) + float(getattr(d, "swap", 0.0)) + float(getattr(d, "commission", 0.0))
                         if getattr(d, "entry", 0) in (1, 2) or abs(pnl) > 0.0001:
-                            e_time = pos_entry_times.get(d.position_id, float(d.time))
+                            ex_sec = float(d.time / 1000.0) if d.time > 1e11 else float(d.time)
+                            raw_e = pos_entry_times.get(d.position_id, None)
+                            if raw_e is not None:
+                                raw_sec = float(raw_e / 1000.0) if raw_e > 1e11 else float(raw_e)
+                                e_sec = min(raw_sec, ex_sec - 1.0)
+                            else:
+                                e_sec = ex_sec - 15.0
                             t_record = {
                                 "position_id": f"deal_{d.ticket}",
                                 "type": "BUY" if getattr(d, "type", 0) == 1 else "SELL",
@@ -859,8 +1004,8 @@ class MT5Broker:
                                 "exit_price": float(d.price),
                                 "size": float(d.volume),
                                 "pnl": pnl,
-                                "entry_time": e_time,
-                                "exit_time": float(d.time),
+                                "entry_time": e_sec,
+                                "exit_time": ex_sec,
                                 "commission": float(getattr(d, "commission", 0.0))
                             }
                             synced_trades.append(t_record)
@@ -924,7 +1069,12 @@ class SimulatedBroker:
         return self.pending_orders.pop(order_id, None)
 
     def cancel_all_orders(self, symbol: Optional[str] = None):
-        self.pending_orders.clear()
+        if symbol:
+            to_remove = [oid for oid, ord_obj in list(self.pending_orders.items()) if getattr(ord_obj, "symbol", symbol) == symbol]
+            for oid in to_remove:
+                self.pending_orders.pop(oid, None)
+        else:
+            self.pending_orders.clear()
 
     def close_position(self, position_id: str, exit_price: float, timestamp: float) -> Optional[dict]:
         pos = self.open_positions.pop(position_id, None)
@@ -946,13 +1096,23 @@ class SimulatedBroker:
         self.realized_pnl += pnl
         return record
 
-    def close_all_positions(self, exit_price: float, timestamp: float, symbol: Optional[str] = None) -> List[dict]:
+    def close_all_positions(self, exit_price: float = 0.0, timestamp: float = 0.0, symbol: Optional[str] = None, side: Optional[str] = None) -> List[dict]:
         closed = []
-        for pid in list(self.open_positions.keys()):
-            rec = self.close_position(pid, exit_price, timestamp)
+        for pid, pos in list(self.open_positions.items()):
+            if symbol and getattr(pos, "symbol", symbol) != symbol:
+                continue
+            if side and str(side).upper() != pos.type:
+                continue
+            rec = self.close_position(pid, exit_price or getattr(pos, 'entry_price', 0.0), timestamp or time.time())
             if rec:
                 closed.append(rec)
         return closed
+
+    def close_buy_positions(self, symbol: Optional[str] = None) -> List[dict]:
+        return self.close_all_positions(symbol=symbol, side="BUY")
+
+    def close_sell_positions(self, symbol: Optional[str] = None) -> List[dict]:
+        return self.close_all_positions(symbol=symbol, side="SELL")
 
     def process_tick(self, previous_price: float, current_price: float, timestamp: float, symbol: Optional[str] = None) -> List[Position]:
         triggered = []
