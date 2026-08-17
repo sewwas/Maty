@@ -188,13 +188,10 @@ def process_engine_tick(self, previous_price: float, current_price: float, times
         except Exception:
             pass
 
-    if not self.deployed and not has_orders:
-        if timestamp >= getattr(self, "_last_deploy_error_time", 0.0) + 15.0:
-            self.deploy_traps(current_price, timestamp, force=False)
-        return None
-
     if not has_orders:
         self.deployed = False
+        if timestamp >= getattr(self, "_last_deploy_error_time", 0.0) + 3.0:
+            self.deploy_traps(current_price, timestamp, force=True)
         return None
 
     self._tick_counter += 1

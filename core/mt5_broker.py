@@ -299,10 +299,16 @@ class MT5Broker:
         sym_u_name = str(exness_symbol).upper()
         px_tolerance = 0.50 if "BTC" in sym_u_name else (0.01 if any(x in sym_u_name for x in ["XAU", "GOLD", "PAXG"]) else (0.05 if "ETH" in sym_u_name else 0.00005))
 
-        for p_ord in list(self.pending_orders.values()):
+        p_ord_copy = list(self.pending_orders.items())
+        for oid, p_ord in p_ord_copy:
             ord_px = getattr(p_ord, "trigger_price", getattr(p_ord, "price_open", 0.0))
             if getattr(p_ord, "type", "") == order_type and abs(trigger_price - ord_px) <= px_tolerance:
-                return p_ord
+                tk = int(getattr(p_ord, "broker_ticket", getattr(p_ord, "mt5_ticket", 0)) or 0)
+                live_o = mt5.orders_get(ticket=tk) if (MT5_AVAILABLE and tk > 0) else None
+                if live_o:
+                    return p_ord
+                else:
+                    self.pending_orders.pop(oid, None)
         existing_orders = []
         if MT5_AVAILABLE:
             for s_alias in set([exness_symbol, self.symbol, f"{exness_symbol}m", f"{exness_symbol}c", "XAUUSD", "XAUUSDm"]):
@@ -572,6 +578,7 @@ class MT5Broker:
 
         self.pending_orders.clear()
         self.ticket_to_order_id.clear()
+        time.sleep(0.5)
 
     def close_position(self, position_id: str, exit_price: float, timestamp: float) -> Optional[dict]:
         if not self.ensure_connected():
