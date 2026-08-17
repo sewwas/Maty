@@ -677,6 +677,34 @@ class MT5Broker:
             return record
         return None
 
+    def purge_duplicate_mt5_orders(self) -> int:
+        """
+        Scans all active MT5 pending orders for this symbol and purges any duplicate
+        orders that exist at the exact same price level.
+        Returns the number of duplicate orders purged.
+        """
+        if not MT5_AVAILABLE or not self.ensure_connected():
+            return 0
+        
+        ex_sym = self.get_exness_symbol(self.symbol)
+        ords = mt5.orders_get(symbol=ex_sym) if ex_sym else mt5.orders_get()
+        if not ords or len(ords) <= 1:
+            return 0
+        
+        seen_levels = {}
+        purged = 0
+        for o in ords:
+            if getattr(o, "magic", 0) != self.magic_number:
+                continue
+            key = (o.type, round(float(o.price_open), 2))
+            if key in seen_levels:
+                req = {"action": mt5.TRADE_ACTION_REMOVE, "order": int(o.ticket)}
+                mt5.order_send(req)
+                purged += 1
+            else:
+                seen_levels[key] = int(o.ticket)
+        return purged
+
     def modify_position_sl_tp(self, position_id: str, sl: Optional[float] = None, tp: Optional[float] = None) -> bool:
         """
         Sends TRADE_ACTION_SLTP or TRADE_ACTION_MODIFY request to MT5 server to update hardware 
