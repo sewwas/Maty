@@ -434,32 +434,53 @@ if MT5_AVAILABLE:
             for sym_code, m_item in st.session_state.markets.items():
                 brk = m_item.get("broker")
                 if brk and hasattr(brk, "get_exness_symbol"):
-                    ex_s = brk.get_exness_symbol(sym_code)
-                    if ex_s:
-                        ords = mt5_sys.orders_get(symbol=ex_s)
+                    ex_s = brk.get_exness_symbol(sym_code) or sym_code
+                    aliases = {ex_s.upper(), sym_code.upper(), f"{ex_s}m".upper(), f"{ex_s}c".upper()}
+                    if any(x in sym_code.upper() for x in ["PAXG", "XAU", "GOLD"]):
+                        aliases.update(["XAUUSD", "GOLD", "PAXGUSDT", "XAUUSDm", "XAUUSDc"])
+
+                    ords = None
+                    for a_sym in aliases:
+                        ords = mt5_sys.orders_get(symbol=a_sym)
                         if ords:
-                            brk.pending_orders.clear()
-                            for o in ords:
-                                loc_id = f"mt5_{o.ticket}"
-                                t_type = "BUY_STOP" if o.type == 4 else ("SELL_STOP" if o.type == 5 else ("BUY_LIMIT" if o.type == 2 else "SELL_LIMIT"))
-                                ord_obj = Order(t_type, o.price_open, getattr(o, "volume_initial", 0.01), getattr(o, "time_setup", time.time()))
-                                ord_obj.order_id = loc_id
-                                ord_obj.mt5_ticket = o.ticket
-                                brk.pending_orders[loc_id] = ord_obj
-                        else:
-                            brk.pending_orders.clear()
-                        
-                        pos_list = mt5_sys.positions_get(symbol=ex_s)
+                            break
+                    if ords is None:
+                        all_o = mt5_sys.orders_get()
+                        if all_o:
+                            ords = [o for o in all_o if any(a_s in str(o.symbol).upper() for a_s in aliases)]
+
+                    if ords:
+                        brk.pending_orders.clear()
+                        for o in ords:
+                            loc_id = f"mt5_{o.ticket}"
+                            t_type = "BUY_STOP" if o.type == 4 else ("SELL_STOP" if o.type == 5 else ("BUY_LIMIT" if o.type == 2 else "SELL_LIMIT"))
+                            ord_obj = Order(t_type, o.price_open, getattr(o, "volume_initial", 0.01), getattr(o, "time_setup", time.time()))
+                            ord_obj.order_id = loc_id
+                            ord_obj.mt5_ticket = o.ticket
+                            brk.pending_orders[loc_id] = ord_obj
+                    else:
+                        brk.pending_orders.clear()
+
+                    pos_list = None
+                    for a_sym in aliases:
+                        pos_list = mt5_sys.positions_get(symbol=a_sym)
                         if pos_list:
-                            brk.open_positions.clear()
-                            for p in pos_list:
-                                pos_id = str(p.ticket)
-                                p_type = "BUY" if p.type == 0 else "SELL"
-                                pos_obj = Position(p_type, p.price_open, getattr(p, "volume", 0.01), getattr(p, "time", time.time()), pos_id)
-                                pos_obj.profit = getattr(p, "profit", 0.0)
-                                brk.open_positions[pos_id] = pos_obj
-                        else:
-                            brk.open_positions.clear()
+                            break
+                    if pos_list is None:
+                        all_p = mt5_sys.positions_get()
+                        if all_p:
+                            pos_list = [p for p in all_p if any(a_s in str(p.symbol).upper() for a_s in aliases)]
+
+                    if pos_list:
+                        brk.open_positions.clear()
+                        for p in pos_list:
+                            pos_id = str(p.ticket)
+                            p_type = "BUY" if p.type == 0 else "SELL"
+                            pos_obj = Position(p_type, p.price_open, getattr(p, "volume", 0.01), getattr(p, "time", time.time()), pos_id)
+                            pos_obj.profit = getattr(p, "profit", 0.0)
+                            brk.open_positions[pos_id] = pos_obj
+                    else:
+                        brk.open_positions.clear()
     except Exception:
         pass
 
