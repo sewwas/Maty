@@ -581,16 +581,10 @@ def check_target_profit(self, current_price: float, timestamp: float) -> Optiona
     exit_reason = ""
 
     # ─────────────────────────────────────────────────────────────
-    # Basket Stop Loss
     # ─────────────────────────────────────────────────────────────
     sl_limit = float(getattr(self, "stop_loss", 0.0) or 0.0)
     if sl_limit > 0:
-        sym_u = str(getattr(self.broker, "symbol", getattr(self, "symbol_code", ""))).upper()
-        if any(x in sym_u for x in ["XAU", "GOLD", "PAXG"]):
-            min_sl_floor = 5.0
-        else:
-            min_sl_floor = 0.50
-        effective_sl = max(sl_limit, min_sl_floor)
+        effective_sl = sl_limit
         if total_pnl <= -abs(effective_sl):
             exit_triggered = True
             exit_reason = "STOP_LOSS"
@@ -600,11 +594,10 @@ def check_target_profit(self, current_price: float, timestamp: float) -> Optiona
     # ─────────────────────────────────────────────────────────────
     if not exit_triggered:
         sym_u = str(getattr(self.broker, "symbol", getattr(self, "symbol_code", ""))).upper()
-        # Gold default cycle target: $10.00. Others: $3.00
+        # Use user-configured target profit, otherwise use default
         default_target = 10.0 if any(x in sym_u for x in ["XAU", "GOLD", "PAXG"]) else 3.0
-        cycle_target = float(getattr(self, "target_profit", default_target) or default_target)
-        if cycle_target < default_target:
-            cycle_target = default_target
+        user_target = float(getattr(self, "target_profit", 0.0) or 0.0)
+        cycle_target = user_target if user_target > 0 else default_target
             
         if total_pnl >= cycle_target:
             exit_triggered = True
@@ -616,22 +609,8 @@ def check_target_profit(self, current_price: float, timestamp: float) -> Optiona
         if hasattr(self.broker, "cancel_all_orders"):
             self.broker.cancel_all_orders()
             
-        if exit_reason == "TARGET_PROFIT" and len(getattr(self.broker, "open_positions", {})) > 1:
-            best_pos = None
-            best_profit = -float("inf")
-            for pid, pos in self.broker.open_positions.items():
-                pnl = float(getattr(pos, "profit", 0.0) or 0.0)
-                if pnl > best_profit:
-                    best_profit = pnl
-                    best_pos = pid
-            if best_pos and best_profit > 0:
-                if not hasattr(self.broker, "runner_ids"):
-                    self.broker.runner_ids = set()
-                self.broker.runner_ids.add(best_pos)
-                print(f"[{self.symbol}] 🏃 [RUNNER DESIGNATED] Kept position #{best_pos} (Profit: ${best_profit:.2f}) open to trail trend!")
-
         if hasattr(self.broker, "close_all_positions"):
-            self.broker.close_all_positions(exclude_ids=getattr(self.broker, "runner_ids", None))
+            self.broker.close_all_positions()
 
         summary = {
             "cycle_id": getattr(self, "current_cycle_id", 1),
@@ -676,11 +655,7 @@ def process_engine_tick(self, previous_price: float, current_price: float, times
     if self.is_high_impact_news_blackout(timestamp):
         return None
 
-    open_pos_count = 0
-    for pid in getattr(self.broker, "open_positions", {}):
-        if pid not in getattr(self.broker, "runner_ids", set()):
-            open_pos_count += 1
-    has_orders = len(getattr(self.broker, "pending_orders", {})) > 0 or open_pos_count > 0
+    has_orders = len(getattr(self.broker, "pending_orders", {})) > 0 or len(getattr(self.broker, "open_positions", {})) > 0
     if not has_orders and hasattr(self.broker, "ensure_connected"):
         try:
             if not self.broker.ensure_connected():
@@ -706,8 +681,6 @@ def process_engine_tick(self, previous_price: float, current_price: float, times
             # the closing cycle (broker cache lags by 1-2 ticks).
             if not has_orders and mt5_tick_check:
                 mt5_p = mt5_tick_check.positions_get(symbol=ex_s)
-                if mt5_p:
-                    mt5_p = [p for p in mt5_p if f"live_{p.ticket}" not in getattr(self.broker, "runner_ids", set())]
                 if not mt5_p:
                     # Fallback: search all positions for this symbol
                     all_p = mt5_tick_check.positions_get()
@@ -716,7 +689,7 @@ def process_engine_tick(self, previous_price: float, current_price: float, times
                             "PAXG" if "PAXG" in (ex_s or "").upper() else
                             (ex_s or "").replace("USDT", "").replace("USD", "").upper()
                         )
-                        mt5_p = [p for p in all_p if clean_tgt in str(p.symbol).upper() and f"live_{p.ticket}" not in getattr(self.broker, "runner_ids", set())]
+                        mt5_p = [p for p in all_p if clean_tgt in str(p.symbol).upper()]
                 if mt5_p and len(mt5_p) > 0:
                     has_orders = True   # Lingering positions still open — do NOT redeploy
                     self.deployed = True
@@ -809,7 +782,7 @@ def process_engine_tick(self, previous_price: float, current_price: float, times
         try:
             # enforce_profit_lock(self, current_price, timestamp)             # Disabled: Sabotages SL by locking too tight ($0.20)
             trail_stop_loss_5m_structure(self, current_price, timestamp)
-            evaluate_partial_tp(self, current_price, timestamp)             # Industry-grade 3-stage TP (TP1/TP2/Chandelier)
+            # evaluate_partial_tp(self, current_price, timestamp)             # Disabled per user: scale-outs bleed in chop
             align_basket_take_profits(self, current_price, timestamp)       # ATR basket TP alignment (fallback/tighten)
             enforce_position_tp(self, current_price, timestamp)             # Software-side TP guard — always take profit
         except Exception:
@@ -1173,11 +1146,10 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
 
         placed_count = 0
         # 1. Dynamic ATR-Based Trap Placement
-        # MATHEMATICAL PROOF (1000 candles): 
-        # Avg Noise: $0.31 | Avg Trend: $3.03 | Optimal Offset: $0.66 (0.38x ATR)
-        # We use 0.38x ATR to perfectly dodge the $0.31 noise while catching the $3.03 trend early.
-        dynamic_atr_offset = (atr_5m * 0.38) if (atr_5m is not None and atr_5m > 0) else buy_offset_val
-        base_start_offset = max(b_min_stop + 1.0, dynamic_atr_offset)
+        # We use 0.65x ATR to confidently dodge the noise while catching the trend early.
+        # User's manual buy_offset_val is strictly enforced as a minimum distance.
+        dynamic_atr_offset = (atr_5m * 0.65) if (atr_5m is not None and atr_5m > 0) else 0.0
+        base_start_offset = max(b_min_stop + 1.0, dynamic_atr_offset, buy_offset_val)
 
         cumulative_gap = 0.0
         expansion_factor = 1.30

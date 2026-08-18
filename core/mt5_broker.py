@@ -1033,15 +1033,11 @@ class MT5Broker:
             for p in positions:
                 p_sym = str(getattr(p, "symbol", "")).upper()
                 if p_sym and any(a in p_sym or p_sym in a for a in aliases):
-                    if f"live_{p.ticket}" in getattr(self, "runner_ids", set()):
-                        continue
                     total_pnl += float(getattr(p, "profit", 0.0) or 0.0)
                     found_matching = True
         
         if not found_matching and hasattr(self, "open_positions") and self.open_positions:
             for p_obj in self.open_positions.values():
-                if getattr(p_obj, "position_id", "") in getattr(self, "runner_ids", set()):
-                    continue
                 total_pnl += float(getattr(p_obj, "profit", 0.0) or 0.0)
 
         return total_pnl
