@@ -84,7 +84,7 @@ class BreakoutGridBot:
     def __init__(
         self,
         broker: 'MT5Broker',
-        symbol: str = "BTCUSDT",
+        symbol: str = "PAXGUSDT",
         grid_levels: int = 5,
         grid_gap: float = 10.0,
         trap_offset: float = 5.0,
@@ -163,7 +163,7 @@ class BreakoutGridBot:
         self.prop_firm_target_pct: float = 8.0
 
         sym_str_upper = sym_str.upper()
-        is_crypto_247 = any(c_sym in sym_str_upper for c_sym in ["BTC", "ETH", "SOL", "BNB", "DOGE", "XRP"])
+        is_crypto_247 = False
         self.use_weekend_shutdown: bool = not is_crypto_247
         self.weekend_shutdown_utc_hour: int = 20
         self.weekend_shutdown_utc_minute: int = 30
@@ -355,6 +355,26 @@ class BreakoutGridBot:
             self.breakeven_activated = False
         if not hasattr(self, "in_runner_mode"):
             self.in_runner_mode = False
+        # ── Industry-grade 3-stage TP state flags ──────────────────────────
+        if not hasattr(self, "_tp1_buy_taken"):
+            self._tp1_buy_taken = False
+        if not hasattr(self, "_tp1_sell_taken"):
+            self._tp1_sell_taken = False
+        if not hasattr(self, "_tp2_buy_taken"):
+            self._tp2_buy_taken = False
+        if not hasattr(self, "_tp2_sell_taken"):
+            self._tp2_sell_taken = False
+        if not hasattr(self, "_chandelier_buy_high"):
+            self._chandelier_buy_high = 0.0
+        if not hasattr(self, "_chandelier_sell_low"):
+            self._chandelier_sell_low = 0.0
+        if not hasattr(self, "_last_partial_tp_time"):
+            self._last_partial_tp_time = 0.0
+        # ── Profit Lock state flags ────────────────────────────────────────
+        if not hasattr(self, "_last_profit_lock_time"):
+            self._last_profit_lock_time = 0.0
+        if not hasattr(self, "_early_profit_ticks"):
+            self._early_profit_ticks = 0
         if not hasattr(self, "cancel_opposite_on_trigger"):
             self.cancel_opposite_on_trigger = False
         if not hasattr(self, "use_trailing_stop"):

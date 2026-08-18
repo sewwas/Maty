@@ -61,14 +61,6 @@ def save_json(path, data):
 
 SYMBOL_SPECS = {
     "PAXGUSDT": {"icon": "🪙", "grid_gap": "0.07%", "multiplier": "1.5x", "stop_loss": "$250.00"},
-    "GBPUSD":   {"icon": "💱", "grid_gap": "0.05%", "multiplier": "1.5x", "stop_loss": "$150.00"},
-    "EURUSD":   {"icon": "💱", "grid_gap": "0.05%", "multiplier": "1.5x", "stop_loss": "$150.00"},
-    "USDJPY":   {"icon": "💱", "grid_gap": "0.05%", "multiplier": "1.5x", "stop_loss": "$150.00"},
-    "BTCUSDT":  {"icon": "🟠", "grid_gap": "0.10%", "multiplier": "1.5x", "stop_loss": "$250.00"},
-    "ETHUSDT":  {"icon": "🔷", "grid_gap": "0.07%", "multiplier": "1.5x", "stop_loss": "$250.00"},
-    "SOLUSDT":  {"icon": "🟣", "grid_gap": "0.07%", "multiplier": "1.5x", "stop_loss": "$150.00"},
-    "BNBUSDT":  {"icon": "🟡", "grid_gap": "0.07%", "multiplier": "1.5x", "stop_loss": "$150.00"},
-    "DOGEUSDT": {"icon": "🐕", "grid_gap": "0.07%", "multiplier": "1.5x", "stop_loss": "$150.00"},
 }
 
 _live_stats_cache = (None, 0.0)

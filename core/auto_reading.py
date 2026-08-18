@@ -4,39 +4,14 @@ from typing import Dict, List, Optional, Any, Tuple
 PAIR_PRIORITY_REGISTRY = [
     ("PAXGUSDT",  "GOLD",  True,          5,          0.05,         0.02,            0.01,    0.07),
     ("XAUUSD",    "GOLD",  True,          5,          0.05,         0.02,            0.01,    0.07),
-    ("EURUSD",    "MAJOR", False,         5,          0.04,         0.02,            0.02,    1.00),
-    ("USDJPY",    "MAJOR", False,         5,          0.04,         0.02,            0.02,    1.00),
-    ("GBPUSD",    "MINOR", False,         3,          0.04,         0.02,            0.02,    0.50),
-    ("BTCUSDT",   "MAJOR", False,         4,          0.06,         0.02,            0.004,   0.05),
-    ("BTCUSD",    "MAJOR", False,         4,          0.06,         0.02,            0.004,   0.05),
-    ("ETHUSDT",   "MINOR", False,         3,          0.05,         0.02,            0.15,    0.50),
-    ("ETHUSD",    "MINOR", False,         3,          0.05,         0.02,            0.15,    0.50),
-    ("SOLUSDT",   "ALT",   False,         2,          0.05,         0.02,            1.50,    3.00),
-    ("BNBUSDT",   "ALT",   False,         2,          0.05,         0.02,            0.20,    0.50),
-    ("DOGEUSDT",  "ALT",   False,         2,          0.04,         0.02,            10.0,    50.0),
 ]
 
 _ORDERS_PER_SLOT = {"GOLD": 5, "MAJOR": 5, "MINOR": 3, "ALT": 2}
 
 PAIR_SWEET_SPOTS = {
-    "XAUUSD":   {"quiet_gap": 0.05, "std_gap": 0.07, "quiet_offset": 0.02, "std_offset": 0.05, "base_lot": 0.01,   "min_tp": 3.50, "lot_mult": 1.25},
-    "PAXGUSDT": {"quiet_gap": 0.05, "std_gap": 0.07, "quiet_offset": 0.02, "std_offset": 0.05, "base_lot": 0.01,   "min_tp": 3.50, "lot_mult": 1.25},
-    "GOLD":     {"quiet_gap": 0.05, "std_gap": 0.07, "quiet_offset": 0.02, "std_offset": 0.05, "base_lot": 0.01,   "min_tp": 3.50, "lot_mult": 1.25},
-    "BTCUSD":   {"quiet_gap": 0.06, "std_gap": 0.09, "quiet_offset": 0.05, "std_offset": 0.08, "base_lot": 0.004,  "min_tp": 3.50, "lot_mult": 1.25},
-    "BTCUSDT":  {"quiet_gap": 0.06, "std_gap": 0.09, "quiet_offset": 0.05, "std_offset": 0.08, "base_lot": 0.004,  "min_tp": 3.50, "lot_mult": 1.25},
-    "ETHUSD":   {"quiet_gap": 0.06, "std_gap": 0.08, "quiet_offset": 0.05, "std_offset": 0.08, "base_lot": 0.15,   "min_tp": 3.50, "lot_mult": 1.25},
-    "ETHUSDT":  {"quiet_gap": 0.06, "std_gap": 0.08, "quiet_offset": 0.05, "std_offset": 0.08, "base_lot": 0.15,   "min_tp": 3.50, "lot_mult": 1.25},
-    "SOLUSD":   {"quiet_gap": 0.05, "std_gap": 0.09, "quiet_offset": 0.02, "std_offset": 0.05, "base_lot": 1.50,   "min_tp": 3.00, "lot_mult": 1.25},
-    "SOLUSDT":  {"quiet_gap": 0.05, "std_gap": 0.09, "quiet_offset": 0.02, "std_offset": 0.05, "base_lot": 1.50,   "min_tp": 3.00, "lot_mult": 1.25},
-    "BNBUSD":   {"quiet_gap": 0.05, "std_gap": 0.09, "quiet_offset": 0.02, "std_offset": 0.05, "base_lot": 0.20,   "min_tp": 3.00, "lot_mult": 1.25},
-    "BNBUSDT":  {"quiet_gap": 0.05, "std_gap": 0.09, "quiet_offset": 0.02, "std_offset": 0.05, "base_lot": 0.20,   "min_tp": 3.00, "lot_mult": 1.25},
-    "DOGEUSD":  {"quiet_gap": 0.05, "std_gap": 0.08, "quiet_offset": 0.02, "std_offset": 0.05, "base_lot": 1000.0, "min_tp": 2.50, "lot_mult": 1.25},
-    "DOGEUSDT": {"quiet_gap": 0.05, "std_gap": 0.08, "quiet_offset": 0.02, "std_offset": 0.05, "base_lot": 1000.0, "min_tp": 2.50, "lot_mult": 1.25},
-    "XRPUSD":   {"quiet_gap": 0.05, "std_gap": 0.08, "quiet_offset": 0.02, "std_offset": 0.05, "base_lot": 100.0,  "min_tp": 2.50, "lot_mult": 1.25},
-    "XRPUSDT":  {"quiet_gap": 0.05, "std_gap": 0.08, "quiet_offset": 0.02, "std_offset": 0.05, "base_lot": 100.0,  "min_tp": 2.50, "lot_mult": 1.25},
-    "GBPUSD":   {"quiet_gap": 0.04, "std_gap": 0.05, "quiet_offset": 0.02, "std_offset": 0.04, "base_lot": 0.05,   "min_tp": 1.50, "lot_mult": 1.25},
-    "EURUSD":   {"quiet_gap": 0.04, "std_gap": 0.05, "quiet_offset": 0.02, "std_offset": 0.04, "base_lot": 0.05,   "min_tp": 1.50, "lot_mult": 1.25},
-    "USDJPY":   {"quiet_gap": 0.04, "std_gap": 0.05, "quiet_offset": 0.02, "std_offset": 0.04, "base_lot": 0.05,   "min_tp": 1.50, "lot_mult": 1.25},
+    "XAUUSD":   {"quiet_gap": 0.05, "std_gap": 0.07, "quiet_offset": 0.05, "std_offset": 0.09, "base_lot": 0.01,   "min_tp": 18.50, "lot_mult": 1.25},
+    "PAXGUSDT": {"quiet_gap": 0.05, "std_gap": 0.07, "quiet_offset": 0.05, "std_offset": 0.09, "base_lot": 0.01,   "min_tp": 18.50, "lot_mult": 1.25},
+    "GOLD":     {"quiet_gap": 0.05, "std_gap": 0.07, "quiet_offset": 0.05, "std_offset": 0.09, "base_lot": 0.01,   "min_tp": 18.50, "lot_mult": 1.25},
 }
 
 
@@ -45,18 +20,6 @@ def clamp_symbol_lot_size(symbol: str, raw_size: float) -> float:
     clean_sym = symbol.upper()
     if any(x in clean_sym for x in ["PAXG", "XAU", "GOLD"]):
         return min(0.03, max(0.01, round(raw_size, 2)))
-    elif any(x in clean_sym for x in ["BTC"]):
-        return min(0.05, max(0.01, round(raw_size, 3)))
-    elif any(x in clean_sym for x in ["ETH"]):
-        return min(0.50, max(0.10, round(raw_size, 2)))
-    elif any(x in clean_sym for x in ["SOL"]):
-        return min(3.00, max(0.10, round(raw_size, 2)))
-    elif any(x in clean_sym for x in ["BNB"]):
-        return min(0.50, max(0.05, round(raw_size, 2)))
-    elif any(x in clean_sym for x in ["DOGE"]):
-        return min(1000.0, max(10.0, round(raw_size, 1)))
-    elif any(x in clean_sym for x in ["GBP", "EUR", "JPY"]):
-        return min(0.20, max(0.01, round(raw_size, 2)))
     else:
         return max(0.01, round(raw_size, 2))
 
@@ -138,6 +101,8 @@ class AutoReadingEngine:
         self._last_eval_bias = 0.0
         self._last_eval_regime = "RANGING"
         self._last_eval_ts = 0.0
+        self._last_unidirectional_mode = "DUAL"
+        self._last_unidirectional_ts = 0.0
 
     @staticmethod
     def _get_session_multiplier() -> tuple:
@@ -199,16 +164,20 @@ class AutoReadingEngine:
         auto_profile: str = "BALANCED",
         pending_order_side_mode: str = "AUTO_ADAPTIVE"
     ) -> dict:
+        gap_session_mult, size_session_mult, session_name = self._get_session_multiplier()
         tech = dict(tech_indicators) if tech_indicators else {}
         ob = dict(orderbook_depth) if orderbook_depth else {}
         news = list(macro_news) if macro_news else []
 
         if not tech:
             try:
-                from core.data import get_historical_klines, calculate_technical_indicators
-                df_klines = get_historical_klines(symbol, interval="1m", limit=100)
+                from core.data import get_historical_klines, calculate_technical_indicators, detect_fvg, detect_liquidity_sweep, detect_order_blocks
+                df_klines = get_historical_klines(symbol, interval="15m", limit=100)
                 if df_klines is not None and not df_klines.empty:
-                    tech = calculate_technical_indicators(df_klines) or {}
+                    tech = calculate_technical_indicators(symbol) or {}
+                    tech['fvg'] = detect_fvg(df_klines)
+                    tech['sweep'] = detect_liquidity_sweep(df_klines)
+                    tech['ob'] = detect_order_blocks(df_klines)
             except Exception:
                 pass
 
@@ -256,12 +225,27 @@ class AutoReadingEngine:
 
         htf_macro_bias = float(tech.get("htf_macro_bias", ema_bias))
         rsi_signal = (rsi - 50.0) / 50.0
+        fvg = tech.get('fvg', {})
+        sweep = tech.get('sweep', {})
+        ob = tech.get('ob', {})
+
+        smc_bias = 0.0
+        if fvg.get('type') == 'BULLISH_FVG': smc_bias += 0.3
+        elif fvg.get('type') == 'BEARISH_FVG': smc_bias -= 0.3
+        
+        if sweep.get('type') == 'BULLISH_SWEEP': smc_bias += 0.4
+        elif sweep.get('type') == 'BEARISH_SWEEP': smc_bias -= 0.4
+        
+        if ob.get('type') == 'BULLISH_OB': smc_bias += 0.2
+        elif ob.get('type') == 'BEARISH_OB': smc_bias -= 0.2
+
         combined_bias = (
-            0.40 * ema_bias
-            + 0.25 * htf_macro_bias
-            + 0.20 * vwap_bias
+            0.30 * ema_bias
+            + 0.20 * htf_macro_bias
+            + 0.10 * vwap_bias
             + 0.10 * ob_delta
             + 0.05 * rsi_signal
+            + 0.25 * smc_bias
         )
 
         if vwap_dev < -0.05 and ema_bias < 0.0:
@@ -298,30 +282,83 @@ class AutoReadingEngine:
         elif "BOTH" in side_mode:
             unidirectional_mode = "DUAL"
         else:
-            is_overbought_rally = (rsi >= 65.0 or vwap_dev >= 0.25)
-            is_oversold_dip = (rsi <= 35.0 or vwap_dev <= -0.25)
+            data_trend = str(tech.get("trend", "NEUTRAL")).upper()
             
-            if adx >= 35.0 and not (rsi >= 75.0 or rsi <= 25.0):
-                if combined_bias >= 0.20:
+            if is_strong_trend:
+                is_overbought_rally = False
+                is_oversold_dip = False
+            else:
+                is_overbought_rally = (rsi >= 70.0 or vwap_dev >= 0.35)
+                is_oversold_dip = (rsi <= 30.0 or vwap_dev <= -0.35)
+            
+            # 1. 6-Indicator Weighted Trend (Top Priority)
+            if data_trend == "BULLISH":
+                unidirectional_mode = "BUY_ONLY"
+            elif data_trend == "BEARISH":
+                unidirectional_mode = "SELL_ONLY"
+            # 2. ADX Trend Breakout
+            elif adx >= 35.0 and not (rsi >= 75.0 or rsi <= 25.0):
+                if combined_bias >= 0.30:
                     unidirectional_mode = "BUY_ONLY"
-                elif combined_bias <= -0.20:
+                elif combined_bias <= -0.30:
                     unidirectional_mode = "SELL_ONLY"
                 else:
                     unidirectional_mode = "DUAL"
+            # 3. Mean Reversion (Overbought/Oversold)
             elif is_overbought_rally and combined_bias < 0.30:
                 top_bottom_status = "RALLY_SELL_OVERBOUGHT"
                 unidirectional_mode = "SELL_ONLY"
             elif is_oversold_dip and combined_bias > -0.30:
                 top_bottom_status = "DIP_BUY_OVERSOLD"
                 unidirectional_mode = "BUY_ONLY"
-            elif combined_bias >= 0.20:
+            # 4. Fallback to Combined Bias
+            elif combined_bias >= 0.30:
                 unidirectional_mode = "BUY_ONLY"
-            elif combined_bias <= -0.20:
+            elif combined_bias <= -0.30:
                 unidirectional_mode = "SELL_ONLY"
             else:
                 unidirectional_mode = "DUAL"
+            # 5. SMART MONEY CONCEPTS (SMC) OVERRIDE - KILL ZONE FILTERED
+            # Only allow SMC to override if there is no strong trend. SMC is for fading liquidity, not fighting momentum.
+            if not is_strong_trend:
+                if session_name in ["LONDON", "NY", "NY_OVERLAP"]:
+                    if sweep.get('type') == 'BULLISH_SWEEP' or fvg.get('type') == 'BULLISH_FVG' or ob.get('type') == 'BULLISH_OB':
+                        unidirectional_mode = "BUY_ONLY"
+                        top_bottom_status = "SMC_BULLISH_TRAP"
+                    elif sweep.get('type') == 'BEARISH_SWEEP' or fvg.get('type') == 'BEARISH_FVG' or ob.get('type') == 'BEARISH_OB':
+                        unidirectional_mode = "SELL_ONLY"
+                        top_bottom_status = "SMC_BEARISH_TRAP"
 
         now_ts = time.time()
+        
+        # 6. Apply strict 5-minute (300s) trend lock cooldown with 'Sustained Signal' verification
+        if not hasattr(self, "_last_unidirectional_mode"):
+            self._last_unidirectional_mode = unidirectional_mode
+            self._last_unidirectional_ts = now_ts
+            self._pending_unidirectional_mode = unidirectional_mode
+            self._pending_unidirectional_count = 0
+        else:
+            if unidirectional_mode == self._last_unidirectional_mode:
+                self._last_unidirectional_ts = now_ts  # Reset timer as long as trend continues
+                self._pending_unidirectional_mode = unidirectional_mode
+                self._pending_unidirectional_count = 0
+            else:
+                # Mode disagrees with locked mode.
+                if unidirectional_mode == getattr(self, "_pending_unidirectional_mode", None):
+                    self._pending_unidirectional_count += 1
+                else:
+                    self._pending_unidirectional_mode = unidirectional_mode
+                    self._pending_unidirectional_count = 1
+
+                # Only switch if we've been out of the old trend for 180s (3m) AND the new trend is stable for at least 5 engine ticks
+                # Reduced from 900s to 180s so the bot doesn't get trapped fighting a violent reversal
+                if (now_ts - self._last_unidirectional_ts >= 180.0) and self._pending_unidirectional_count >= 5:
+                    self._last_unidirectional_mode = unidirectional_mode
+                    self._last_unidirectional_ts = now_ts
+                    self._pending_unidirectional_count = 0
+                else:
+                    unidirectional_mode = self._last_unidirectional_mode
+
         news_risk_mult = 1.0
         for ev in news:
             if ev.get("impact") == "HIGH":
@@ -330,7 +367,7 @@ class AutoReadingEngine:
                     news_risk_mult = 2.5
                     break
 
-        gap_session_mult, size_session_mult, session_name = self._get_session_multiplier()
+        # gap_session_mult and size_session_mult were extracted earlier for the SMC Kill Zone
         confidence = self._confidence_score(ema_bias, ob_delta, vwap_bias, rsi, regime)
 
         sym_u = (symbol or "").upper()
@@ -483,6 +520,8 @@ class AutoReadingEngine:
             "bullish_fvg_high":  smc_result.get("bullish_fvg_high", 0.0),
             "bearish_fvg_low":   smc_result.get("bearish_fvg_low",  0.0),
             "bearish_fvg_high":  smc_result.get("bearish_fvg_high", 0.0),
-            "buy_liquidity":     smc_result.get("buy_liquidity",  0.0),
             "sell_liquidity":    smc_result.get("sell_liquidity", 0.0),
+            "recent_fvg":        tech.get("fvg", {}).get("type", "NONE"),
+            "recent_sweep":      tech.get("sweep", {}).get("type", "NONE"),
+            "recent_ob":         tech.get("ob", {}).get("type", "NONE"),
         }

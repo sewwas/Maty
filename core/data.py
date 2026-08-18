@@ -7,22 +7,7 @@ from typing import Optional, Tuple, List
 
 # Known fallback prices when all REST APIs are unavailable
 _DEFAULT_PRICE_TABLE = {
-    "BTCUSDT": 97000.0, "BTCUSD": 97000.0,
-    "ETHUSDT": 3400.0,  "ETHUSD": 3400.0,
     "PAXGUSDT": 3280.0, "XAUUSD": 3280.0, "GOLD": 3280.0,
-    "SOLUSDT": 185.0,   "SOLUSD": 185.0,
-    "BNBUSDT": 680.0,   "BNBUSD": 680.0,
-    "GBPUSD": 1.30,     "EURUSD": 1.09,    "USDJPY": 150.0,
-    "US30": 40000.0,    "USTEC": 19000.0,
-    "XRPUSDT": 2.25,    "XRPUSD": 2.25,
-    "DOGEUSDT": 0.18,   "DOGEUSD": 0.18,
-    "DOTUSDT": 8.50,    "DOTUSD": 8.50,
-    "LINKUSDT": 18.0,   "LINKUSD": 18.0,
-    "MATICUSDT": 0.90,  "MATICUSD": 0.90,
-    "AVAXUSDT": 42.0,   "AVAXUSD": 42.0,
-    "ATOMUSDT": 10.0,   "ATOMUSD": 10.0,
-    "LTCUSDT": 95.0,    "LTCUSD": 95.0,
-    "UNIUSDT": 10.0,    "UNIUSD": 10.0,
 }
 
 def get_default_price(symbol: str) -> float:
@@ -31,22 +16,8 @@ def get_default_price(symbol: str) -> float:
     if sym in _DEFAULT_PRICE_TABLE:
         return _DEFAULT_PRICE_TABLE[sym]
     # Generic guesses by suffix / category
-    if "BTC" in sym:
-        return 97000.0
-    if "ETH" in sym:
-        return 3400.0
     if "PAXG" in sym or "XAU" in sym or "GOLD" in sym:
         return 3280.0
-    if "SOL" in sym:
-        return 185.0
-    if "BNB" in sym:
-        return 680.0
-    if "EUR" in sym:
-        return 1.09
-    if "GBP" in sym:
-        return 1.30
-    if "JPY" in sym:
-        return 150.0
     return 100.0  # Ultimate fallback
 
 # High-speed RAM Caches for Zero-Latency Decisions
@@ -55,7 +26,7 @@ _HISTORICAL_KLINES_CACHE = {}   # {sym: (df, timestamp)}
 _ORDERBOOK_CACHE = {}          # {sym: (dict, timestamp)}
 _NEWS_CACHE = None             # (news_list, timestamp)
 
-def get_live_price(symbol: str = "BTCUSDT") -> Optional[float]:
+def get_live_price(symbol: str = "PAXGUSDT") -> Optional[float]:
     """
     Fetch current price from MT5 or public REST APIs.
     Uses instant MT5 in-memory lookup first, fallback to ultra-fast RAM cache (1.0s TTL).
@@ -121,7 +92,7 @@ def get_live_price(symbol: str = "BTCUSDT") -> Optional[float]:
 
     return get_default_price(sym)
 
-def get_historical_klines(symbol: str = "BTCUSDT", interval: str = "1m", limit: int = 500) -> pd.DataFrame:
+def get_historical_klines(symbol: str = "PAXGUSDT", interval: str = "1m", limit: int = 500) -> pd.DataFrame:
     """
     Fetch historical candlestick data from REST APIs with 15s RAM TTL cache.
     Eliminates repetitive network overhead on consecutive engine ticks.
@@ -278,7 +249,7 @@ def get_fear_and_greed_index() -> dict:
     return {"value": 55, "classification": "Neutral", "timestamp": int(time.time())}
 
 
-def get_24h_market_stats(symbol: str = "BTCUSDT") -> dict:
+def get_24h_market_stats(symbol: str = "PAXGUSDT") -> dict:
     """
     Fetch 24-hour high, low, volume, and price change for a symbol.
     """
@@ -347,7 +318,7 @@ def get_24h_market_stats(symbol: str = "BTCUSDT") -> dict:
     }
 
 
-def get_crypto_news(symbol: str = "BTCUSDT", limit: int = 8) -> List[dict]:
+def get_crypto_news(symbol: str = "PAXGUSDT", limit: int = 8) -> List[dict]:
     """
     Fetch breaking news stories relevant to cryptocurrency and macro markets.
     Includes 300s RAM cache and automated keyword sentiment analysis.
@@ -359,7 +330,7 @@ def get_crypto_news(symbol: str = "BTCUSDT", limit: int = 8) -> List[dict]:
         if now - cached_t < 300.0:
             return cached_n
 
-    base = "BTC" if "BTC" in symbol else ("ETH" if "ETH" in symbol else ("SOL" if "SOL" in symbol else ("XAU" if "PAXG" in symbol or "XAU" in symbol else "CRYPTO")))
+    base = "XAU" if "PAXG" in symbol or "XAU" in symbol else "GOLD"
     news_items = []
 
     try:
@@ -524,7 +495,7 @@ def calculate_technical_indicators(df_or_symbol) -> dict:
     Multi-Timeframe EMA Confluence (1m, 5m, 15m), BB Width, Volume Spike, and Breakout Score.
     """
     if isinstance(df_or_symbol, str):
-        df = get_historical_klines(df_or_symbol, interval="1m", limit=100)
+        df = get_historical_klines(df_or_symbol, interval="1m", limit=180)
     else:
         df = df_or_symbol
 
@@ -617,28 +588,41 @@ def calculate_technical_indicators(df_or_symbol) -> dict:
     trend_raw = (0.50 * ((ema20 - ema50) / ema50 * 100.0)) + (0.30 * ((last_close - ema200) / ema200 * 50.0)) + (0.20 * mom_bias) if ema50 > 0 and ema200 > 0 else 0.0
     ema_trend_bias = float(np.clip(trend_raw, -1.0, 1.0))
 
-    # 6. Multi-Timeframe (5m, 15m, 1h, 4h) EMA Bias Confluence Filter
+    # 6. Multi-Timeframe (5m, 15m, 1h) Trend Bias Confluence Filter
     closes_5m = closes[::5] if len(closes) >= 10 else closes
     closes_15m = closes[::15] if len(closes) >= 30 else closes
     closes_1h = closes[::60] if len(closes) >= 120 else closes
     
-    ema20_5m = calc_ema(closes_5m, min(20, len(closes_5m)))
-    ema50_5m = calc_ema(closes_5m, min(50, len(closes_5m)))
+    # 5m Bias (Sufficient candles for 20/50 EMA if limit >= 300)
+    ema20_5m = calc_ema(closes_5m, min(20, max(5, len(closes_5m)//3)))
+    ema50_5m = calc_ema(closes_5m, min(50, max(10, len(closes_5m)//2))) 
     ema_bias_5m = float(np.clip((ema20_5m - ema50_5m) / ema50_5m * 100.0, -1.0, 1.0)) if ema50_5m > 0 else 0.0
 
-    ema20_15m = calc_ema(closes_15m, min(20, len(closes_15m)))
-    ema50_15m = calc_ema(closes_15m, min(50, len(closes_15m)))
-    ema_bias_15m = float(np.clip((ema20_15m - ema50_15m) / ema50_15m * 100.0, -1.0, 1.0)) if ema50_15m > 0 else 0.0
+    # 15m Bias (Fewer candles, scale down EMAs to 10/20)
+    ema10_15m = calc_ema(closes_15m, min(10, max(4, len(closes_15m)//3)))
+    ema20_15m = calc_ema(closes_15m, min(20, max(8, len(closes_15m)//2)))
+    ema_bias_15m = float(np.clip((ema10_15m - ema20_15m) / ema20_15m * 100.0, -1.0, 1.0)) if ema20_15m > 0 else 0.0
 
-    # Higher Timeframe (1H) Macro Trend Alignment
-    ema20_1h = calc_ema(closes_1h, min(20, len(closes_1h)))
-    ema50_1h = calc_ema(closes_1h, min(50, len(closes_1h)))
-    htf_macro_bias = float(np.clip((ema20_1h - ema50_1h) / ema50_1h * 100.0, -1.0, 1.0)) if ema50_1h > 0 else 0.0
+    # 1H Macro Bias (Fewest candles, scale EMAs to 5/10)
+    ema5_1h = calc_ema(closes_1h, min(5, max(3, len(closes_1h)//3)))
+    ema10_1h = calc_ema(closes_1h, min(10, max(6, len(closes_1h)//2)))
+    htf_macro_bias = float(np.clip((ema5_1h - ema10_1h) / ema10_1h * 100.0, -1.0, 1.0)) if ema10_1h > 0 else 0.0
+
+    # Calculate Signs (Require a small threshold to confirm trend)
+    sign_1m = np.sign(ema_trend_bias) if abs(ema_trend_bias) > 0.005 else 0
+    sign_5m = np.sign(ema_bias_5m) if abs(ema_bias_5m) > 0.005 else 0
+    sign_15m = np.sign(ema_bias_15m) if abs(ema_bias_15m) > 0.005 else 0
+    sign_1h = np.sign(htf_macro_bias) if abs(htf_macro_bias) > 0.005 else 0
 
     # MTF Confluence Score (0 - 100%)
-    # 100% when 1m, 5m, 15m, and 1h macro trends align in the exact same direction
-    mtf_same_sign = (np.sign(ema_trend_bias) == np.sign(ema_bias_5m) == np.sign(ema_bias_15m) == np.sign(htf_macro_bias)) and (ema_trend_bias != 0)
-    mtf_confluence = 100.0 if mtf_same_sign else (75.0 if (np.sign(ema_trend_bias) == np.sign(ema_bias_5m) == np.sign(htf_macro_bias)) else (50.0 if np.sign(ema_trend_bias) == np.sign(ema_bias_5m) else 35.0))
+    if sign_1m != 0 and (sign_1m == sign_5m == sign_15m == sign_1h):
+        mtf_confluence = 100.0
+    elif sign_1m != 0 and (sign_1m == sign_5m == sign_15m):
+        mtf_confluence = 75.0
+    elif sign_1m != 0 and (sign_1m == sign_5m):
+        mtf_confluence = 50.0
+    else:
+        mtf_confluence = 35.0
 
     # 7. Volume Spike Multiplier & VWAP Calculation
     vol_sma = np.mean(volumes[-period:]) if period > 0 else 1.0
@@ -694,6 +678,54 @@ def calculate_technical_indicators(df_or_symbol) -> dict:
     recommended_offset = max(0.08, round(atr_pct * 0.50, 2))
 
     atr_prec = 6 if last_close < 1.0 else 4
+
+    # ── Multi-Indicator Weighted Trend Vote ──────────────────────────────
+    # 6 indicators each cast a directional vote weighted by reliability.
+    # Final score ≥ +0.40 → BULLISH, ≤ -0.40 → BEARISH, else NEUTRAL.
+    # Requires 2-3 strong indicators to AGREE — prevents false signals.
+    # ─────────────────────────────────────────────────────────────────────
+    trend_score = 0.0
+
+    # 1. Macro Trend Bias — core direction (weight 25%)
+    if   ema_bias_15m >  0.05: trend_score += 0.25
+    elif ema_bias_15m < -0.05: trend_score -= 0.25
+
+    # 2. HTF Confluence — 15m + 1h alignment (weight 20%)
+    if   ema_bias_15m > 0 and htf_macro_bias > 0: trend_score += 0.20
+    elif ema_bias_15m < 0 and htf_macro_bias < 0: trend_score -= 0.20
+    elif ema_bias_15m > 0 or  htf_macro_bias > 0: trend_score += 0.08
+    elif ema_bias_15m < 0 or  htf_macro_bias < 0: trend_score -= 0.08
+
+    # 3. RSI Momentum — overbought/oversold (weight 20%)
+    if   rsi >= 57: trend_score += 0.20
+    elif rsi <= 43: trend_score -= 0.20
+    elif rsi >= 52: trend_score += 0.08
+    elif rsi <= 48: trend_score -= 0.08
+
+    # 4. ADX + Choppiness — confirms trending market (weight 15%)
+    if adx >= 20 and choppiness_index < 61.8:
+        if   ema_bias_15m >  0: trend_score += 0.15
+        elif ema_bias_15m <  0: trend_score -= 0.15
+    elif adx < 15 or choppiness_index > 61.8:
+        trend_score *= 0.50   # Choppy market — halve the score
+
+    # 5. MFI Money Flow — institutional volume bias (weight 10%)
+    if   mfi >= 58: trend_score += 0.10
+    elif mfi <= 42: trend_score -= 0.10
+    elif mfi >= 53: trend_score += 0.04
+    elif mfi <= 47: trend_score -= 0.04
+
+    # 6. VWAP position — price vs fair value (weight 10%)
+    if   vwap_deviation_pct >  0.10: trend_score += 0.10
+    elif vwap_deviation_pct < -0.10: trend_score -= 0.10
+    elif vwap_deviation_pct >  0.03: trend_score += 0.04
+    elif vwap_deviation_pct < -0.03: trend_score -= 0.04
+
+    trend_score      = float(max(-1.0, min(1.0, trend_score)))
+    trend_label      = "BULLISH" if trend_score >= 0.40 else ("BEARISH" if trend_score <= -0.40 else "NEUTRAL")
+    trend_confidence = int(abs(trend_score) * 100)
+    # ─────────────────────────────────────────────────────────────────────
+
     return {
         "rsi": round(rsi, 1),
         "atr": round(atr, atr_prec),
@@ -724,7 +756,13 @@ def calculate_technical_indicators(df_or_symbol) -> dict:
         "pivot_s2": round(pivot_s2, atr_prec),
         "pivot_r3": round(pivot_r3, atr_prec),
         "pivot_s3": round(pivot_s3, atr_prec),
+        "trend":            trend_label,       # BULLISH / BEARISH / NEUTRAL
+        "trend_score":      round(trend_score, 3),   # -1.0 to +1.0
+        "trend_confidence": trend_confidence,  # 0-100%
     }
+
+
+
 
 
 # ===========================================================================
@@ -1132,7 +1170,7 @@ def calculate_smc_elliott(df) -> dict:
         return _EMPTY
 
 
-def get_order_book_depth(symbol: str = "BTCUSDT", limit: int = 20) -> dict:
+def get_order_book_depth(symbol: str = "PAXGUSDT", limit: int = 20) -> dict:
     """
     Fetch order book depth (bids and asks) from public REST APIs with 5s RAM TTL cache.
     Tries Binance -> OKX -> Bybit -> Gate.io with 0.6s timeouts.
@@ -1240,8 +1278,6 @@ def get_order_book_depth(symbol: str = "BTCUSDT", limit: int = 20) -> dict:
 def get_economic_calendar() -> List[dict]:
     """
     Returns live macroeconomic release calendar events in sub-millisecond time.
-    Calculates exact real-time schedules for high-impact releases (FOMC, NFP, CPI, ECB)
-    in-memory to eliminate network latency during bot decision loops.
     """
     global _NEWS_CACHE
     now = time.time()
@@ -1249,63 +1285,122 @@ def get_economic_calendar() -> List[dict]:
         cached_news, cached_t = _NEWS_CACHE
         if now - cached_t < 120.0:
             return cached_news
-
-    dt = datetime.datetime.fromtimestamp(now, datetime.timezone.utc)
-    
-    # Calculate next Wednesday 18:00 UTC (FOMC / Rate Decision window)
-    days_to_wed = (2 - dt.weekday()) % 7
-    if days_to_wed == 0 and dt.hour >= 18:
-        days_to_wed = 7
-    next_fomc_ts = int((dt + datetime.timedelta(days=days_to_wed)).replace(hour=18, minute=0, second=0).timestamp())
-
-    # Calculate next Friday 12:30 UTC (NFP / CPI Release window)
-    days_to_fri = (4 - dt.weekday()) % 7
-    if days_to_fri == 0 and dt.hour >= 13:
-        days_to_fri = 7
-    next_nfp_ts = int((dt + datetime.timedelta(days=days_to_fri)).replace(hour=12, minute=30, second=0).timestamp())
-
-    # Calculate next Tuesday 12:30 UTC (CPI Release window)
-    days_to_tue = (1 - dt.weekday()) % 7
-    if days_to_tue == 0 and dt.hour >= 13:
-        days_to_tue = 7
-    next_cpi_ts = int((dt + datetime.timedelta(days=days_to_tue)).replace(hour=12, minute=30, second=0).timestamp())
-
-    res_news = [
-        {
-            "title": "US CPI Inflation Rate & Price Index (YoY)",
-            "impact": "HIGH",
-            "country": "USD 🇺🇸",
-            "timestamp": next_cpi_ts,
-            "forecast": "3.1%",
-            "previous": "3.2%"
-        },
-        {
-            "title": "Federal Reserve FOMC Interest Rate Decision & Guidance",
-            "impact": "HIGH",
-            "country": "USD 🇺🇸",
-            "timestamp": next_fomc_ts,
-            "forecast": "5.25%",
-            "previous": "5.25%"
-        },
-        {
-            "title": "Non-Farm Payrolls (NFP) Employment & Wage Growth",
-            "impact": "HIGH",
-            "country": "USD 🇺🇸",
-            "timestamp": next_nfp_ts,
-            "forecast": "185K",
-            "previous": "206K"
-        },
-        {
-            "title": "ECB Monetary Policy & Eurozone Rate Statement",
-            "impact": "MED",
-            "country": "EUR 🇪🇺",
-            "timestamp": int(now + 172800),
-            "forecast": "3.75%",
-            "previous": "4.00%"
-        }
-    ]
+    res_news = []
     _NEWS_CACHE = (res_news, now)
     return res_news
+def detect_fvg(df: pd.DataFrame) -> dict:
+    """
+    Scans the last 3 candles to detect a Fair Value Gap (FVG).
+    Returns a dictionary with FVG details if found, else empty dict.
+    """
+    if df is None or len(df) < 3:
+        return {}
+    
+    # Get last 3 candles
+    c1 = df.iloc[-3]
+    c2 = df.iloc[-2]
+    c3 = df.iloc[-1]
+    
+    # Bullish FVG: Low of c3 > High of c1
+    if c3['low'] > c1['high']:
+        return {
+            "type": "BULLISH_FVG",
+            "top": c3['low'],
+            "bottom": c1['high'],
+            "mid": (c3['low'] + c1['high']) / 2.0,
+            "timestamp": c2['timestamp']
+        }
+        
+    # Bearish FVG: High of c3 < Low of c1
+    if c3['high'] < c1['low']:
+        return {
+            "type": "BEARISH_FVG",
+            "top": c1['low'],
+            "bottom": c3['high'],
+            "mid": (c1['low'] + c3['high']) / 2.0,
+            "timestamp": c2['timestamp']
+        }
+        
+    return {}
 
-
-
+def detect_liquidity_sweep(df: pd.DataFrame, window: int = 20) -> dict:
+    """
+    Detects if the most recent candle swept a major high or low and rejected.
+    """
+    if df is None or len(df) < window + 1:
+        return {}
+        
+    # Get the previous window (excluding current candle)
+    prev_klines = df.iloc[-(window+1):-1]
+    current = df.iloc[-1]
+    
+    # Volume Confirmation (Level 3 SMC)
+    if 'volume' in df.columns:
+        recent_vol_avg = prev_klines['volume'].iloc[-10:].mean() if len(prev_klines) >= 10 else prev_klines['volume'].mean()
+        if not pd.isna(recent_vol_avg) and recent_vol_avg > 0:
+            if current['volume'] < recent_vol_avg * 1.25:
+                return {} # Fakeout: Not enough institutional volume
+                
+    swing_high = prev_klines['high'].max()
+    swing_low = prev_klines['low'].min()
+    
+    # Bearish Sweep (Swept highs, then closed below)
+    if current['high'] > swing_high and current['close'] < swing_high:
+        return {
+            "type": "BEARISH_SWEEP",
+            "level_swept": swing_high,
+            "rejection_wick": current['high'] - current['close'],
+            "timestamp": current['timestamp']
+        }
+        
+    # Bullish Sweep (Swept lows, then closed above)
+    if current['low'] < swing_low and current['close'] > swing_low:
+        return {
+            "type": "BULLISH_SWEEP",
+            "level_swept": swing_low,
+            "rejection_wick": current['close'] - current['low'],
+            "timestamp": current['timestamp']
+        }
+        
+    return {}
+def detect_order_blocks(df: pd.DataFrame) -> dict:
+    """
+    Detects order blocks based on large impulsive moves.
+    """
+    if df is None or len(df) < 5:
+        return {}
+        
+    # Calculate ATR roughly
+    df = df.copy()
+    df['tr'] = df['high'] - df['low']
+    atr = df['tr'].rolling(14).mean().iloc[-2]
+    
+    if pd.isna(atr):
+        return {}
+        
+    current = df.iloc[-1]
+    prev = df.iloc[-2]
+    
+    # Strong Bullish move (Current candle is massive green)
+    if current['close'] - current['open'] > atr * 1.5:
+        # Prev candle was red or small green -> Bullish OB
+        if prev['close'] <= prev['open'] or (prev['close'] - prev['open'] < atr * 0.5):
+            return {
+                "type": "BULLISH_OB",
+                "top": prev['high'],
+                "bottom": prev['low'],
+                "timestamp": prev['timestamp']
+            }
+            
+    # Strong Bearish move (Current candle is massive red)
+    if current['open'] - current['close'] > atr * 1.5:
+        # Prev candle was green or small red -> Bearish OB
+        if prev['close'] >= prev['open'] or (prev['open'] - prev['close'] < atr * 0.5):
+            return {
+                "type": "BEARISH_OB",
+                "top": prev['high'],
+                "bottom": prev['low'],
+                "timestamp": prev['timestamp']
+            }
+            
+    return {}

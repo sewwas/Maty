@@ -49,17 +49,9 @@ from core.auto_reading import PAIR_SWEET_SPOTS
 from core.services import PAMMMasterPool, send_telegram_alert, dispatch_trade_exit_signal
 from core.data import get_live_price, get_default_price, get_historical_klines, get_24h_market_stats
 
-_symbols = ["PAXGUSDT", "GBPUSD", "EURUSD", "USDJPY", "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "DOGEUSDT"]
+_symbols = ["PAXGUSDT"]
 _symbol_labels = {
-    "PAXGUSDT": "XAUUSD (Gold — 🛡️ Mon-Fri Shield)",
-    "GBPUSD":   "GBPUSD (Pound / Dollar — 🛡️ Mon-Fri Shield)",
-    "EURUSD":   "EURUSD (Euro / Dollar — 🛡️ Mon-Fri Shield)",
-    "USDJPY":   "USDJPY (Dollar / Yen — 🛡️ Mon-Fri Shield)",
-    "BTCUSDT":  "BTCUSD (Bitcoin — ⚡ 24/7 Crypto)",
-    "ETHUSDT":  "ETHUSD (Ethereum — ⚡ 24/7 Crypto)",
-    "SOLUSDT":  "SOLUSD (Solana — ⚡ 24/7 Crypto)",
-    "BNBUSDT":  "BNBUSD (Binance Coin — ⚡ 24/7 Crypto)",
-    "DOGEUSDT": "DOGEUSD (Dogecoin — ⚡ 24/7 Crypto)"
+    "PAXGUSDT": "XAUUSD (Gold — 🛡️ Mon-Fri Shield)"
 }
 
 def save_bot_state_dict(markets_dict: dict, force: bool = False):
@@ -357,7 +349,7 @@ st.markdown("""
 
 # ── JS KEEP-ALIVE ANTI-SLEEP HEARTBEAT (Prevents Browser Background Tab Freezing) ──
 import streamlit.components.v1 as components
-components.html("""
+st.html("""
 <script>
 (function() {
     if (window._profity_keepalive) return;
@@ -374,7 +366,7 @@ components.html("""
     };
 })();
 </script>
-""", height=0, width=0)
+""")
 
 # ==============================================================================
 #  4. LIVE PRICE REFRESH (UI Display Only — Ticks run in 24/7 background daemon)
@@ -605,8 +597,8 @@ with tab_desk:
     st.markdown(f"""
     <div style='background:#18181b;border:1px solid #27272a;border-radius:6px;padding:8px 14px;margin-bottom:8px;display:flex;justify-content:space-between;align-items:center;font-size:0.80rem'>
       <span><strong>🏛️ Live Margin Health:</strong> <span class="pnl-green">{margin_lvl_str}</span></span>
-      <span><strong>🛡️ Daily DD Guard:</strong> <span style="color:#3b82f6">$450.00 Max Risk Cap (ACTIVE)</span></span>
-      <span><strong>⚡ Volatility Shield:</strong> <span class="pnl-green">1.20% Black Swan Circuit-Breaker ON</span></span>
+      <span><strong>🛡️ Daily DD Guard:</strong> <span style="color:#3b82f6">ACTIVE</span></span>
+      <span><strong>⚡ Volatility Shield:</strong> <span class="pnl-green">Circuit-Breaker ON</span></span>
       <span><strong>🚀 Smart Trailing:</strong> <span class="pnl-green">Runner Expansion Active</span></span>
     </div>
     """, unsafe_allow_html=True)
@@ -614,7 +606,7 @@ with tab_desk:
     # 🧠 Self-Learning & Pivot Points Analytics Banner
     sample_bot = list(st.session_state.markets.values())[0]["bot"]
     learning_stats = sample_bot.get_self_learning_metrics() if hasattr(sample_bot, "get_self_learning_metrics") else {}
-    ls_status = learning_stats.get("status", "ACTIVE (98.5% WIN RATE TARGET)")
+    ls_status = learning_stats.get("status", "ACTIVE")
     ls_wr = learning_stats.get("win_rate", learning_stats.get("rolling_win_rate_pct", 78.5))
     ls_pf = learning_stats.get("profit_factor", learning_stats.get("rolling_profit_factor", 2.2))
     ls_mult = learning_stats.get("tuning_multiplier", learning_stats.get("adaptive_gap_mult", 1.0))
@@ -631,7 +623,7 @@ with tab_desk:
     # Master Action Toolbar
     tb_c1, tb_c2, tb_c3, tb_c4 = st.columns([3, 3, 3, 3])
     with tb_c1:
-        if st.button("🚀 START ALL AUTO", type="primary", use_container_width=True):
+        if st.button("🚀 START ALL AUTO", type="primary", width='stretch'):
             for _s_code, _m_item in st.session_state.markets.items():
                 _m_item["running"] = True
                 _m_item["bot"].use_auto_reading = True
@@ -647,7 +639,7 @@ with tab_desk:
             st.toast("Started all 6 pairs in Auto Mode!")
             st.rerun()
     with tb_c2:
-        if st.button("⏹️ PAUSE ALL", use_container_width=True):
+        if st.button("⏹️ PAUSE ALL", width='stretch'):
             for _m_item in st.session_state.markets.values():
                 _m_item["running"] = False
                 try:
@@ -658,7 +650,7 @@ with tab_desk:
             st.toast("Paused all pairs and cancelled all pending grid orders.")
             st.rerun()
     with tb_c3:
-        if st.button("🎯 RE-CENTER ALL TRAPS", use_container_width=True):
+        if st.button("🎯 RE-CENTER ALL TRAPS", width='stretch'):
             for _m_item in st.session_state.markets.values():
                 try:
                     _m_item["bot"].deploy_traps(_m_item.get("last_price", 0), time.time(), force=True)
@@ -669,7 +661,7 @@ with tab_desk:
     with tb_c4:
         col_g1, col_g2, col_g3 = st.columns(3)
         with col_g1:
-            if st.button("🟢 CLOSE BUY", key="btn_global_close_buy", use_container_width=True, help="Close all open BUY positions across all pairs"):
+            if st.button("🟢 CLOSE BUY", key="btn_global_close_buy", width='stretch', help="Close all open BUY positions across all pairs"):
                 for _m_item in st.session_state.markets.values():
                     try: _m_item["broker"].close_buy_positions()
                     except Exception: pass
@@ -677,7 +669,7 @@ with tab_desk:
                 st.toast("🟢 Closed all BUY positions across all pairs!")
                 st.rerun()
         with col_g2:
-            if st.button("🔴 CLOSE SELL", key="btn_global_close_sell", use_container_width=True, help="Close all open SELL positions across all pairs"):
+            if st.button("🔴 CLOSE SELL", key="btn_global_close_sell", width='stretch', help="Close all open SELL positions across all pairs"):
                 for _m_item in st.session_state.markets.values():
                     try: _m_item["broker"].close_sell_positions()
                     except Exception: pass
@@ -685,7 +677,7 @@ with tab_desk:
                 st.toast("🔴 Closed all SELL positions across all pairs!")
                 st.rerun()
         with col_g3:
-            if st.button("🚨 FLATTEN ALL", key="btn_global_flatten_all", type="primary", use_container_width=True, help="Close all positions & cancel orders across all pairs"):
+            if st.button("🚨 FLATTEN ALL", key="btn_global_flatten_all", type="primary", width='stretch', help="Close all positions & cancel orders across all pairs"):
                 for _m_item in st.session_state.markets.values():
                     _m_item["running"] = False
                     try:
@@ -700,7 +692,7 @@ with tab_desk:
     with st.expander("⚡ ONE-CLICK STRATEGY PRESETS & BULK MODIFIERS", expanded=False):
         p_c1, p_c2, p_c3, p_c4 = st.columns(4)
         with p_c1:
-            if st.button("🛡️ CONSERVATIVE PRESET", use_container_width=True):
+            if st.button("🛡️ CONSERVATIVE PRESET", width='stretch'):
                 for m in st.session_state.markets.values():
                     m["bot"].grid_gap = 0.35
                     m["bot"].trap_offset = 0.20
@@ -715,7 +707,7 @@ with tab_desk:
                 st.toast("Applied Conservative Preset across all pairs!")
                 st.rerun()
         with p_c2:
-            if st.button("⚖️ AI BALANCED PRESET", use_container_width=True):
+            if st.button("⚖️ AI BALANCED PRESET", width='stretch'):
                 for m in st.session_state.markets.values():
                     m["bot"].grid_gap = 0.30
                     m["bot"].trap_offset = 0.15
@@ -730,7 +722,7 @@ with tab_desk:
                 st.toast("Applied AI Balanced Preset across all pairs!")
                 st.rerun()
         with p_c3:
-            if st.button("⚡ APPLY 1M ULTRA-FAST SCALPER", use_container_width=True):
+            if st.button("⚡ APPLY 1M ULTRA-FAST SCALPER", width='stretch'):
                 for m in st.session_state.markets.values():
                     m["bot"].grid_gap = 0.07
                     m["bot"].trap_offset = 0.05
@@ -744,7 +736,7 @@ with tab_desk:
                 st.toast("Applied 1m Ultra-Fast Scalper Preset across all pairs!")
                 st.rerun()
         with p_c4:
-            if st.button("🚀 TOGGLE RUNNER MODE (ALL)", use_container_width=True):
+            if st.button("🚀 TOGGLE RUNNER MODE (ALL)", width='stretch'):
                 new_st = not getattr(list(st.session_state.markets.values())[0]["bot"], "use_smart_trailing", True)
                 for m in st.session_state.markets.values():
                     m["bot"].use_smart_trailing = new_st
@@ -756,13 +748,13 @@ with tab_desk:
     # Filter Toolbar
     f_cols = st.columns(len(_symbols) + 1)
     with f_cols[0]:
-        if st.button(f"ALL ({len(_symbols)} Markets)", type="primary" if st.session_state.pair_filter == "ALL" else "secondary", use_container_width=True):
+        if st.button(f"ALL ({len(_symbols)} Markets)", type="primary" if st.session_state.pair_filter == "ALL" else "secondary", width='stretch'):
             st.session_state.pair_filter = "ALL"
             st.rerun()
     for idx_f, s_code in enumerate(_symbols):
         with f_cols[idx_f + 1]:
             s_short = "GOLD" if s_code in ("PAXGUSDT", "XAUUSD", "GOLD") else s_code.replace("USDT", "").replace("USD", "")
-            if st.button(s_short, type="primary" if st.session_state.pair_filter == s_code else "secondary", use_container_width=True):
+            if st.button(s_short, type="primary" if st.session_state.pair_filter == s_code else "secondary", width='stretch'):
                 st.session_state.pair_filter = s_code
                 st.rerun()
 
@@ -801,15 +793,11 @@ with tab_desk:
         display_syms = [st.session_state.pair_filter]
 
     # Render Pair Cards
-    for i in range(0, len(display_syms), 2):
-        pair_col1, pair_col2 = st.columns(2)
-        cols = [pair_col1, pair_col2]
-        
-        for idx_c in range(2):
-            if i + idx_c >= len(display_syms):
-                break
+    for sym_code in display_syms:
+        # Dummy loop to preserve the massive block's indentation
+        for idx_c in range(1):
+            cols = [st.container()]
             
-            sym_code = display_syms[i + idx_c]
             m_data = st.session_state.markets[sym_code]
             brk = m_data["broker"]
             bot = m_data["bot"]
@@ -839,15 +827,14 @@ with tab_desk:
                 except Exception:
                     pass
             
-            gain_str = "+1.85%" if "BTC" in sym_code or "GOLD" in sym_code or "XAU" in sym_code else "+2.40%"
             status_badge = "🟢 RUNNING (AUTO)" if (is_run and is_auto) else ("🟢 RUNNING (MANUAL)" if is_run else "🔴 IDLE")
-            label_title = f"{_symbol_labels.get(sym_code, sym_code)} — ${sym_p:,.2f} ({gain_str}) | {status_badge}"
+            label_title = f"{_symbol_labels.get(sym_code, sym_code)} — ${sym_p:,.2f} | {status_badge}"
             
             with cols[idx_c]:
                 with st.expander(label_title, expanded=True):
 
                     # ── MODE SELECTOR & ENGINE CONTROL STRIP ───────────────────
-                    hdr_c1, hdr_c2 = st.columns([5, 5])
+                    hdr_c1, hdr_c2 = st.columns(2, vertical_alignment="center")
                     with hdr_c1:
                         mode_sel = st.radio(
                             f"Mode ({sym_code})",
@@ -870,11 +857,10 @@ with tab_desk:
                             st.rerun()
 
                     with hdr_c2:
-                        st.markdown("<div style='height:24px'></div>", unsafe_allow_html=True)
-                        e_col1, e_col2 = st.columns(2)
+                        e_col1, e_col2 = st.columns(2, vertical_alignment="bottom")
                         with e_col1:
                             if not is_run:
-                                if st.button("▶ START BOT", key=f"btn_start_{sym_code}", type="primary", use_container_width=True):
+                                if st.button("▶ START BOT", key=f"btn_start_{sym_code}", type="primary", width='stretch'):
                                     m_data["running"] = True
                                     bot.auto_restart = is_auto
                                     live_px = get_live_price(sym_code) or sym_p
@@ -887,7 +873,7 @@ with tab_desk:
                                     save_bot_state()
                                     st.rerun()
                             else:
-                                if st.button("⏹️ STOP BOT", key=f"btn_stop_{sym_code}", use_container_width=True):
+                                if st.button("⏹️ STOP BOT", key=f"btn_stop_{sym_code}", width='stretch'):
                                     m_data["running"] = False
                                     try:
                                         brk.cancel_all_orders()   # Cancel MT5 orders so they don't fire unmanaged
@@ -896,7 +882,7 @@ with tab_desk:
                                     save_bot_state()
                                     st.rerun()
                         with e_col2:
-                            if st.button("🔄 RESET GRID", key=f"btn_reset_{sym_code}", use_container_width=True, help=f"Reset and re-center grid traps for {sym_code} at current live price"):
+                            if st.button("🔄 RESET GRID", key=f"btn_reset_{sym_code}", width='stretch', help=f"Reset and re-center grid traps for {sym_code} at current live price"):
                                 live_px = get_live_price(sym_code) or sym_p
                                 if live_px > 0:
                                     m_data["last_price"] = live_px
@@ -910,10 +896,9 @@ with tab_desk:
                                 st.rerun()
 
                     # ── POSITION OPERATIONS CONTROL BAR ─────────────────────────────
-                    st.markdown("<div style='margin-top:6px'></div>", unsafe_allow_html=True)
-                    act_c1, act_c2, act_c3 = st.columns(3)
+                    act_c1, act_c2, act_c3 = st.columns(3, vertical_alignment="center")
                     with act_c1:
-                        if st.button("🟢 CLOSE BUY", key=f"btn_close_buy_{sym_code}", use_container_width=True, help=f"Close ONLY open BUY positions for {sym_code}"):
+                        if st.button("🟢 CLOSE BUY", key=f"btn_close_buy_{sym_code}", width='stretch', help=f"Close ONLY open BUY positions for {sym_code}"):
                             try:
                                 brk.close_buy_positions(sym_code)
                                 st.toast(f"🟢 Closed BUY positions for {sym_code}!")
@@ -922,7 +907,7 @@ with tab_desk:
                             save_bot_state()
                             st.rerun()
                     with act_c2:
-                        if st.button("🔴 CLOSE SELL", key=f"btn_close_sell_{sym_code}", use_container_width=True, help=f"Close ONLY open SELL positions for {sym_code}"):
+                        if st.button("🔴 CLOSE SELL", key=f"btn_close_sell_{sym_code}", width='stretch', help=f"Close ONLY open SELL positions for {sym_code}"):
                             try:
                                 brk.close_sell_positions(sym_code)
                                 st.toast(f"🔴 Closed SELL positions for {sym_code}!")
@@ -931,7 +916,7 @@ with tab_desk:
                             save_bot_state()
                             st.rerun()
                     with act_c3:
-                        if st.button("🚨 FLATTEN ALL", key=f"btn_emergency_{sym_code}", use_container_width=True, help="Close all positions and cancel all pending orders for this pair immediately"):
+                        if st.button("🚨 FLATTEN ALL", key=f"btn_emergency_{sym_code}", width='stretch', help="Close all positions and cancel all pending orders for this pair immediately"):
                             m_data["running"] = False
                             try:
                                 brk.close_all_positions(symbol=sym_code)
@@ -973,43 +958,57 @@ with tab_desk:
 
                         # 🎯 Pending Order Retention & Manual Direction Selector
                         cur_side_mode = getattr(bot, "pending_order_side_mode", "AUTO_ADAPTIVE").upper()
-                        side_idx = 0 if "ADAPTIVE" in cur_side_mode else (1 if "BOTH" in cur_side_mode else (2 if "TREND" in cur_side_mode else (3 if "BUY" in cur_side_mode else 4)))
+                        # Use exact match for index — substring checks can misfire (e.g. "BUY" inside other strings)
+                        _mode_to_idx = {
+                            "AUTO_ADAPTIVE": 0,
+                            "BOTH_SIDES": 1,
+                            "TREND_SIDE_ONLY": 2,
+                            "BUY_ONLY": 3,
+                            "SELL_ONLY": 4,
+                        }
+                        side_idx = _mode_to_idx.get(cur_side_mode, 0)
                         pending_side_sel = st.selectbox(
-                            f"🎯 Pending Order Trap Direction ({sym_code})",
+                            f"Pending Order Trap Direction ({sym_code})",
                             [
-                                "🔄 AUTO ADAPTIVE (Both Sides in Chop / Trend Side in Expansion)",
-                                "⚔️ BOTH SIDES ALWAYS (Dual Traps Always Maintained)",
-                                "🎯 TREND SIDE ONLY (Dynamic Trend Direction Traps)",
-                                "🟢 BUY ONLY (Manual Bull Traps Only)",
-                                "🔴 SELL ONLY (Manual Bear Traps Only)"
+                                "AUTO ADAPTIVE (Both Sides in Chop / Trend Side in Expansion)",
+                                "BOTH SIDES ALWAYS (Dual Traps Always Maintained)",
+                                "TREND SIDE ONLY (Dynamic Trend Direction Traps)",
+                                "BUY ONLY (Manual Bull Traps Only)",
+                                "SELL ONLY (Manual Bear Traps Only)"
                             ],
                             index=side_idx,
                             key=f"pending_side_{sym_code}",
-                            help="Select grid trap direction. Manual BUY ONLY places buy stops above price. Manual SELL ONLY places sell stops below price."
+                            help="Select grid trap direction."
                         )
-                        if "AUTO" in pending_side_sel or "ADAPTIVE" in pending_side_sel:
+                        # Exact label matching — no substring ambiguity
+                        if "AUTO" in pending_side_sel:
                             new_side_mode = "AUTO_ADAPTIVE"
-                        elif "BOTH" in pending_side_sel or "DUAL" in pending_side_sel:
+                        elif "BOTH" in pending_side_sel:
                             new_side_mode = "BOTH_SIDES"
-                        elif "BUY" in pending_side_sel:
-                            new_side_mode = "BUY_ONLY"
-                        elif "SELL" in pending_side_sel:
-                            new_side_mode = "SELL_ONLY"
                         elif "TREND" in pending_side_sel:
                             new_side_mode = "TREND_SIDE_ONLY"
+                        elif pending_side_sel.startswith("BUY"):
+                            new_side_mode = "BUY_ONLY"
+                        elif pending_side_sel.startswith("SELL"):
+                            new_side_mode = "SELL_ONLY"
                         else:
                             new_side_mode = "AUTO_ADAPTIVE"
 
                         if new_side_mode != getattr(bot, "pending_order_side_mode", "AUTO_ADAPTIVE"):
                             bot.pending_order_side_mode = new_side_mode
                             save_bot_state()
+                            # Always cancel ALL pending orders when mode changes — old orders must go
                             try:
                                 brk.cancel_all_orders()
-                                if is_run and sym_p > 0:
-                                    bot.deploy_traps(sym_p, time.time(), force=True)
                             except Exception:
                                 pass
-                            st.toast(f"🎯 {sym_code} Trap Mode → {new_side_mode}")
+                            # Redeploy with new mode if price is available
+                            if is_run and sym_p > 0:
+                                try:
+                                    bot.deploy_traps(sym_p, time.time(), force=True)
+                                except Exception:
+                                    pass
+                            st.toast(f"{sym_code} Trap Mode changed to {new_side_mode}")
                             st.rerun()
 
                         # Execute live bot engine tick when RUN BOT is active
@@ -1035,7 +1034,11 @@ with tab_desk:
                                 )
                                 if ev:
                                     bot.last_auto_eval = ev
-                                    bot.unidirectional_mode = ev.get("unidirectional_mode", "DUAL")
+                                    old_mode = getattr(bot, "unidirectional_mode", "DUAL")
+                                    new_mode = ev.get("unidirectional_mode", "DUAL")
+                                    bot.unidirectional_mode = new_mode
+                                    if old_mode != new_mode:
+                                        bot.deploy_traps(sym_p, time.time(), force=True)
                             except Exception:
                                 ev = getattr(bot, "last_auto_eval", {})
                         if not ev:
@@ -1058,6 +1061,10 @@ with tab_desk:
                         ci_val      = float(ev.get("choppiness_index", 50.0))
                         adx_val     = float(ev.get("adx", 20.0))
                         mtf_val     = float(ev.get("mtf_confluence", 50.0))
+                        
+                        fvg_str     = ev.get("recent_fvg", "NONE").replace("_", " ")
+                        sweep_str   = ev.get("recent_sweep", "NONE").replace("_", " ")
+                        ob_str      = ev.get("recent_ob", "NONE").replace("_", " ")
 
                         # Master Control Room Bias & Forecast Classification
                         if comb_bias >= 0.50:
@@ -1190,6 +1197,14 @@ with tab_desk:
                             <div><span style="color:#71717a">VWAP Dev:</span> <strong>{vwap_d:.2f}%</strong></div>
                             <div><span style="color:#71717a">RSI:</span> <strong style="color:{'#ef4444' if rsi_val>=70 else ('#22c55e' if rsi_val<=30 else '#f4f4f5')}">{rsi_val:.1f}</strong></div>
                           </div>
+
+                          <!-- SMART MONEY CONCEPTS (SMC) GRID -->
+                          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;font-size:0.72rem;background:#121215;padding:6px 8px;border-radius:6px;margin-bottom:8px;border:1px solid #1f1f23">
+                            <div><span style="color:#71717a">SMC Sweep:</span> <strong style="color:{'#22c55e' if 'BULLISH' in sweep_str else ('#ef4444' if 'BEARISH' in sweep_str else '#71717a')}">{sweep_str}</strong></div>
+                            <div><span style="color:#71717a">Fair Value Gap:</span> <strong style="color:{'#22c55e' if 'BULLISH' in fvg_str else ('#ef4444' if 'BEARISH' in fvg_str else '#71717a')}">{fvg_str}</strong></div>
+                            <div><span style="color:#71717a">Order Block:</span> <strong style="color:{'#22c55e' if 'BULLISH' in ob_str else ('#ef4444' if 'BEARISH' in ob_str else '#71717a')}">{ob_str}</strong></div>
+                          </div>
+
 
                           <!-- GRID TELEMETRY METRICS -->
                           <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr 1fr 1fr;gap:6px;font-size:0.75rem;margin-bottom:8px">
@@ -1415,7 +1430,7 @@ with tab_desk:
                                         yaxis=dict(showgrid=True, gridcolor='#27272a'),
                                         showlegend=False
                                     )
-                                    st.plotly_chart(_fig, use_container_width=True, key=f"c1m_{sym_code}")
+                                    st.plotly_chart(_fig, width='stretch', key=f"c1m_{sym_code}")
                             except Exception as _c_err:
                                 st.markdown(f"<div style='font-size:0.72rem;color:#71717a'>Chart: {_c_err}</div>", unsafe_allow_html=True)
 
@@ -1560,7 +1575,7 @@ with tab_desk:
                         # Auto-save on any change
                         _apply_params()
 
-                        if st.button("⚡ Apply & Re-Deploy Traps", key=f"apply_{sym_code}", use_container_width=True, type="primary"):
+                        if st.button("⚡ Apply & Re-Deploy Traps", key=f"apply_{sym_code}", width='stretch', type="primary"):
                             _apply_params()
                             try:
                                 bot.deploy_traps(sym_p, time.time(), force=True)
@@ -1633,7 +1648,7 @@ with tab_desk:
                 fig.add_hline(y=ord_obj.trigger_price, line_dash="dash", line_color=line_color, annotation_text=f"{ord_obj.type} @ ${ord_obj.trigger_price:,.2f}")
                 
             fig.update_layout(template="plotly_dark", height=320, margin=dict(l=10, r=10, t=30, b=10), paper_bgcolor="#18181b", plot_bgcolor="#18181b")
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
         else:
             st.info("Accumulating live tick history for price visualization...")
 
@@ -1733,31 +1748,44 @@ with tab_desk:
                 pass
         
         cycles_list = list(getattr(bot, "cycle_history", []) or [])
-        if not cycles_list and hasattr(brk, "closed_trades") and brk.closed_trades:
+
+        # Always also merge broker.closed_trades — MT5-synced deals that aren't yet
+        # in cycle_history (e.g. after a restart) must show in the portal too.
+        if hasattr(brk, "closed_trades") and brk.closed_trades:
+            existing_records = {(round(float(c.get("exit_time", c.get("timestamp", 0))), 1), round(float(c.get("pnl", c.get("total_pnl", 0))), 2)) for c in cycles_list}
             for idx_tr, tr in enumerate(brk.closed_trades):
                 pnl_tr = float(tr.get("pnl", 0.0))
-                ts_tr = float(tr.get("exit_time", time.time()))
-                st_tr = float(tr.get("entry_time", ts_tr - 15.0))
+                ts_tr  = float(tr.get("exit_time", time.time()))
+                st_tr  = float(tr.get("entry_time", ts_tr - 15.0))
+                ts_rnd = round(ts_tr, 1)
+                pnl_rnd = round(pnl_tr, 2)
+                
+                # Check for duplicates using both timestamp and PnL to prevent hiding concurrent individual positions
+                if (ts_rnd, pnl_rnd) in existing_records:
+                    continue
+                existing_records.add((ts_rnd, pnl_rnd))
                 dep_px = float(tr.get("deploy_price", tr.get("entry_price", tr.get("open_price", 0.0))))
-                ex_px = float(tr.get("exit_price", tr.get("close_price", tr.get("price", 0.0))))
-                fl_cnt = int(tr.get("fills_count", tr.get("trades_count", tr.get("size", 1))))
+                ex_px  = float(tr.get("exit_price",  tr.get("close_price",  tr.get("price", 0.0))))
+                fl_cnt = int(tr.get("fills_count",   tr.get("trades_count",  tr.get("size", 1))))
                 cycles_list.append({
-                    "cycle_id": idx_tr + 1,
-                    "symbol": sym_code,
-                    "pnl": pnl_tr,
-                    "total_pnl": pnl_tr,
+                    "cycle_id":    len(cycles_list) + 1,
+                    "symbol":      tr.get("symbol", sym_code),
+                    "pnl":         pnl_tr,
+                    "total_pnl":   pnl_tr,
                     "deploy_price": dep_px,
-                    "entry_price": dep_px,
-                    "exit_price": ex_px,
-                    "fills_count": max(1, fl_cnt),
+                    "entry_price":  dep_px,
+                    "exit_price":   ex_px,
+                    "fills_count":  max(1, fl_cnt),
                     "trades_count": max(1, fl_cnt),
-                    "exit_reason": tr.get("exit_reason", "TARGET_PROFIT" if pnl_tr > 0 else "STOP_LOSS"),
-                    "duration": max(1, int(ts_tr - st_tr)),
-                    "start_time": st_tr,
-                    "timestamp": ts_tr,
-                    "exit_time": ts_tr,
-                    "is_win": pnl_tr > 0.0
+                    "exit_reason":  tr.get("exit_reason", "TARGET_PROFIT" if pnl_tr > 0 else "STOP_LOSS"),
+                    "duration":     max(1, int(ts_tr - st_tr)),
+                    "start_time":   st_tr,
+                    "timestamp":    ts_tr,
+                    "exit_time":    ts_tr,
+                    "is_win":       pnl_tr > 0.0
                 })
+
+
 
         seen_keys = set()
         for idx, item in enumerate(cycles_list):
@@ -1905,7 +1933,7 @@ with tab_desk:
             try:
                 df_export = pd.DataFrame(filtered_list)
                 csv_data = df_export.to_csv(index=False).encode('utf-8')
-                st.download_button("📥 Export CSV", data=csv_data, file_name="completed_cycles_history.csv", mime="text/csv", use_container_width=True)
+                st.download_button("📥 Export CSV", data=csv_data, file_name="completed_cycles_history.csv", mime="text/csv", width='stretch')
             except Exception:
                 pass
 
@@ -2111,7 +2139,7 @@ with tab_myfxbook:
         fig_eq = go.Figure()
         fig_eq.add_trace(go.Scatter(y=eq_points, mode="lines+markers", name="Account Equity ($)", line=dict(color="#22c55e", width=3), fill='tozeroy', fillcolor='rgba(34, 197, 94, 0.1)'))
         fig_eq.update_layout(template="plotly_dark", height=240, margin=dict(l=10, r=10, t=10, b=10), paper_bgcolor="#18181b", plot_bgcolor="#18181b", xaxis_title="Executed Deals", yaxis_title="Equity ($)")
-        st.plotly_chart(fig_eq, use_container_width=True)
+        st.plotly_chart(fig_eq, width='stretch')
 
     st.markdown("<div style='height: 14px;'></div>", unsafe_allow_html=True)
 

@@ -23,7 +23,7 @@ print("======================================================================")
 from core.engine import BreakoutGridBot, Order, Position
 
 class BacktestBroker:
-    def __init__(self, initial_balance=5000.0, symbol="BTCUSD"):
+    def __init__(self, initial_balance=5000.0, symbol="PAXGUSDT"):
         self.symbol = symbol
         self.initial_balance = initial_balance
         self.balance_usd = initial_balance
@@ -42,17 +42,9 @@ class BacktestBroker:
 
     def get_min_stop_distance(self):
         sym_u = self.symbol.upper()
-        if "XAU" in sym_u or "GOLD" in sym_u:
+        if "XAU" in sym_u or "GOLD" in sym_u or "PAXG" in sym_u:
             return 0.50
-        elif "BTC" in sym_u:
-            return 5.00
-        elif "ETH" in sym_u:
-            return 0.50
-        elif "EURUSD" in sym_u:
-            return 0.0001
-        elif "USDJPY" in sym_u:
-            return 0.01
-        return 0.0001
+        return 0.50
 
     def place_order(self, order_type: str, price: float, size: float, timestamp: float, tp: float = 0.0, sl: float = 0.0):
         order_id = f"ord_{len(self.pending_orders)+1}_{int(timestamp)}"
@@ -95,16 +87,24 @@ class BacktestBroker:
             return record
         return None
 
-    def close_all_positions(self, exit_price: float, timestamp: float):
+    def close_all_positions(self, exit_price: float = 0.0, timestamp: float = 0.0, symbol=None, side=None, exclude_ids=None):
         closed = []
+        exclude_ids = exclude_ids or set()
         for pid in list(self.open_positions.keys()):
+            if pid in exclude_ids:
+                continue
             res = self.close_position(pid, exit_price, timestamp)
             if res:
                 closed.append(res)
         return closed
 
     def get_floating_pnl(self, current_price: float) -> float:
-        return sum(pos.get_pnl(current_price) for pos in self.open_positions.values())
+        total_pnl = 0.0
+        for pid, pos in self.open_positions.items():
+            if pid in getattr(self, "runner_ids", set()):
+                continue
+            total_pnl += pos.get_pnl(current_price)
+        return total_pnl
 
     def update_tick(self, ask: float, bid: float, timestamp: float):
         self.last_ask = ask
@@ -112,7 +112,7 @@ class BacktestBroker:
         triggered = []
         
         # Check pending order activations with realistic adverse execution slippage simulation
-        pip_unit = 1.0 if "BTC" in self.symbol.upper() else 0.10
+        pip_unit = 0.10
         for oid, o in list(self.pending_orders.items()):
             if o.type == "BUY_STOP" and ask >= o.trigger_price:
                 slippage = random.uniform(0.0, 1.5) * pip_unit
@@ -175,21 +175,13 @@ class BacktestBroker:
 
 def generate_high_precision_candles(symbol: str, num_bars: int = 50000):
     sym_u = symbol.upper()
-    random.seed(42 if "BTC" in sym_u else (101 if "ETH" in sym_u else (202 if "EUR" in sym_u else 303)))
-    if "BTC" in sym_u:
-        base_price = 65000.0
-        volatility = 0.0006
-    elif "ETH" in sym_u:
-        base_price = 3400.0
+    random.seed(303)
+    
+    if "XAU" in sym_u or "GOLD" in sym_u or "PAXG" in sym_u:
+        base_price = 2000.0
         volatility = 0.0008
-    elif "EURUSD" in sym_u:
-        base_price = 1.0900
-        volatility = 0.0003
-    elif "USDJPY" in sym_u:
-        base_price = 150.00
-        volatility = 0.0004
     else:
-        base_price = 2700.0
+        base_price = 2000.0
         volatility = 0.0008
     
     start_ts = time.time() - (num_bars * 60)
@@ -233,39 +225,31 @@ def run_high_precision_backtest(sym_name: str, num_bars: int = 5000):
 
     broker = BacktestBroker(initial_balance=5000.0, symbol=sym_name)
     sym_u = sym_name.upper()
-    if "BTC" in sym_u:
-        base_order_size = 0.01
-        g_gap = 0.06
-        t_off = 0.02
-        t_prof = 0.50
-    elif "ETH" in sym_u:
-        base_order_size = 0.10
-        g_gap = 0.05
-        t_off = 0.02
-        t_prof = 0.50
-    elif "EURUSD" in sym_u or "USDJPY" in sym_u or "GBPUSD" in sym_u:
-        base_order_size = 0.02
-        g_gap = 0.04
-        t_off = 0.02
-        t_prof = 0.50
-    else:  # Gold / XAUUSD
-        base_order_size = 0.01
-        g_gap = 0.05
-        t_off = 0.02
-        t_prof = 0.50
+    
+    if "XAU" in sym_u or "GOLD" in sym_u or "PAXG" in sym_u:
+        base_order_size = 0.020
+        g_gap = 0.050
+        t_off = 0.050
+        t_prof = 18.50
+    else:
+        base_order_size = 0.020
+        g_gap = 0.050
+        t_off = 0.050
+        t_prof = 18.50
 
     bot = BreakoutGridBot(
         broker=broker,
         symbol=sym_name,
-        grid_levels=5,
+        grid_levels=10,
         grid_gap=g_gap,
         trap_offset=t_off,
         order_size=base_order_size,
         order_size_multiplier=1.25,
         target_profit=t_prof,
         auto_restart=True,
-        use_auto_reading=True
+        use_auto_reading=False  # Disable auto reading so it uses our hardcoded parameters
     )
+    bot.spacing_mode = "Percentage (%)"
 
     prev_px = rates[0]['close']
     max_dd_usd = 0.0
@@ -282,19 +266,7 @@ def run_high_precision_backtest(sym_name: str, num_bars: int = 5000):
         
         # Intrabar tick sequence: High -> Low -> Close to simulate real candle wicks
         for px in [h_px, l_px, c_px]:
-            sym_u = sym_name.upper()
-            if "BTC" in sym_u:
-                spread = 5.00
-            elif "ETH" in sym_u:
-                spread = 0.50
-            elif "EURUSD" in sym_u:
-                spread = 0.00015
-            elif "USDJPY" in sym_u:
-                spread = 0.015
-            elif "XAU" in sym_u or "GOLD" in sym_u:
-                spread = 0.25
-            else:
-                spread = 0.10
+            spread = 0.25
 
             broker.update_tick(px + spread, px, ts)
             
@@ -343,6 +315,6 @@ def run_high_precision_backtest(sym_name: str, num_bars: int = 5000):
 if __name__ == "__main__":
     import sys
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
-    target_symbols = args if args else ["XAUUSD", "BTCUSD", "ETHUSD", "EURUSD", "USDJPY"]
+    target_symbols = args if args else ["PAXGUSDT"]
     for sym in target_symbols:
         run_high_precision_backtest(sym)
