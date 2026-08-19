@@ -53,8 +53,8 @@ def get_live_price(symbol: str = "PAXGUSDT") -> Optional[float]:
                 p = float((tick.ask + tick.bid) / 2.0)
                 _LIVE_PRICE_CACHE[sym] = (p, now)
                 return p
-    except Exception:
-        pass
+    except Exception as e:
+        import logging; logging.warning(f"Exception: {e}")
 
     if sym in _LIVE_PRICE_CACHE:
         cached_p, cached_t = _LIVE_PRICE_CACHE[sym]
@@ -70,8 +70,8 @@ def get_live_price(symbol: str = "PAXGUSDT") -> Optional[float]:
             if p > 0:
                 _LIVE_PRICE_CACHE[sym] = (p, now)
                 return p
-    except Exception:
-        pass
+    except Exception as e:
+        import logging; logging.warning(f"Exception: {e}")
 
     # 2. Fallback to Coinbase API (0.15s ultra-fast timeout)
     base = "PAXG" if sym == "PAXGUSDT" else sym.replace("USDT", "").replace("USD", "")
@@ -83,8 +83,8 @@ def get_live_price(symbol: str = "PAXGUSDT") -> Optional[float]:
             if p > 0:
                 _LIVE_PRICE_CACHE[sym] = (p, now)
                 return p
-    except Exception:
-        pass
+    except Exception as e:
+        import logging; logging.warning(f"Exception: {e}")
 
     # Instant RAM / Default Price Fallback
     if sym in _LIVE_PRICE_CACHE:
@@ -133,8 +133,8 @@ def get_historical_klines(symbol: str = "PAXGUSDT", interval: str = "1m", limit:
             df = pd.DataFrame(parsed_data, columns=["timestamp", "open", "high", "low", "close", "volume"])
             _HISTORICAL_KLINES_CACHE[cache_key] = (df, now)
             return df
-    except Exception:
-        pass
+    except Exception as e:
+        import logging; logging.warning(f"Exception: {e}")
 
     # 2. Fallback to Coinbase API (0.4s timeout)
     base = "PAXG" if sym == "PAXGUSDT" else sym.replace("USDT", "").replace("USD", "")
@@ -157,8 +157,8 @@ def get_historical_klines(symbol: str = "PAXGUSDT", interval: str = "1m", limit:
                 df = pd.DataFrame(parsed_data, columns=["timestamp", "open", "high", "low", "close", "volume"])
                 _HISTORICAL_KLINES_CACHE[cache_key] = (df, now)
                 return df
-    except Exception:
-        pass
+    except Exception as e:
+        import logging; logging.warning(f"Exception: {e}")
 
     # 3. Check Persistent Cache Fallback
     if cache_key in _HISTORICAL_KLINES_CACHE:
@@ -244,8 +244,8 @@ def get_fear_and_greed_index() -> dict:
                     "classification": classification,
                     "timestamp": int(item.get("timestamp", time.time()))
                 }
-    except Exception:
-        pass
+    except Exception as e:
+        import logging; logging.warning(f"Exception: {e}")
     return {"value": 55, "classification": "Neutral", "timestamp": int(time.time())}
 
 
@@ -273,8 +273,8 @@ def get_24h_market_stats(symbol: str = "PAXGUSDT") -> dict:
                 "last_price": float(data.get("lastPrice", 0.0)),
                 "source": "Binance"
             }
-    except Exception:
-        pass
+    except Exception as e:
+        import logging; logging.warning(f"Exception: {e}")
 
     # Fallback OKX Ticker
     try:
@@ -303,8 +303,8 @@ def get_24h_market_stats(symbol: str = "PAXGUSDT") -> dict:
                     "last_price": last,
                     "source": "OKX"
                 }
-    except Exception:
-        pass
+    except Exception as e:
+        import logging; logging.warning(f"Exception: {e}")
 
     return {
         "high_24h": 0.0,
@@ -1071,8 +1071,8 @@ def calculate_smc_elliott(df) -> dict:
                         elliott_wave = 1
                         elliott_confidence = round(w1_conf, 2)
 
-        except Exception:
-            pass
+        except Exception as e:
+            import logging; logging.warning(f"Exception: {e}")
 
         # Micro-Trend Momentum Fallback Classifier for Elliott Wave
         if elliott_wave == 0 and len(closes) >= 20:
@@ -1215,8 +1215,8 @@ def get_order_book_depth(symbol: str = "PAXGUSDT", limit: int = 20) -> dict:
                     "resistance_wall": resistance_wall,
                     "source": "Binance Live Order Book"
                 })
-    except Exception:
-        pass
+    except Exception as e:
+        import logging; logging.warning(f"Exception: {e}")
 
     # 4. Try Gate.io Order Book API
     try:
@@ -1242,8 +1242,8 @@ def get_order_book_depth(symbol: str = "PAXGUSDT", limit: int = 20) -> dict:
                     "resistance_wall": resistance_wall,
                     "source": "Gate.io Live Order Book"
                 }
-    except Exception:
-        pass
+    except Exception as e:
+        import logging; logging.warning(f"Exception: {e}")
 
     # Dynamic Candle Volume Imbalance (No dummy hardcodes!)
     df_klines = get_historical_klines(symbol, interval="1m", limit=30)

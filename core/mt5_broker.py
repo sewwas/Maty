@@ -560,8 +560,8 @@ class MT5Broker:
                 # Order may have already filled into a position — sync to track it
                 try:
                     self.process_tick(0.0, 0.0, time.time())
-                except Exception:
-                    pass
+                except Exception as e:
+                    import logging; logging.warning(f"Exception: {e}")
 
         self.pending_orders.pop(order_id, None)
         if ticket:
@@ -619,8 +619,8 @@ class MT5Broker:
             if clean_pid.isdigit():
                 try:
                     ticket = int(clean_pid)
-                except Exception:
-                    pass
+                except Exception as e:
+                    import logging; logging.warning(f"Exception: {e}")
 
         if not ticket:
             return None
@@ -687,8 +687,8 @@ class MT5Broker:
                 self.realized_pnl += pnl
                 self.open_positions.pop(position_id, None)
                 self.ticket_to_position_id.pop(ticket, None)
-            except Exception:
-                pass
+            except Exception as e:
+                import logging; logging.warning(f"Exception: {e}")
             return record
         return None
 
@@ -782,8 +782,8 @@ class MT5Broker:
             if clean_pid.isdigit():
                 try:
                     ticket = int(clean_pid)
-                except Exception:
-                    pass
+                except Exception as e:
+                    import logging; logging.warning(f"Exception: {e}")
         if not ticket:
             return None
 
@@ -879,8 +879,8 @@ class MT5Broker:
                     self.ticket_to_position_id.pop(ticket, None)
                 else:
                     pos_obj.size = remaining_vol
-        except Exception:
-            pass
+        except Exception as e:
+            import logging; logging.warning(f"Exception: {e}")
         return record
 
     def close_all_positions(self, exit_price: float = 0.0, timestamp: float = 0.0, symbol: Optional[str] = None, side: Optional[str] = None, exclude_ids: Optional[set] = None) -> List[dict]:
@@ -944,8 +944,8 @@ class MT5Broker:
                         self.open_positions.pop(f"live_{pos.ticket}", None)
                         self.open_positions.pop(str(pos.ticket), None)
                         self.ticket_to_position_id.pop(pos.ticket, None)
-                except Exception:
-                    pass
+                except Exception as e:
+                    import logging; logging.warning(f"Exception: {e}")
         return closed
 
     def close_buy_positions(self, symbol: Optional[str] = None) -> List[dict]:

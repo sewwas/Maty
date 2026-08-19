@@ -2,13 +2,13 @@ import sys
 if hasattr(sys.stdout, 'reconfigure'):
     try:
         sys.stdout.reconfigure(encoding='utf-8')
-    except Exception:
-        pass
+    except Exception as e:
+        import logging; logging.warning(f"Exception: {e}")
 if hasattr(sys.stderr, 'reconfigure'):
     try:
         sys.stderr.reconfigure(encoding='utf-8')
-    except Exception:
-        pass
+    except Exception as e:
+        import logging; logging.warning(f"Exception: {e}")
 
 import logging
 import warnings
@@ -28,7 +28,7 @@ import time
 import datetime
 import textwrap
 import os
-import pickle
+import json
 from typing import Optional, Dict, List
 
 import streamlit as st
@@ -55,7 +55,7 @@ _symbol_labels = {
 }
 
 def save_bot_state_dict(markets_dict: dict, force: bool = False):
-    """Serializes active markets state to bot_state.pkl continuously from background daemon thread."""
+    """Serializes active markets state to bot_state.json continuously from background daemon thread."""
     now = time.time()
     try:
         state_data = {
@@ -75,11 +75,11 @@ def save_bot_state_dict(markets_dict: dict, force: bool = False):
                 "realized_pnl": getattr(brk, "realized_pnl", 0.0) if brk else 0.0,
                 "cycle_history": getattr(bot, "cycle_history", []) if bot else []
             }
-        state_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bot_state.pkl")
-        with open(state_path, "wb") as f:
-            pickle.dump(state_data, f)
+        state_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bot_state.json")
+        with open(state_path, "w", encoding="utf-8") as f:
+            json.dump(state_data, f)
     except Exception as e:
-        print(f"Notice: bot_state.pkl save notice: {e}")
+        print(f"Notice: bot_state.json save notice: {e}")
 
 def save_bot_state(force: bool = False):
     """Bridge for Streamlit session state serialization."""
@@ -87,16 +87,16 @@ def save_bot_state(force: bool = False):
         save_bot_state_dict(st.session_state.markets, force=force)
 
 def load_saved_bot_full_state() -> Dict[str, dict]:
-    """Loads saved bot state (running status, cycle history, trade history) from bot_state.pkl across session refreshes."""
+    """Loads saved bot state (running status, cycle history, trade history) from bot_state.json across session refreshes."""
     saved_state = {}
     try:
-        state_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bot_state.pkl")
+        state_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bot_state.json")
         if os.path.exists(state_path):
-            with open(state_path, "rb") as f:
-                state_data = pickle.load(f)
+            with open(state_path, "r", encoding="utf-8") as f:
+                state_data = json.load(f)
                 saved_state = state_data.get("markets", {})
     except Exception as e:
-        print(f"Notice: bot_state.pkl load notice: {e}")
+        print(f"Notice: bot_state.json load notice: {e}")
     return saved_state
 
 @st.cache_resource
@@ -482,8 +482,8 @@ if MT5_AVAILABLE:
                             brk.open_positions[pos_id] = pos_obj
                     else:
                         brk.open_positions.clear()
-    except Exception:
-        pass
+    except Exception as e:
+        import logging; logging.warning(f"Exception: {e}")
 
 # ── GLOBAL KPI METRIC STRIP (6 COMPREHENSIVE REAL METRICS) ───────────────────
 _all_real_pnl  = sum(m.get("broker").realized_pnl for m in st.session_state.markets.values() if m.get("broker"))
@@ -633,8 +633,8 @@ with tab_desk:
                     _m_item["last_price"] = live_px
                     try:
                         _m_item["bot"].deploy_traps(live_px, time.time(), force=True)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        import logging; logging.warning(f"Exception: {e}")
             save_bot_state()
             st.toast("Started all 6 pairs in Auto Mode!")
             st.rerun()
@@ -644,8 +644,8 @@ with tab_desk:
                 _m_item["running"] = False
                 try:
                     _m_item["broker"].cancel_all_orders()   # Cancel MT5 orders so they don't fire unmanaged
-                except Exception:
-                    pass
+                except Exception as e:
+                    import logging; logging.warning(f"Exception: {e}")
             save_bot_state()
             st.toast("Paused all pairs and cancelled all pending grid orders.")
             st.rerun()
@@ -654,8 +654,8 @@ with tab_desk:
             for _m_item in st.session_state.markets.values():
                 try:
                     _m_item["bot"].deploy_traps(_m_item.get("last_price", 0), time.time(), force=True)
-                except Exception:
-                    pass
+                except Exception as e:
+                    import logging; logging.warning(f"Exception: {e}")
             st.toast("Re-centered all grid traps!")
             st.rerun()
     with tb_c4:
@@ -664,7 +664,7 @@ with tab_desk:
             if st.button("🟢 CLOSE BUY", key="btn_global_close_buy", width='stretch', help="Close all open BUY positions across all pairs"):
                 for _m_item in st.session_state.markets.values():
                     try: _m_item["broker"].close_buy_positions()
-                    except Exception: pass
+                    except Exception as e: import logging; logging.warning(f"Exception: {e}")
                 save_bot_state()
                 st.toast("🟢 Closed all BUY positions across all pairs!")
                 st.rerun()
@@ -672,7 +672,7 @@ with tab_desk:
             if st.button("🔴 CLOSE SELL", key="btn_global_close_sell", width='stretch', help="Close all open SELL positions across all pairs"):
                 for _m_item in st.session_state.markets.values():
                     try: _m_item["broker"].close_sell_positions()
-                    except Exception: pass
+                    except Exception as e: import logging; logging.warning(f"Exception: {e}")
                 save_bot_state()
                 st.toast("🔴 Closed all SELL positions across all pairs!")
                 st.rerun()
@@ -683,7 +683,7 @@ with tab_desk:
                     try:
                         _m_item["broker"].close_all_positions()
                         _m_item["broker"].cancel_all_orders()
-                    except Exception: pass
+                    except Exception as e: import logging; logging.warning(f"Exception: {e}")
                 save_bot_state()
                 st.toast("🚨 Emergency Stop Executed! All trades flattened.")
                 st.rerun()
@@ -702,8 +702,8 @@ with tab_desk:
                         try:
                             live_px = get_live_price(m["bot"].symbol) or m.get("last_price", 0)
                             m["bot"].deploy_traps(live_px, time.time(), force=True)
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            import logging; logging.warning(f"Exception: {e}")
                 st.toast("Applied Conservative Preset across all pairs!")
                 st.rerun()
         with p_c2:
@@ -717,8 +717,8 @@ with tab_desk:
                         try:
                             live_px = get_live_price(m["bot"].symbol) or m.get("last_price", 0)
                             m["bot"].deploy_traps(live_px, time.time(), force=True)
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            import logging; logging.warning(f"Exception: {e}")
                 st.toast("Applied AI Balanced Preset across all pairs!")
                 st.rerun()
         with p_c3:
@@ -731,8 +731,8 @@ with tab_desk:
                         try:
                             live_px = get_live_price(m["bot"].symbol) or m.get("last_price", 0)
                             m["bot"].deploy_traps(live_px, time.time(), force=True)
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            import logging; logging.warning(f"Exception: {e}")
                 st.toast("Applied 1m Ultra-Fast Scalper Preset across all pairs!")
                 st.rerun()
         with p_c4:
@@ -824,8 +824,8 @@ with tab_desk:
                             loc_o.order_id = f"mt5_{mo.ticket}"
                             loc_o.broker_ticket = mo.ticket
                             brk.pending_orders[loc_o.order_id] = loc_o
-                except Exception:
-                    pass
+                except Exception as e:
+                    import logging; logging.warning(f"Exception: {e}")
             
             status_badge = "🟢 RUNNING (AUTO)" if (is_run and is_auto) else ("🟢 RUNNING (MANUAL)" if is_run else "🔴 IDLE")
             label_title = f"{_symbol_labels.get(sym_code, sym_code)} — ${sym_p:,.2f} | {status_badge}"
@@ -851,8 +851,8 @@ with tab_desk:
                                 try:
                                     live_px = get_live_price(sym_code) or sym_p
                                     bot.deploy_traps(live_px, time.time(), force=True)
-                                except Exception:
-                                    pass
+                                except Exception as e:
+                                    import logging; logging.warning(f"Exception: {e}")
                             st.toast(f"{sym_code} → {'AUTO 🤖' if new_auto else 'MANUAL 🖐️'}")
                             st.rerun()
 
@@ -868,8 +868,8 @@ with tab_desk:
                                         m_data["last_price"] = live_px
                                     try:
                                         bot.deploy_traps(live_px, time.time(), force=True)
-                                    except Exception:
-                                        pass
+                                    except Exception as e:
+                                        import logging; logging.warning(f"Exception: {e}")
                                     save_bot_state()
                                     st.rerun()
                             else:
@@ -877,8 +877,8 @@ with tab_desk:
                                     m_data["running"] = False
                                     try:
                                         brk.cancel_all_orders()   # Cancel MT5 orders so they don't fire unmanaged
-                                    except Exception:
-                                        pass
+                                    except Exception as e:
+                                        import logging; logging.warning(f"Exception: {e}")
                                     save_bot_state()
                                     st.rerun()
                         with e_col2:
@@ -902,8 +902,8 @@ with tab_desk:
                             try:
                                 brk.close_buy_positions(sym_code)
                                 st.toast(f"🟢 Closed BUY positions for {sym_code}!")
-                            except Exception:
-                                pass
+                            except Exception as e:
+                                import logging; logging.warning(f"Exception: {e}")
                             save_bot_state()
                             st.rerun()
                     with act_c2:
@@ -911,8 +911,8 @@ with tab_desk:
                             try:
                                 brk.close_sell_positions(sym_code)
                                 st.toast(f"🔴 Closed SELL positions for {sym_code}!")
-                            except Exception:
-                                pass
+                            except Exception as e:
+                                import logging; logging.warning(f"Exception: {e}")
                             save_bot_state()
                             st.rerun()
                     with act_c3:
@@ -921,8 +921,8 @@ with tab_desk:
                             try:
                                 brk.close_all_positions(symbol=sym_code)
                                 brk.cancel_all_orders(symbol=sym_code)
-                            except Exception:
-                                pass
+                            except Exception as e:
+                                import logging; logging.warning(f"Exception: {e}")
                             save_bot_state()
                             st.toast(f"🚨 Emergency flatten executed for {sym_code}!")
                             st.rerun()
@@ -1000,14 +1000,14 @@ with tab_desk:
                             # Always cancel ALL pending orders when mode changes — old orders must go
                             try:
                                 brk.cancel_all_orders()
-                            except Exception:
-                                pass
+                            except Exception as e:
+                                import logging; logging.warning(f"Exception: {e}")
                             # Redeploy with new mode if price is available
                             if is_run and sym_p > 0:
                                 try:
                                     bot.deploy_traps(sym_p, time.time(), force=True)
-                                except Exception:
-                                    pass
+                                except Exception as e:
+                                    import logging; logging.warning(f"Exception: {e}")
                             st.toast(f"{sym_code} Trap Mode changed to {new_side_mode}")
                             st.rerun()
 
@@ -1015,8 +1015,8 @@ with tab_desk:
                         if is_run and sym_p > 0:
                             try:
                                 bot.process_engine_tick(sym_p, sym_p, time.time())
-                            except Exception:
-                                pass
+                            except Exception as e:
+                                import logging; logging.warning(f"Exception: {e}")
 
                         # Pull live eval data & telemetry dynamically on every refresh
                         ev = None
@@ -1135,8 +1135,8 @@ with tab_desk:
                                     pair_pnl = sum(float(getattr(p, "profit", 0.0) or 0.0) for p in brk.open_positions.values()) if brk.open_positions else 0.0
                                 
                                 pnl_cls = "pnl-green" if pair_pnl >= 0 else "pnl-red"
-                            except Exception:
-                                pass
+                            except Exception as e:
+                                import logging; logging.warning(f"Exception: {e}")
                         realized  = getattr(brk, "realized_pnl", 0.0)
                         cycles    = len(getattr(bot, "cycle_history", []))
 
@@ -1739,13 +1739,13 @@ with tab_desk:
         if hasattr(brk, "sync_history_from_mt5"):
             try:
                 brk.sync_history_from_mt5(days=180)
-            except Exception:
-                pass
+            except Exception as e:
+                import logging; logging.warning(f"Exception: {e}")
         if hasattr(bot, "sync_cycle_history_from_trades"):
             try:
                 bot.sync_cycle_history_from_trades()
-            except Exception:
-                pass
+            except Exception as e:
+                import logging; logging.warning(f"Exception: {e}")
         
         cycles_list = list(getattr(bot, "cycle_history", []) or [])
 
@@ -1934,8 +1934,8 @@ with tab_desk:
                 df_export = pd.DataFrame(filtered_list)
                 csv_data = df_export.to_csv(index=False).encode('utf-8')
                 st.download_button("📥 Export CSV", data=csv_data, file_name="completed_cycles_history.csv", mime="text/csv", width='stretch')
-            except Exception:
-                pass
+            except Exception as e:
+                import logging; logging.warning(f"Exception: {e}")
 
         table_rows = ""
         for c in display_list:
@@ -2296,5 +2296,5 @@ except Exception as rerun_err:
     time.sleep(2.0)
     try:
         st.rerun()
-    except Exception:
-        pass
+    except Exception as e:
+        import logging; logging.warning(f"Exception: {e}")

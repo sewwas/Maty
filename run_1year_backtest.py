@@ -3,13 +3,13 @@ import sys
 if hasattr(sys.stdout, 'reconfigure'):
     try:
         sys.stdout.reconfigure(encoding='utf-8')
-    except Exception:
-        pass
+    except Exception as e:
+        import logging; logging.warning(f"Exception: {e}")
 if hasattr(sys.stderr, 'reconfigure'):
     try:
         sys.stderr.reconfigure(encoding='utf-8')
-    except Exception:
-        pass
+    except Exception as e:
+        import logging; logging.warning(f"Exception: {e}")
 
 import time
 import math

@@ -178,22 +178,22 @@ class AutoReadingEngine:
                     tech['fvg'] = detect_fvg(df_klines)
                     tech['sweep'] = detect_liquidity_sweep(df_klines)
                     tech['ob'] = detect_order_blocks(df_klines)
-            except Exception:
-                pass
+            except Exception as e:
+                import logging; logging.warning(f"Exception: {e}")
 
         if not ob:
             try:
                 from core.data import get_order_book_depth
                 ob = get_order_book_depth(symbol) or {}
-            except Exception:
-                pass
+            except Exception as e:
+                import logging; logging.warning(f"Exception: {e}")
 
         if not news:
             try:
                 from core.data import get_economic_calendar
                 news = get_economic_calendar() or []
-            except Exception:
-                pass
+            except Exception as e:
+                import logging; logging.warning(f"Exception: {e}")
 
         current_price = max(0.0001, current_price)
         ema_bias = float(tech.get("ema_trend_bias", 0.0))
@@ -448,8 +448,8 @@ class AutoReadingEngine:
                 if 0.10 < dist_pct < 2.0:
                     sr_tp = round(dist_pct * 0.85 * current_price * (base_size / 100.0), 2)
                     dynamic_target_profit = max(2.50, min(dynamic_target_profit, sr_tp))
-            except Exception:
-                pass
+            except Exception as e:
+                import logging; logging.warning(f"Exception: {e}")
 
         conf_scale = (0.85 + 0.30 * (confidence / 100.0))
         raw_adj_size = base_size * conf_scale * size_session_mult
@@ -477,8 +477,8 @@ class AutoReadingEngine:
                     combined_bias = min(1.0, combined_bias + 0.15)
                 elif smc_bias == "BEARISH" and combined_bias < 0:
                     combined_bias = max(-1.0, combined_bias - 0.15)
-        except Exception:
-            pass
+        except Exception as e:
+            import logging; logging.warning(f"Exception: {e}")
 
         self._last_eval_bias = combined_bias
         self._last_eval_regime = regime

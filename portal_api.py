@@ -1,17 +1,17 @@
 """
 Profity AI — Dynamic Live Portal API & Backend Server (100% Real Data)
-Serves static web portal and dynamic REST API endpoints reading live bot_state.pkl & config.json data.
+Serves static web portal and dynamic REST API endpoints reading live bot_state.json & config.json data.
 """
 
 import json
 import os
-import pickle
+import json
 import time
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PORTAL_DIR = os.path.join(BASE_DIR, "portal")
-STATE_PATH = os.path.join(BASE_DIR, "bot_state.pkl")
+STATE_PATH = os.path.join(BASE_DIR, "bot_state.json")
 CONFIG_PATH = os.path.join(BASE_DIR, "portal_config.json")
 INVESTOR_DATA_PATH = os.path.join(BASE_DIR, "investor_data.json")
 
@@ -73,11 +73,11 @@ def get_live_bot_stats():
 
     config = load_config()
     if not os.path.exists(STATE_PATH):
-        return {"error": "bot_state.pkl not found"}
+        return {"error": "bot_state.json not found"}
     
     try:
-        with open(STATE_PATH, "rb") as f:
-            state = pickle.load(f)
+        with open(STATE_PATH, "r", encoding="utf-8") as f:
+            state = json.load(f)
     except Exception as e:
         return {"error": str(e)}
 

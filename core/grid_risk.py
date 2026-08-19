@@ -15,8 +15,8 @@ def get_pip_size(symbol: str, current_price: float = 0.0) -> float:
                 return info.point
             else:
                 return info.point * 10.0 if info.point < 0.1 else info.point
-    except Exception:
-        pass
+    except Exception as e:
+        import logging; logging.warning(f"Exception: {e}")
 
     if "PAXG" in sym or "XAU" in sym or "GOLD" in sym:
         return 0.10
@@ -40,8 +40,8 @@ def sanitize_order_size(symbol: str, raw_size: float) -> float:
             v_step = getattr(info, "volume_step", 0.01) or 0.01
             size = round(round(raw_size / v_step) * v_step, 4) if v_step > 0 else round(raw_size, 4)
             return max(v_min, min(v_max, size))
-    except Exception:
-        pass
+    except Exception as e:
+        import logging; logging.warning(f"Exception: {e}")
 
     if "PAXG" in sym or "XAU" in sym or "GOLD" in sym:
         return min(0.03, max(0.01, round(raw_size, 2)))
@@ -167,8 +167,8 @@ def enforce_profit_lock(self, current_price: float, timestamp: float) -> int:
                         tag = "📈 [DYNAMIC TRAIL]" if pos_profit > (min_pos_profit * 1.5) else "🛡️ [PROFIT LOCK]"
                         print(f"[{sym_name}] {tag} {pos_type} #{pos_id}: "
                               f"profit=${pos_profit:.2f} → SL locked @ ${lock_sl:,.{digits}f} to secure gains!")
-        except Exception:
-            pass
+        except Exception as e:
+            import logging; logging.warning(f"Exception: {e}")
 
     return actions
 
@@ -235,8 +235,8 @@ def compute_basket_state(self, current_price: float, timestamp: float) -> dict:
             lb = min(8, len(highs) - 1)
             swing_high_5m = float(np.max(highs[-lb:]))
             swing_low_5m  = float(np.min(lows[-lb:]))
-    except Exception:
-        pass
+    except Exception as e:
+        import logging; logging.warning(f"Exception: {e}")
 
     if atr_5m <= 0:
         atr_5m = current_price * 0.002
@@ -364,8 +364,8 @@ def evaluate_partial_tp(self, current_price: float, timestamp: float) -> int:
                         actions += 1
                         print(f"[{sym_name}] 🎯 [TP1 PARTIAL] BUY #{pos_id}: closed 40% @ ${current_price:,.{digits}f} "
                               f"(1xATR from weighted entry ${w_avg_buy:,.{digits}f}) PnL≈${rec['pnl']:+.2f}")
-                except Exception:
-                    pass
+                except Exception as e:
+                    import logging; logging.warning(f"Exception: {e}")
 
             if closed_any:
                 self._tp1_buy_taken = True
@@ -378,8 +378,8 @@ def evaluate_partial_tp(self, current_price: float, timestamp: float) -> int:
                             if self.broker.modify_position_sl_tp(pos_id, sl=be_sl):
                                 setattr(pos_obj, "sl", be_sl)
                                 print(f"[{sym_name}] 🔒 [BREAKEVEN LOCK] BUY #{pos_id} SL → ${be_sl:,.{digits}f} (zero-risk runner)")
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            import logging; logging.warning(f"Exception: {e}")
 
         # ── Stage 2: TP2 — Fibonacci 1.618× (25% close) ──
         if tp1_taken and not tp2_taken and current_price >= tp2_level:
@@ -394,8 +394,8 @@ def evaluate_partial_tp(self, current_price: float, timestamp: float) -> int:
                         actions += 1
                         print(f"[{sym_name}] 💎 [TP2 FIB] BUY #{pos_id}: closed 25% @ ${current_price:,.{digits}f} "
                               f"(Fib 161.8% = ${tp2_level:,.{digits}f}) PnL≈${rec['pnl']:+.2f}")
-                except Exception:
-                    pass
+                except Exception as e:
+                    import logging; logging.warning(f"Exception: {e}")
             if closed_any:
                 self._tp2_buy_taken = True
                 self._chandelier_buy_high = current_price   # Seed chandelier high
@@ -420,8 +420,8 @@ def evaluate_partial_tp(self, current_price: float, timestamp: float) -> int:
                             actions += 1
                             print(f"[{sym_name}] 🏃 [CHANDELIER EXIT] BUY #{pos_id}: runner closed @ ${current_price:,.{digits}f} "
                                   f"(chandelier SL=${chandelier_sl:,.{digits}f}, peak=${chan_high:,.{digits}f})")
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        import logging; logging.warning(f"Exception: {e}")
                 # Reset for next cycle
                 self._tp1_buy_taken = False
                 self._tp2_buy_taken = False
@@ -450,8 +450,8 @@ def evaluate_partial_tp(self, current_price: float, timestamp: float) -> int:
                         actions += 1
                         print(f"[{sym_name}] 🎯 [TP1 PARTIAL] SELL #{pos_id}: closed 40% @ ${current_price:,.{digits}f} "
                               f"(1xATR from weighted entry ${w_avg_sell:,.{digits}f}) PnL≈${rec['pnl']:+.2f}")
-                except Exception:
-                    pass
+                except Exception as e:
+                    import logging; logging.warning(f"Exception: {e}")
             if closed_any:
                 self._tp1_sell_taken = True
                 be_sl = round(w_avg_sell - breakeven_buf, digits)
@@ -463,8 +463,8 @@ def evaluate_partial_tp(self, current_price: float, timestamp: float) -> int:
                                 if self.broker.modify_position_sl_tp(pos_id, sl=be_sl):
                                     setattr(pos_obj, "sl", be_sl)
                                     print(f"[{sym_name}] 🔒 [BREAKEVEN LOCK] SELL #{pos_id} SL → ${be_sl:,.{digits}f} (zero-risk runner)")
-                            except Exception:
-                                pass
+                            except Exception as e:
+                                import logging; logging.warning(f"Exception: {e}")
 
         # ── Stage 2: TP2 — Fibonacci 1.618× (25% close) ──
         if tp1_taken and not tp2_taken and current_price <= tp2_level:
@@ -479,8 +479,8 @@ def evaluate_partial_tp(self, current_price: float, timestamp: float) -> int:
                         actions += 1
                         print(f"[{sym_name}] 💎 [TP2 FIB] SELL #{pos_id}: closed 25% @ ${current_price:,.{digits}f} "
                               f"(Fib 161.8% = ${tp2_level:,.{digits}f}) PnL≈${rec['pnl']:+.2f}")
-                except Exception:
-                    pass
+                except Exception as e:
+                    import logging; logging.warning(f"Exception: {e}")
             if closed_any:
                 self._tp2_sell_taken = True
                 self._chandelier_sell_low = current_price
@@ -502,8 +502,8 @@ def evaluate_partial_tp(self, current_price: float, timestamp: float) -> int:
                             actions += 1
                             print(f"[{sym_name}] 🏃 [CHANDELIER EXIT] SELL #{pos_id}: runner closed @ ${current_price:,.{digits}f} "
                                   f"(chandelier SL=${chandelier_sl:,.{digits}f}, trough=${chan_low:,.{digits}f})")
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        import logging; logging.warning(f"Exception: {e}")
                 self._tp1_sell_taken = False
                 self._tp2_sell_taken = False
                 self._chandelier_sell_low = 0.0
@@ -550,8 +550,8 @@ def enforce_position_tp(self, current_price: float, timestamp: float) -> int:
                     closed_count += 1
                 except Exception as close_err:
                     print(f"[{sym_name}] ⚠️ [SOFTWARE TP] Close failed for #{pos_id}: {close_err}")
-        except Exception:
-            pass
+        except Exception as e:
+            import logging; logging.warning(f"Exception: {e}")
 
     return closed_count
 
@@ -599,7 +599,23 @@ def check_target_profit(self, current_price: float, timestamp: float) -> Optiona
         user_target = float(getattr(self, "target_profit", 0.0) or 0.0)
         cycle_target = user_target if user_target > 0 else default_target
             
-        if total_pnl >= cycle_target:
+        # ── Smart Trend Reversal Exit ──
+        # If in profit, and AutoReading mode flips to DUAL or against us, secure profit instantly!
+        auto_uni = getattr(self, "auto_universe_bias", "")
+        if total_pnl > 0.50 and getattr(self, "use_auto_reading", True) and auto_uni:
+            has_sells = any("SELL" in str(getattr(p, "type", "")).upper() for p in self.broker.open_positions.values())
+            has_buys  = any("BUY"  in str(getattr(p, "type", "")).upper() for p in self.broker.open_positions.values())
+            
+            if has_sells and not has_buys and not ("SELL" in auto_uni and "ONLY" in auto_uni):
+                exit_triggered = True
+                exit_reason = "TARGET_PROFIT"
+                print(f"[{sym_u}] 🔄 [TREND REVERSAL] Mode changed from SELL to {auto_uni}. Securing +${total_pnl:.2f} early!")
+            elif has_buys and not has_sells and not ("BUY" in auto_uni and "ONLY" in auto_uni):
+                exit_triggered = True
+                exit_reason = "TARGET_PROFIT"
+                print(f"[{sym_u}] 🔄 [TREND REVERSAL] Mode changed from BUY to {auto_uni}. Securing +${total_pnl:.2f} early!")
+
+        if not exit_triggered and total_pnl >= cycle_target:
             exit_triggered = True
             exit_reason = "TARGET_PROFIT"
             print(f"[{sym_u}] 💰 [CYCLE TP HIT] Basket reached peak target of ${cycle_target:.2f} (Total PnL: ${total_pnl:.2f})!")
@@ -696,11 +712,11 @@ def process_engine_tick(self, previous_price: float, current_price: float, times
                     # Re-sync local cache so next tick picks them up properly
                     try:
                         self.broker.process_tick(current_price, current_price, timestamp)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        import logging; logging.warning(f"Exception: {e}")
                     print(f"[{self.symbol}] ⚠️ [CYCLE GUARD] {len(mt5_p)} MT5 position(s) still live — blocking new deploy until clear")
-        except Exception:
-            pass
+        except Exception as e:
+            import logging; logging.warning(f"Exception: {e}")
 
     if not has_orders:
         self.deployed = False
@@ -713,8 +729,8 @@ def process_engine_tick(self, previous_price: float, current_price: float, times
 
     try:
         sync_trap_mode_realtime(self, current_price, timestamp)
-    except Exception:
-        pass
+    except Exception as e:
+        import logging; logging.warning(f"Exception: {e}")
     newly_filled_pos_ids = []
     if hasattr(self.broker, "process_tick"):
         new_positions = self.broker.process_tick(previous_price, current_price, timestamp)
@@ -780,13 +796,13 @@ def process_engine_tick(self, previous_price: float, current_price: float, times
 
     if len(getattr(self.broker, "open_positions", {})) > 0:
         try:
-            # enforce_profit_lock(self, current_price, timestamp)             # Disabled: Sabotages SL by locking too tight ($0.20)
+            enforce_profit_lock(self, current_price, timestamp)
             trail_stop_loss_5m_structure(self, current_price, timestamp)
             # evaluate_partial_tp(self, current_price, timestamp)             # Disabled per user: scale-outs bleed in chop
             align_basket_take_profits(self, current_price, timestamp)       # ATR basket TP alignment (fallback/tighten)
             enforce_position_tp(self, current_price, timestamp)             # Software-side TP guard — always take profit
-        except Exception:
-            pass
+        except Exception as e:
+            import logging; logging.warning(f"Exception: {e}")
 
     if getattr(self, "_fakeout_guard_enabled", True) and self._fakeout_recent_fills:
         # Per-symbol minimum distance before declaring a fakeout.
@@ -864,8 +880,8 @@ def process_engine_tick(self, previous_price: float, current_price: float, times
         if hasattr(self.broker, "process_tick"):
             try:
                 self.broker.process_tick(current_price, current_price, timestamp)
-            except Exception:
-                pass
+            except Exception as e:
+                import logging; logging.warning(f"Exception: {e}")
 
         # Verify MT5 reports truly zero positions before allowing redeploy
         mt5_clear = True
@@ -885,8 +901,8 @@ def process_engine_tick(self, previous_price: float, current_price: float, times
                 mt5_clear = False
                 print(f"[{self.symbol}] ⏳ [CYCLE GUARD] Cycle ended but {len(mt5_pos)} position(s) still live on MT5 — delaying redeploy")
                 self._last_deploy_error_time = timestamp + 3.0  # Force a 3s wait before next deploy attempt
-        except Exception:
-            pass
+        except Exception as e:
+            import logging; logging.warning(f"Exception: {e}")
 
         if getattr(self, "auto_restart", True) and mt5_clear:
             self.deploy_traps(current_price, timestamp, force=True)
@@ -931,8 +947,8 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
             if hasattr(self.broker, "cancel_all_orders"):
                 try:
                     self.broker.cancel_all_orders()
-                except Exception:
-                    pass
+                except Exception as e:
+                    import logging; logging.warning(f"Exception: {e}")
 
         digits = 4 if any(x in sym_name for x in ["DOGE", "GBP", "EUR"]) else (3 if any(x in sym_name for x in ["XAU", "GOLD", "PAXG"]) else 2)
         ask_ref = getattr(self.broker, "last_ask", current_price) or current_price
@@ -947,8 +963,8 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
                     ask_ref = tick_info.ask
                     bid_ref = tick_info.bid
                     current_price = (ask_ref + bid_ref) / 2.0
-            except Exception:
-                pass
+            except Exception as e:
+                import logging; logging.warning(f"Exception: {e}")
 
         if ask_ref <= 0: ask_ref = current_price
         if bid_ref <= 0: bid_ref = current_price
@@ -985,8 +1001,8 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
                     self.last_auto_eval = eval_res
                     offset_pct = float(eval_res.get("buy_offset_pct", offset_pct) or offset_pct)
                     gap_pct = float(eval_res.get("dynamic_gap_pct", gap_pct) or gap_pct)
-            except Exception:
-                pass
+            except Exception as e:
+                import logging; logging.warning(f"Exception: {e}")
 
         off_ratio = (offset_pct / 100.0) if offset_pct >= 0.50 else (offset_pct if offset_pct < 0.01 else offset_pct / 100.0)
         gap_ratio = (gap_pct / 100.0) if gap_pct >= 0.50 else (gap_pct if gap_pct < 0.01 else gap_pct / 100.0)
@@ -1005,8 +1021,8 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
                 s_info = self.broker.get_cached_symbol_info(ex_s)
                 if s_info:
                     b_min_stop = max((getattr(s_info, "trade_stops_level", 0) or 0) * s_info.point, s_info.point * 50.0)
-            except Exception:
-                pass
+            except Exception as e:
+                import logging; logging.warning(f"Exception: {e}")
 
         base_min_off = 5.0 if any(x in sym_name for x in ["XAU", "PAXG", "GOLD"]) else 0.0015
         min_offset_dist = max(b_min_stop + (gap_val * 0.5), base_min_off)
@@ -1028,8 +1044,8 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
                 if hasattr(self.broker, "get_cached_symbol_info") and hasattr(self.broker, "get_exness_symbol"):
                     _ex_s_alt = self.broker.get_exness_symbol(sym_name)
                     _sym_info_alt = self.broker.get_cached_symbol_info(_ex_s_alt)
-            except Exception:
-                pass
+            except Exception as e:
+                import logging; logging.warning(f"Exception: {e}")
             _point_alt = getattr(_sym_info_alt, "point", 0.0001) if _sym_info_alt else 0.0001
             min_sl_dist = max(b_min_stop * 2.5, _point_alt * 50.0)
 
@@ -1082,8 +1098,8 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
             t_5m = tech_5m.get("trend", "NEUTRAL") or "NEUTRAL"
             t_15m = tech_15m.get("trend", "NEUTRAL") or "NEUTRAL"
             rsi_1m = float(tech_1m.get("rsi", 50.0) or 50.0)
-        except Exception:
-            pass
+        except Exception as e:
+            import logging; logging.warning(f"Exception: {e}")
 
         side_cfg = str(getattr(self, "pending_order_side_mode", "AUTO_ADAPTIVE")).upper()
         _auto_eval_decided = False
@@ -1239,8 +1255,8 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
         if hasattr(self.broker, "purge_duplicate_mt5_orders"):
             try:
                 self.broker.purge_duplicate_mt5_orders()
-            except Exception:
-                pass
+            except Exception as e:
+                import logging; logging.warning(f"Exception: {e}")
 
         if placed_count > 0 or len(self.broker.pending_orders) > 0:
             self.deployed = True
@@ -1628,8 +1644,8 @@ def trail_stop_loss_5m_structure(self, current_price: float, timestamp: float) -
                                 setattr(pos_obj, "sl", breakeven_sl)
                                 modified_count += 1
                                 print(f"[{sym_name}] 🔒 [BREAKEVEN LOCK] BUY #{pos_id} SL → ${breakeven_sl:,.3f} (entry+buffer, zero-risk)")
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            import logging; logging.warning(f"Exception: {e}")
                         continue
 
             # Phase 2: Structure Trail — only when trend is CONFIRMED BULLISH
@@ -1652,8 +1668,8 @@ def trail_stop_loss_5m_structure(self, current_price: float, timestamp: float) -
                             setattr(pos_obj, "sl", target_sl)
                             modified_count += 1
                             print(f"[{sym_name}] 🛡️ [SMART TRAIL] BUY #{pos_id} SL → ${target_sl:,.3f} (5m swing low - ATR buffer, trend CONFIRMED)")
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        import logging; logging.warning(f"Exception: {e}")
 
         elif "SELL" in pos_type:
             # ── SELL POSITION SL LOGIC ──
@@ -1669,8 +1685,8 @@ def trail_stop_loss_5m_structure(self, current_price: float, timestamp: float) -
                                 setattr(pos_obj, "sl", breakeven_sl)
                                 modified_count += 1
                                 print(f"[{sym_name}] 🔒 [BREAKEVEN LOCK] SELL #{pos_id} SL → ${breakeven_sl:,.3f} (entry-buffer, zero-risk)")
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            import logging; logging.warning(f"Exception: {e}")
                         continue
 
             # Phase 2: Structure Trail — only when trend is CONFIRMED BEARISH
@@ -1693,8 +1709,8 @@ def trail_stop_loss_5m_structure(self, current_price: float, timestamp: float) -
                             setattr(pos_obj, "sl", target_sl)
                             modified_count += 1
                             print(f"[{sym_name}] 🛡️ [SMART TRAIL] SELL #{pos_id} SL → ${target_sl:,.3f} (5m swing high + ATR buffer, trend CONFIRMED)")
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        import logging; logging.warning(f"Exception: {e}")
 
     return modified_count
 
@@ -1759,8 +1775,8 @@ def align_basket_take_profits(self, current_price: float, timestamp: float) -> i
             lookback = min(8, len(highs) - 1)
             swing_high_5m = float(np.max(highs[-lookback:]))
             swing_low_5m = float(np.min(lows[-lookback:]))
-    except Exception:
-        pass
+    except Exception as e:
+        import logging; logging.warning(f"Exception: {e}")
 
     # Fallback ATR if calculation failed
     if atr_5m <= 0:
@@ -1832,8 +1848,8 @@ def align_basket_take_profits(self, current_price: float, timestamp: float) -> i
                         setattr(pos_obj, "_last_set_tp", target_tp)
                         modified_count += 1
                         print(f"[{sym_name}] 🎯 [SMART TP] BUY #{pos_id} TP → ${target_tp:,.3f} (ATR: ${atr_5m:.2f}, dist: ${target_tp - current_price:.2f})")
-                except Exception:
-                    pass
+                except Exception as e:
+                    import logging; logging.warning(f"Exception: {e}")
 
     # ── Align SELL basket TP ──
     if len(sell_positions) >= 1:
@@ -1873,8 +1889,8 @@ def align_basket_take_profits(self, current_price: float, timestamp: float) -> i
                         setattr(pos_obj, "_last_set_tp", target_tp)
                         modified_count += 1
                         print(f"[{sym_name}] 🎯 [SMART TP] SELL #{pos_id} TP → ${target_tp:,.3f} (ATR: ${atr_5m:.2f}, dist: ${current_price - target_tp:.2f})")
-                except Exception:
-                    pass
+                except Exception as e:
+                    import logging; logging.warning(f"Exception: {e}")
 
     return modified_count
 

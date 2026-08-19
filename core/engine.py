@@ -2,13 +2,13 @@ import sys
 if hasattr(sys.stdout, 'reconfigure'):
     try:
         sys.stdout.reconfigure(encoding='utf-8')
-    except Exception:
-        pass
+    except Exception as e:
+        import logging; logging.warning(f"Exception: {e}")
 if hasattr(sys.stderr, 'reconfigure'):
     try:
         sys.stderr.reconfigure(encoding='utf-8')
-    except Exception:
-        pass
+    except Exception as e:
+        import logging; logging.warning(f"Exception: {e}")
 
 import uuid
 import time
@@ -237,8 +237,8 @@ class BreakoutGridBot:
                     if ev_ts > 0:
                         if abs(curr_sec - ev_ts) <= 900.0:
                             return True
-        except Exception:
-            pass
+        except Exception as e:
+            import logging; logging.warning(f"Exception: {e}")
         return False
 
     @property
