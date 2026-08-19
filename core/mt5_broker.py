@@ -505,12 +505,20 @@ class MT5Broker:
                 clean_target = "XAU" if any(x in self.symbol.upper() for x in ["XAU", "GOLD"]) else ("PAXG" if "PAXG" in self.symbol.upper() else self.symbol.replace("USDT", "").replace("USD", "").upper())
                 poss = [p for p in all_poss if clean_target in str(p.symbol).upper()]
 
-        if not poss or len(poss) <= 2:
+        if not poss:
+            return 0
+            
+        my_poss = [p for p in poss if getattr(p, "magic", 0) == getattr(self, "magic_number", 0)]
+        
+        # Manual bots allow up to 50 active positions. Auto bots are capped at 2.
+        is_manual = str(getattr(self, "magic_number", "")).endswith("876")
+        max_allowed = 50 if is_manual else 2
+
+        if len(my_poss) <= max_allowed:
             return 0
 
-        poss_list = list(poss)
-        poss_list.sort(key=lambda x: getattr(x, "time", 0), reverse=True)
-        excess = poss_list[2:]
+        my_poss.sort(key=lambda x: getattr(x, "time", 0), reverse=True)
+        excess = my_poss[max_allowed:]
         closed_count = 0
         for p in excess:
             close_type = mt5.ORDER_TYPE_SELL if p.type == mt5.POSITION_TYPE_BUY else mt5.ORDER_TYPE_BUY
