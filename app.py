@@ -45,6 +45,7 @@ import core.services
 import threading
 from core.mt5_broker import MT5Broker, SimulatedBroker, MT5_AVAILABLE, get_symbol_magic_number, mt5
 from core.engine import BreakoutGridBot, Order, Position, get_pip_size, sanitize_order_size
+from core.manual_bot import ManualGridBot
 from core.auto_reading import PAIR_SWEET_SPOTS
 from core.services import PAMMMasterPool, send_telegram_alert, dispatch_trade_exit_signal
 from core.data import get_live_price, get_default_price, get_historical_klines, get_24h_market_stats
@@ -99,14 +100,29 @@ def load_saved_bot_full_state() -> Dict[str, dict]:
         print(f"Notice: bot_state.json load notice: {e}")
     return saved_state
 
+def load_saved_manual_bot_state() -> Dict[str, dict]:
+    """Loads saved manual bot state."""
+    saved_state = {}
+    try:
+        state_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "manual_bot_state.json")
+        if os.path.exists(state_path):
+            with open(state_path, "r", encoding="utf-8") as f:
+                state_data = json.load(f)
+                saved_state = state_data.get("markets", {})
+    except Exception as e:
+        pass
+    return saved_state
+
 @st.cache_resource
-def get_global_vps_trading_engine():
+def get_global_vps_trading_engine_v4():
     """
     Spawns 24/7 VPS Background Daemon Worker Thread when app starts.
     Runs ticks continuously in background 24/7 regardless of browser state.
     """
     shared_markets = {}
+    shared_manual_markets = {}
     saved_state_map = load_saved_bot_full_state()
+    saved_manual_state_map = load_saved_manual_bot_state()
     use_mt5 = MT5_AVAILABLE
 
     for sym in _symbols:
@@ -152,22 +168,92 @@ def get_global_vps_trading_engine():
             "price_history": [(time.time(), init_px)]
         }
 
+        # Initialize Manual Bot for Gold
+        if sym in ("PAXGUSDT", "XAUUSD", "GOLD"):
+            manual_magic = get_symbol_magic_number(sym, is_manual=True)
+            man_brk = MT5Broker(symbol=sym, magic_number=manual_magic) if use_mt5 else SimulatedBroker(symbol=sym, magic_number=manual_magic)
+            man_bot = ManualGridBot(
+                broker=man_brk,
+                symbol=sym,
+                grid_gap=0.30,
+                trap_offset=0.15,
+                grid_levels=5,
+                order_size=0.01,
+                order_size_multiplier=1.25,
+                target_profit=15.0,
+                is_percent=True,
+                auto_restart=True,
+                use_auto_reading=False,
+                pending_order_side_mode="BOTH_SIDES"
+            )
+            man_info_saved = saved_manual_state_map.get(sym, {})
+            if isinstance(man_info_saved, dict):
+                if man_info_saved.get("cycle_history"):
+                    man_bot.cycle_history = list(man_info_saved["cycle_history"])
+                if man_info_saved.get("trade_history") and hasattr(man_brk, "closed_trades"):
+                    man_brk.closed_trades = list(man_info_saved["trade_history"])
+            
+            man_has_active = bool(man_brk and (len(getattr(man_brk, "open_positions", {})) > 0 or len(getattr(man_brk, "pending_orders", {})) > 0))
+            man_running = bool(man_info_saved.get("running", True)) if isinstance(man_info_saved, dict) else True
+            if man_has_active:
+                man_bot.deployed = True
+
+            shared_manual_markets[sym] = {
+                "broker": man_brk,
+                "bot": man_bot,
+                "running": man_running,
+                "last_price": init_px,
+                "price_history": [(time.time(), init_px)]
+            }
+
     def _vps_daemon_worker():
         print("⚡ [Profity AI Engine] Streamlit Background Monitor Active!")
         _last_state_save = 0.0
         while True:
             try:
                 now = time.time()
+                # Tick Auto Bots
                 for sym_code, m_data in shared_markets.items():
                     if m_data.get("running", False):
                         try:
                             m_data["bot"].process_live_tick()
                         except Exception as tick_err:
                             print(f"[{sym_code}] Background tick error: {tick_err}")
+                
+                # Tick Manual Bots
+                for sym_code, m_data in shared_manual_markets.items():
+                    if m_data.get("running", True):
+                        try:
+                            m_data["bot"].process_live_tick()
+                        except Exception as tick_err:
+                            print(f"[{sym_code}] Manual bot tick error: {tick_err}")
 
                 if now - _last_state_save >= 15.0:
                     _last_state_save = now
                     save_bot_state_dict(shared_markets)
+                    
+                    # Save manual bot state
+                    try:
+                        man_state_data = {"timestamp": now, "markets": {}}
+                        for sym_code, m_data in shared_manual_markets.items():
+                            brk = m_data.get("broker")
+                            bot = m_data.get("bot")
+                            trade_hist = list(getattr(brk, "closed_trades", [])) if brk else []
+                            if not trade_hist and bot and hasattr(bot, "cycle_history"):
+                                trade_hist = list(getattr(bot, "cycle_history", []))
+                            man_state_data["markets"][sym_code] = {
+                                "running": m_data.get("running", True),
+                                "last_price": m_data.get("last_price", 0.0),
+                                "trade_history": trade_hist,
+                                "realized_pnl": getattr(brk, "realized_pnl", 0.0) if brk else 0.0,
+                                "cycle_history": getattr(bot, "cycle_history", []) if bot else []
+                            }
+                        state_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "manual_bot_state.json")
+                        with open(state_path, "w", encoding="utf-8") as f:
+                            json.dump(man_state_data, f)
+                    except Exception as e:
+                        print(f"Notice: manual_bot_state.json save notice: {e}")
+
             except Exception as daemon_err:
                 print(f"[Profity AI Engine] Daemon loop notice: {daemon_err}")
 
@@ -176,7 +262,7 @@ def get_global_vps_trading_engine():
     t = threading.Thread(target=_vps_daemon_worker, daemon=True)
 
     t.start()
-    return shared_markets
+    return shared_markets, shared_manual_markets
 
 # ==============================================================================
 #  1. IMPORTS & STREAMLIT PAGE CONFIGURATION
@@ -198,8 +284,9 @@ if "pair_filter" not in st.session_state:
     st.session_state.pair_filter = "ALL"
 
 # Initialize 24/7 VPS Engine Singleton (Runs daemon worker thread on startup)
-shared_vps_markets = get_global_vps_trading_engine()
+shared_vps_markets, shared_vps_manual_markets = get_global_vps_trading_engine_v4()
 st.session_state.markets = shared_vps_markets
+st.session_state.manual_markets = shared_vps_manual_markets
 
 # ==============================================================================
 #  3. CSS DESIGN SYSTEM & MODERN DARK THEME STYLING
@@ -375,11 +462,13 @@ st.html("""
 # process_tick() calls 24/7. This section only refreshes prices for the UI display.
 for sym_code in _symbols:
     m_data = st.session_state.markets.get(sym_code)
-    if m_data is None:
-        continue
+    man_data = st.session_state.manual_markets.get(sym_code)
     live_p = get_live_price(sym_code)
     if live_p and live_p > 0:
-        m_data["last_price"] = live_p
+        if m_data:
+            m_data["last_price"] = live_p
+        if man_data:
+            man_data["last_price"] = live_p
 
 # Service is always active — the daemon thread is embedded inside this process
 _is_vps_service_active = True
@@ -574,8 +663,9 @@ st.markdown(f"""
 # ==============================================================================
 #  6. MASTER NAVIGATION TABS (CONTROL DESK & MYFXBOOK ANALYTICS)
 # ==============================================================================
-tab_desk, tab_myfxbook = st.tabs([
+tab_desk, tab_manual, tab_myfxbook = st.tabs([
     "⚡ TRADING CONTROL DESK",
+    "🕹️ MANUAL GRID DESK",
     "📊 MYFXBOOK PERFORMANCE ANALYTICS"
 ])
 
@@ -1516,7 +1606,8 @@ with tab_desk:
 
     # Collect all cycles across all pairs with 180-day MT5 deal sync
     raw_history = []
-    for sym_code, m_data in st.session_state.markets.items():
+    all_markets_combined = list(st.session_state.markets.items()) + list(st.session_state.manual_markets.items())
+    for sym_code, m_data in all_markets_combined:
         bot = m_data["bot"]
         brk = m_data["broker"]
         if hasattr(brk, "sync_history_from_mt5"):
@@ -1784,14 +1875,191 @@ with tab_desk:
             <tbody>{table_rows}</tbody>
         </table>
         """, unsafe_allow_html=True)
-# ── TAB 2: MYFXBOOK PERFORMANCE ANALYTICS ────────────────────────────────────
+# ── TAB 2: MANUAL GRID DESK ──────────────────────────────────────────────
+with tab_manual:
+    st.markdown("### 🕹️ Manual Grid Desk (Gold Exclusive)")
+    st.markdown("Manually deploy Buy, Sell, or Dual grids on Gold. The AI engine will automatically manage the positions (Take Profit, SL, Martingale) exactly like Auto mode.")
+
+    man_sym = "PAXGUSDT" if "PAXGUSDT" in st.session_state.manual_markets else ("XAUUSD" if "XAUUSD" in st.session_state.manual_markets else None)
+    if not man_sym:
+        st.warning("Manual mode is only available for Gold pairs (PAXGUSDT or XAUUSD).")
+    else:
+        m_data = st.session_state.manual_markets[man_sym]
+        bot = m_data["bot"]
+        brk = m_data["broker"]
+        sym_p = m_data["last_price"]
+        
+        col1, col2 = st.columns([1, 2])
+        
+        with col1:
+            st.markdown("#### ⚙️ Manual Config")
+            
+            # 1. Spacing Mode Selector
+            new_spacing = st.radio("Spacing Mode", options=["Percentage (%)", "USD Points ($)"], index=0 if bot.is_percent else 1, horizontal=True, key="man_spacing")
+            if new_spacing != getattr(bot, "_spacing_mode", ""):
+                bot._spacing_mode = new_spacing
+                bot.is_percent = (new_spacing == "Percentage (%)")
+            
+            lbl_ext = "%" if bot.is_percent else "Pts"
+            
+            c_config1, c_config2 = st.columns(2)
+            with c_config1:
+                new_gap = st.number_input(f"Grid Gap ({lbl_ext})", value=bot.grid_gap, format="%.2f", step=0.01 if bot.is_percent else 1.0, key="man_gap")
+                if new_gap != bot.grid_gap: bot.grid_gap = new_gap
+                
+                new_lot = st.number_input("Base Lot Size", value=bot.order_size, format="%.2f", step=0.01, min_value=0.01, key="man_lot")
+                if new_lot != bot.order_size: bot.order_size = new_lot
+                
+                new_tp = st.number_input("Target Profit ($)", value=bot.target_profit, format="%.2f", step=1.0, key="man_tp")
+                if new_tp != bot.target_profit: bot.target_profit = new_tp
+                
+            with c_config2:
+                new_offset = st.number_input(f"Trap Offset ({lbl_ext})", value=bot.trap_offset, format="%.2f", step=0.01 if bot.is_percent else 1.0, key="man_offset")
+                if new_offset != bot.trap_offset: bot.trap_offset = new_offset
+                
+                new_mult = st.number_input("Martingale Multiplier", value=bot.order_size_multiplier, format="%.2f", step=0.05, key="man_mult")
+                if new_mult != bot.order_size_multiplier: bot.order_size_multiplier = new_mult
+                
+                new_levels = st.number_input("Grid Levels (Traps)", value=int(bot.grid_levels), step=1, min_value=1, max_value=20, key="man_levels")
+                if new_levels != bot.grid_levels: bot.grid_levels = int(new_levels)
+                
+            with st.expander("🛡️ Advanced Risk & Trailing"):
+                c_risk1, c_risk2 = st.columns(2)
+                with c_risk1:
+                    new_sl = st.number_input("Stop Loss ($)", value=getattr(bot, 'stop_loss', 0.0), format="%.2f", step=1.0, key="man_sl")
+                    if new_sl != getattr(bot, 'stop_loss', 0.0): bot.stop_loss = new_sl
+                    
+                    new_use_be = st.toggle("Use Breakeven", value=getattr(bot, 'use_breakeven', True), key="man_use_be")
+                    if new_use_be != getattr(bot, 'use_breakeven', True): bot.use_breakeven = new_use_be
+                    
+                    new_be_trig = st.number_input("Breakeven Trigger", value=getattr(bot, 'breakeven_trigger', 0.5), format="%.2f", step=0.1, key="man_be_trig")
+                    if new_be_trig != getattr(bot, 'breakeven_trigger', 0.5): bot.breakeven_trigger = new_be_trig
+                    
+                with c_risk2:
+                    new_use_ts = st.toggle("Use Trailing Stop", value=getattr(bot, 'use_trailing_stop', False), key="man_use_ts")
+                    if new_use_ts != getattr(bot, 'use_trailing_stop', False): bot.use_trailing_stop = new_use_ts
+                    
+                    new_ts_dist = st.number_input("Trailing Dist (Pts)", value=getattr(bot, 'trailing_stop_distance', 15.0), format="%.1f", step=1.0, key="man_ts_dist")
+                    if new_ts_dist != getattr(bot, 'trailing_stop_distance', 15.0): bot.trailing_stop_distance = new_ts_dist
+                    
+                    new_pl_pct = st.number_input("Profit Lock (%)", value=getattr(bot, 'profit_lock_pct', 0.8), format="%.2f", step=0.05, max_value=1.0, key="man_pl_pct")
+                    if new_pl_pct != getattr(bot, 'profit_lock_pct', 0.8): bot.profit_lock_pct = new_pl_pct
+
+            # Removed Adaptive Gap Control because Manual bot is 100% manual
+
+            st.markdown("#### 🚀 Deploy")
+            d_col1, d_col2, d_col3 = st.columns(3)
+            with d_col1:
+                if st.button("BUY GRID", type="primary", key="man_buy_btn", width='stretch'):
+                    bot.pending_order_side_mode = "BUY_ONLY"
+                    try: bot.deploy_traps(sym_p, time.time(), force=True)
+                    except Exception as e: import logging; logging.warning(f"Exception: {e}")
+                    st.toast("Manual BUY Grid Deployed!")
+                    st.rerun()
+            with d_col2:
+                if st.button("SELL GRID", type="primary", key="man_sell_btn", width='stretch'):
+                    bot.pending_order_side_mode = "SELL_ONLY"
+                    try: bot.deploy_traps(sym_p, time.time(), force=True)
+                    except Exception as e: import logging; logging.warning(f"Exception: {e}")
+                    st.toast("Manual SELL Grid Deployed!")
+                    st.rerun()
+            with d_col3:
+                if st.button("DUAL GRID", key="man_dual_btn", width='stretch'):
+                    bot.pending_order_side_mode = "BOTH_SIDES"
+                    try: bot.deploy_traps(sym_p, time.time(), force=True)
+                    except Exception as e: import logging; logging.warning(f"Exception: {e}")
+                    st.toast("Manual DUAL Grid Deployed!")
+                    st.rerun()
+            
+            st.markdown("#### 🚨 Panic Actions")
+            d_col1, d_col2 = st.columns(2)
+            with d_col1:
+                if st.button("FLATTEN POSITIONS", type="primary", key="man_flat_btn", width='stretch'):
+                    try:
+                        brk.close_all_positions(symbol=man_sym)
+                        brk.cancel_all_orders(symbol=man_sym)
+                    except Exception as e: import logging; logging.warning(f"Exception: {e}")
+                    st.toast("Manual positions flattened.")
+                    st.rerun()
+            with d_col2:
+                if st.button("CANCEL ALL TRAPS", key="man_canc_btn", width='stretch'):
+                    try:
+                        brk.cancel_all_orders(symbol=man_sym)
+                        bot.deployed = False
+                    except Exception as e: import logging; logging.warning(f"Exception: {e}")
+                    st.toast("Manual traps cancelled.")
+                    st.rerun()
+
+        with col2:
+            st.markdown("#### 🔍 Live Manual Telemetry")
+            pair_pnl = brk.get_floating_pnl(sym_p)
+            realized = getattr(brk, "realized_pnl", 0.0)
+            open_pos = len(brk.open_positions)
+            pend_ord = len(brk.pending_orders)
+            
+            pnl_cls = "pnl-green" if pair_pnl >= 0 else "pnl-red"
+            
+            st.markdown(f"""
+            <div class="telemetry-box" style="background:#09090b;border:1px solid #27272a;border-radius:8px;padding:12px">
+              <div style="display:flex;justify-content:space-between;font-size:0.82rem;margin-bottom:8px">
+                <span><strong>Live Price:</strong> ${sym_p:,.2f}</span>
+                <span><strong>Active Mode:</strong> {bot.pending_order_side_mode}</span>
+              </div>
+              <div style="display:flex;justify-content:space-between;font-size:0.79rem;border-top:1px solid #27272a;padding-top:8px">
+                <span>🟢 Active: <strong>{open_pos}</strong> pos / <strong>{pend_ord}</strong> traps</span>
+                <span>Realized PnL: <strong class="{'pnl-green' if realized>=0 else 'pnl-red'}">${realized:+,.2f}</strong></span>
+              </div>
+              <div style="display:flex;justify-content:space-between;font-size:0.82rem;margin-top:6px">
+                <span><strong>Floating PnL:</strong> <span class="{pnl_cls}" style="font-family:JetBrains Mono,monospace;font-weight:700">${pair_pnl:+,.2f}</span></span>
+              </div>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            if open_pos > 0:
+                pos_rows = ""
+                for pid, pos in list(brk.open_positions.items())[:10]:
+                    ep = getattr(pos, 'entry_price', getattr(pos, 'price_open', 0))
+                    pt = getattr(pos, 'type', '?')
+                    ppnl = getattr(pos, 'profit', 0.0)
+                    lot = getattr(pos, 'volume', getattr(pos, 'size', 0))
+                    pcol = '#22c55e' if ppnl >= 0 else '#ef4444'
+                    pos_rows += f'<tr><td>{str(pid)[:8]}</td><td style="color:{"#22c55e" if pt=="BUY" else "#ef4444"}">{pt}</td><td>${ep:,.4f}</td><td>${sym_p:,.4f}</td><td>{lot}</td><td style="color:{pcol};font-weight:700">${ppnl:+,.2f}</td></tr>'
+                
+                st.markdown(f'''
+                <div style="margin-top:12px">
+                  <table class="fast-table" style="font-size:0.73rem">
+                    <thead><tr><th>ID</th><th>Side</th><th>Entry</th><th>Now</th><th>Lot</th><th>P&L</th></tr></thead>
+                    <tbody>{pos_rows}</tbody>
+                  </table>
+                </div>
+                ''', unsafe_allow_html=True)
+
+            if pend_ord > 0:
+                trap_rows = ""
+                for oid, ord in list(brk.pending_orders.items())[:20]:
+                    pt = getattr(ord, 'type', '?')
+                    tp = getattr(ord, 'trigger_price', 0)
+                    sz = getattr(ord, 'size', getattr(ord, 'volume', 0))
+                    tcol = '#38bdf8' if 'BUY' in pt else '#f472b6'
+                    trap_rows += f'<tr><td>{str(oid)[:8]}</td><td style="color:{tcol}">{pt}</td><td>${tp:,.4f}</td><td>{sz}</td></tr>'
+                st.markdown(f'''
+                <div style="margin-top:12px">
+                  <div style="font-size:0.8rem; font-weight:600; margin-bottom:4px">Pending Traps ({pend_ord})</div>
+                  <table class="fast-table" style="font-size:0.73rem">
+                    <thead><tr><th>ID</th><th>Type</th><th>Trigger</th><th>Lot</th></tr></thead>
+                    <tbody>{trap_rows}</tbody>
+                  </table>
+                </div>
+                ''', unsafe_allow_html=True)
+# ── TAB 3: MYFXBOOK PERFORMANCE ANALYTICS ────────────────────────────────────
 with tab_myfxbook:
     st.markdown("### 📊 Myfxbook Institutional Performance & Risk Analytics")
     st.markdown("Verified real-time performance breakdown, win rates, drawdown metrics, and equity growth.")
 
     # Aggregate all closed trades across all market brokers
     all_myfx_trades = []
-    for _m_k, _m_v in st.session_state.markets.items():
+    all_myfx_markets = list(st.session_state.markets.items()) + list(st.session_state.manual_markets.items())
+    for _m_k, _m_v in all_myfx_markets:
         _b = _m_v.get("broker")
         _bot = _m_v.get("bot")
         t_list = list(getattr(_b, "closed_trades", [])) if _b else []

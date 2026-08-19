@@ -22,17 +22,22 @@ class TradeDisabledError(RuntimeError):
     pass
 
 
-def get_symbol_magic_number(symbol: str) -> int:
+def get_symbol_magic_number(symbol: str, is_manual: bool = False) -> int:
     if not symbol:
-        return 998877
-    sym_upper = symbol.upper()
-    if sym_upper in SYMBOL_MAGIC_NUMBERS:
-        return SYMBOL_MAGIC_NUMBERS[sym_upper]
-    clean_sym = sym_upper.replace("USDT", "").replace("USD", "")
-    if clean_sym in ("PAXG", "XAU", "GOLD"):
-        return 998876
-    char_code_sum = sum(ord(c) * (i + 1) for i, c in enumerate(sym_upper))
-    return 998870 + (char_code_sum % 1000)
+        base = 998877
+    else:
+        sym_upper = symbol.upper()
+        if sym_upper in SYMBOL_MAGIC_NUMBERS:
+            base = SYMBOL_MAGIC_NUMBERS[sym_upper]
+        else:
+            clean_sym = sym_upper.replace("USDT", "").replace("USD", "")
+            if clean_sym in ("PAXG", "XAU", "GOLD"):
+                base = 998876
+            else:
+                char_code_sum = sum(ord(c) * (i + 1) for i, c in enumerate(sym_upper))
+                base = 998870 + (char_code_sum % 1000)
+    
+    return base + 10000 if is_manual else base
 
 
 class MT5Broker:
@@ -243,11 +248,8 @@ class MT5Broker:
         if info:
             point = info.point if hasattr(info, "point") and info.point else 0.0001
             stops_level = getattr(info, "trade_stops_level", 0) or 0
-            min_dist = max(stops_level * point, point * 50.0)
-            if "XAU" in exness_symbol.upper() or "GOLD" in exness_symbol.upper():
-                return max(2.50, min_dist)
-            return min_dist
-        return 2.50 if "XAU" in self.symbol.upper() or "GOLD" in self.symbol.upper() else 0.005
+            return max(stops_level * point, point * 10.0)
+        return 0.50 if "XAU" in self.symbol.upper() or "GOLD" in self.symbol.upper() else 0.005
 
     def place_order(self, order_type: str, price: float, size: float, timestamp: float, tp: float = 0.0, sl: float = 0.0) -> Any:
         from core.engine import Order
@@ -356,11 +358,11 @@ class MT5Broker:
             min_tp_dist = max(min_stop_dist * 2.0, point * 10.0)
 
         if "BUY" in order_type:
-            tp_val = round(tp, digits) if tp > 0 else (round(trigger_price + min_tp_dist, digits) if min_tp_dist > 0 else 0.0)
-            sl_val = round(sl, digits) if sl > 0 else 0.0
+            tp_val = round(tp, digits) if tp > 0 else (0.0 if tp == -1.0 else (round(trigger_price + min_tp_dist, digits) if min_tp_dist > 0 else 0.0))
+            sl_val = round(sl, digits) if sl > 0 else (0.0 if sl == -1.0 else 0.0)
         else:
-            tp_val = round(tp, digits) if tp > 0 else (round(trigger_price - min_tp_dist, digits) if min_tp_dist > 0 else 0.0)
-            sl_val = round(sl, digits) if sl > 0 else 0.0
+            tp_val = round(tp, digits) if tp > 0 else (0.0 if tp == -1.0 else (round(trigger_price - min_tp_dist, digits) if min_tp_dist > 0 else 0.0))
+            sl_val = round(sl, digits) if sl > 0 else (0.0 if sl == -1.0 else 0.0)
 
         filling_flags = getattr(symbol_info, "filling_mode", 0) or 0
         if filling_flags & 4:
@@ -410,22 +412,22 @@ class MT5Broker:
             # Retry with adjusted price — keep the same order type (do NOT convert LIMIT to STOP)
             if order_type == "BUY_LIMIT":
                 request["price"] = round(min(trigger_price, ask - min_stop_dist * 2), digits)
-                request["tp"]    = round(tp, digits) if tp > 0 else round(request["price"] + min_tp_dist, digits)
-                request["sl"]    = round(sl, digits) if sl > 0 else round(request["price"] - min_sl_dist, digits)
+                request["tp"]    = round(tp, digits) if tp > 0 else (0.0 if tp == -1.0 else round(request["price"] + min_tp_dist, digits))
+                request["sl"]    = round(sl, digits) if sl > 0 else (0.0 if sl == -1.0 else round(request["price"] - min_sl_dist, digits))
             elif order_type == "SELL_LIMIT":
                 request["price"] = round(max(trigger_price, bid + min_stop_dist * 2), digits)
-                request["tp"]    = round(tp, digits) if tp > 0 else round(request["price"] - min_tp_dist, digits)
-                request["sl"]    = round(sl, digits) if sl > 0 else round(request["price"] + min_sl_dist, digits)
+                request["tp"]    = round(tp, digits) if tp > 0 else (0.0 if tp == -1.0 else round(request["price"] - min_tp_dist, digits))
+                request["sl"]    = round(sl, digits) if sl > 0 else (0.0 if sl == -1.0 else round(request["price"] + min_sl_dist, digits))
             elif "BUY" in order_type:
                 request["type"]  = mt5.ORDER_TYPE_BUY_STOP
                 request["price"] = max(price, ask + min_stop_dist)
-                request["tp"]    = round(tp, digits) if tp > 0 else round(request["price"] + min_tp_dist, digits)
-                request["sl"]    = round(sl, digits) if sl > 0 else round(request["price"] - min_sl_dist, digits)
+                request["tp"]    = round(tp, digits) if tp > 0 else (0.0 if tp == -1.0 else round(request["price"] + min_tp_dist, digits))
+                request["sl"]    = round(sl, digits) if sl > 0 else (0.0 if sl == -1.0 else round(request["price"] - min_sl_dist, digits))
             else:
                 request["type"]  = mt5.ORDER_TYPE_SELL_STOP
                 request["price"] = min(price, bid - min_stop_dist)
-                request["tp"]    = round(tp, digits) if tp > 0 else round(request["price"] - min_tp_dist, digits)
-                request["sl"]    = round(sl, digits) if sl > 0 else round(request["price"] + min_sl_dist, digits)
+                request["tp"]    = round(tp, digits) if tp > 0 else (0.0 if tp == -1.0 else round(request["price"] - min_tp_dist, digits))
+                request["sl"]    = round(sl, digits) if sl > 0 else (0.0 if sl == -1.0 else round(request["price"] + min_sl_dist, digits))
             result = mt5.order_send(request)
 
         is_placed = result is not None and (getattr(result, "retcode", -1) in (0, 10009, 10008, 10004) or getattr(result, "comment", "") == "ok")
@@ -594,7 +596,8 @@ class MT5Broker:
         all_tks = set()
         if orders_list:
             for o in orders_list:
-                all_tks.add((o.ticket, o.symbol))
+                if getattr(o, "magic", self.magic_number) == self.magic_number:
+                    all_tks.add((o.ticket, o.symbol))
 
         for t, sym_name_tk in all_tks:
             req = {"action": mt5.TRADE_ACTION_REMOVE, "order": t, "symbol": sym_name_tk}
@@ -898,6 +901,9 @@ class MT5Broker:
         if positions:
             for pos in list(positions):
                 try:
+                    if getattr(pos, "magic", self.magic_number) != self.magic_number:
+                        continue
+
                     if f"live_{pos.ticket}" in exclude_ids:
                         continue
 
@@ -1065,6 +1071,8 @@ class MT5Broker:
                 target_syms = {self.symbol.upper(), (exness_symbol or "").upper()}
                 for d in deals:
                     d_sym = str(getattr(d, "symbol", "")).upper()
+                    if getattr(d, "magic", self.magic_number) != self.magic_number:
+                        continue
                     if d_sym and (d_sym in target_syms or any(ts in d_sym or d_sym in ts for ts in target_syms if ts)):
                         pnl = float(getattr(d, "profit", 0.0)) + float(getattr(d, "swap", 0.0)) + float(getattr(d, "commission", 0.0))
                         # Only process OUT (1) or INOUT (2) deals as closed trades.
