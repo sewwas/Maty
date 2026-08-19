@@ -619,6 +619,8 @@ def check_target_profit(self, current_price: float, timestamp: float) -> Optiona
         # ── Smart Trend Reversal Exit ──
         # If in profit, and AutoReading mode flips to DUAL or against us, secure profit instantly!
         auto_uni = getattr(self, "auto_universe_bias", "")
+        is_runner_active = getattr(self, "in_runner_mode", False)
+        
         if total_pnl > min_profit_threshold and auto_uni:
             has_sells = any("SELL" in str(getattr(p, "type", "")).upper() for p in self.broker.open_positions.values())
             has_buys  = any("BUY"  in str(getattr(p, "type", "")).upper() for p in self.broker.open_positions.values())
@@ -632,7 +634,7 @@ def check_target_profit(self, current_price: float, timestamp: float) -> Optiona
                 exit_reason = "TARGET_PROFIT"
                 print(f"[{sym_u}] 🔄 [TREND REVERSAL] Mode changed from BUY to {auto_uni}. Securing +${total_pnl:.2f} early!")
 
-        if not exit_triggered and total_pnl >= effective_cycle_target:
+        if not exit_triggered and not is_runner_active and total_pnl >= effective_cycle_target:
             exit_triggered = True
             exit_reason = "TARGET_PROFIT"
             print(f"[{sym_u}] 💰 [CYCLE TP HIT] Basket reached peak target of ${effective_cycle_target:.2f} (Total PnL: ${total_pnl:.2f})!")
