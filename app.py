@@ -1014,7 +1014,7 @@ with tab_desk:
                         # Execute live bot engine tick when RUN BOT is active
                         if is_run and sym_p > 0:
                             try:
-                                bot.process_engine_tick(sym_p, sym_p, time.time())
+                                bot.process_tick(sym_p, sym_p, time.time())
                             except Exception as e:
                                 import logging; logging.warning(f"Exception: {e}")
 

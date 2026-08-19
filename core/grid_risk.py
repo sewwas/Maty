@@ -93,19 +93,21 @@ def enforce_profit_lock(self, current_price: float, timestamp: float) -> int:
     is_gold   = any(x in sym_name for x in ["XAU", "GOLD", "PAXG"])
     digits    = 3 if is_gold else (2 if "BTC" in sym_name else 5)
 
-    # Per-symbol thresholds
+    # Per-symbol defaults
     if is_gold:
-        min_basket_profit = 1.00    # Close basket the moment it hits $1 combined
-        min_pos_profit    = 1.50    # Lock individual position after $1.50 profit
-        near_zero_floor   = 0.15    # Close if basket drifts below 15% of its peak
+        default_basket = 1.00
+        default_pos = 1.50
     elif "BTC" in sym_name:
-        min_basket_profit = 2.00
-        min_pos_profit    = 3.00
-        near_zero_floor   = 0.15
+        default_basket = 2.00
+        default_pos = 3.00
     else:
-        min_basket_profit = 0.50
-        min_pos_profit    = 0.80
-        near_zero_floor   = 0.15
+        default_basket = 0.50
+        default_pos = 0.80
+
+    # Dynamic configurable thresholds
+    min_basket_profit = float(getattr(self, "min_basket_profit", default_basket) or default_basket)
+    min_pos_profit    = float(getattr(self, "min_pos_profit", default_pos) or default_pos)
+    near_zero_floor   = 0.15
 
     actions = 0
     total_pnl = float(self.broker.get_floating_pnl(current_price))
@@ -581,28 +583,43 @@ def check_target_profit(self, current_price: float, timestamp: float) -> Optiona
     exit_reason = ""
 
     # ─────────────────────────────────────────────────────────────
+    # Cycle Max Drawdown (Hard Stop Loss)
     # ─────────────────────────────────────────────────────────────
-    sl_limit = float(getattr(self, "stop_loss", 0.0) or 0.0)
-    if sl_limit > 0:
-        effective_sl = sl_limit
-        if total_pnl <= -abs(effective_sl):
-            exit_triggered = True
-            exit_reason = "STOP_LOSS"
+    max_cycle_dd = float(getattr(self, "max_cycle_drawdown", 30.0) or 30.0)
+    if total_pnl <= -abs(max_cycle_dd):
+        exit_triggered = True
+        exit_reason = "BOT_CLOSE"
+        print(f"[{self.symbol}] 🛑 [MAX DRAWDOWN HIT] Cycle PnL {total_pnl:.2f} <= -{max_cycle_dd:.2f}. Forcing market close.")
+
+    # ─────────────────────────────────────────────────────────────
+    # Standard Stop Loss
+    # ─────────────────────────────────────────────────────────────
+    if not exit_triggered:
+        sl_limit = float(getattr(self, "stop_loss", 0.0) or 0.0)
+        if sl_limit > 0:
+            effective_sl = sl_limit
+            if total_pnl <= -abs(effective_sl):
+                exit_triggered = True
+                exit_reason = "STOP_LOSS"
 
     # ─────────────────────────────────────────────────────────────
     # Basket Target Profit (Cycle Exit)
     # ─────────────────────────────────────────────────────────────
+    min_profit_threshold = 0.50  # Minimum gross profit to close a cycle, mitigating fee attrition
     if not exit_triggered:
         sym_u = str(getattr(self.broker, "symbol", getattr(self, "symbol_code", ""))).upper()
         # Use user-configured target profit, otherwise use default
         default_target = 10.0 if any(x in sym_u for x in ["XAU", "GOLD", "PAXG"]) else 3.0
         user_target = float(getattr(self, "target_profit", 0.0) or 0.0)
         cycle_target = user_target if user_target > 0 else default_target
+        
+        # Enforce minimum profit threshold
+        effective_cycle_target = max(cycle_target, min_profit_threshold)
             
         # ── Smart Trend Reversal Exit ──
         # If in profit, and AutoReading mode flips to DUAL or against us, secure profit instantly!
         auto_uni = getattr(self, "auto_universe_bias", "")
-        if total_pnl > 0.50 and getattr(self, "use_auto_reading", True) and auto_uni:
+        if total_pnl > min_profit_threshold and getattr(self, "use_auto_reading", True) and auto_uni:
             has_sells = any("SELL" in str(getattr(p, "type", "")).upper() for p in self.broker.open_positions.values())
             has_buys  = any("BUY"  in str(getattr(p, "type", "")).upper() for p in self.broker.open_positions.values())
             
@@ -615,10 +632,10 @@ def check_target_profit(self, current_price: float, timestamp: float) -> Optiona
                 exit_reason = "TARGET_PROFIT"
                 print(f"[{sym_u}] 🔄 [TREND REVERSAL] Mode changed from BUY to {auto_uni}. Securing +${total_pnl:.2f} early!")
 
-        if not exit_triggered and total_pnl >= cycle_target:
+        if not exit_triggered and total_pnl >= effective_cycle_target:
             exit_triggered = True
             exit_reason = "TARGET_PROFIT"
-            print(f"[{sym_u}] 💰 [CYCLE TP HIT] Basket reached peak target of ${cycle_target:.2f} (Total PnL: ${total_pnl:.2f})!")
+            print(f"[{sym_u}] 💰 [CYCLE TP HIT] Basket reached peak target of ${effective_cycle_target:.2f} (Total PnL: ${total_pnl:.2f})!")
 
     if exit_triggered:
         print(f"[{self.symbol}] 🎯 [PROFIT TAKING EXIT] {exit_reason} met! Net PnL: ${total_pnl:+.2f} USD")
@@ -939,6 +956,7 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
     max_capacity = (getattr(self, "grid_levels", 5) or 5) * 2
     if not force and len(getattr(self.broker, "pending_orders", {})) >= max_capacity:
         return
+
 
     self._is_deploying = True
 
