@@ -619,7 +619,7 @@ def check_target_profit(self, current_price: float, timestamp: float) -> Optiona
         # ── Smart Trend Reversal Exit ──
         # If in profit, and AutoReading mode flips to DUAL or against us, secure profit instantly!
         auto_uni = getattr(self, "auto_universe_bias", "")
-        if total_pnl > min_profit_threshold and getattr(self, "use_auto_reading", True) and auto_uni:
+        if total_pnl > min_profit_threshold and auto_uni:
             has_sells = any("SELL" in str(getattr(p, "type", "")).upper() for p in self.broker.open_positions.values())
             has_buys  = any("BUY"  in str(getattr(p, "type", "")).upper() for p in self.broker.open_positions.values())
             
@@ -990,7 +990,7 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
         gap_pct = float(getattr(self, "grid_gap", 0.07) or 0.07)
         offset_pct = float(getattr(self, "trap_offset", 0.07) or 0.07)
         
-        if getattr(self, "use_auto_reading", False) and hasattr(self, "auto_reading_engine"):
+        if hasattr(self, "auto_reading_engine"):
             try:
                 from core.data import get_historical_klines, calculate_technical_indicators
                 try:
@@ -1311,7 +1311,7 @@ def cleanup_stale_grid_orders(self, current_price: float) -> int:
         gap_val = self.deploy_grid_gap
         buy_offset_val = self.deploy_trap_offset
         sell_offset_val = buy_offset_val
-    elif getattr(self, "use_auto_reading", False):
+    else:
         try:
             from core.data import get_historical_klines, calculate_technical_indicators, get_order_book_depth, get_economic_calendar
             sym_str = getattr(self.broker, "symbol", "BTCUSDT")
@@ -1337,9 +1337,6 @@ def cleanup_stale_grid_orders(self, current_price: float) -> int:
         except Exception:
             buy_offset_val, gap_val = self.calculate_offset_and_gap(center_price, self.grid_gap, self.trap_offset)
             sell_offset_val = buy_offset_val
-    else:
-        buy_offset_val, gap_val = self.calculate_offset_and_gap(center_price, self.grid_gap, self.trap_offset)
-        sell_offset_val = buy_offset_val
 
     tolerance = max(gap_val * 1.5, center_price * 0.005)
 

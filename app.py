@@ -803,7 +803,7 @@ with tab_desk:
             bot = m_data["bot"]
             sym_p = m_data["last_price"]
             is_run = m_data.get("running", False)
-            is_auto = getattr(bot, "use_auto_reading", False)
+            is_auto = True
             pair_pnl = brk.get_floating_pnl(sym_p)
             pip_size = get_pip_size(sym_code)
             
@@ -827,73 +827,50 @@ with tab_desk:
                 except Exception as e:
                     import logging; logging.warning(f"Exception: {e}")
             
-            status_badge = "🟢 RUNNING (AUTO)" if (is_run and is_auto) else ("🟢 RUNNING (MANUAL)" if is_run else "🔴 IDLE")
+            status_badge = "🟢 RUNNING" if is_run else "🔴 IDLE"
             label_title = f"{_symbol_labels.get(sym_code, sym_code)} — ${sym_p:,.2f} | {status_badge}"
             
             with cols[idx_c]:
                 with st.expander(label_title, expanded=True):
 
-                    # ── MODE SELECTOR & ENGINE CONTROL STRIP ───────────────────
-                    hdr_c1, hdr_c2 = st.columns(2, vertical_alignment="center")
-                    with hdr_c1:
-                        mode_sel = st.radio(
-                            f"Mode ({sym_code})",
-                            ["🤖 AUTO-READING", "🖐️ MANUAL"],
-                            index=0 if is_auto else 1,
-                            horizontal=True,
-                            key=f"card_mode_{sym_code}"
-                        )
-                        new_auto = (mode_sel == "🤖 AUTO-READING")
-                        if new_auto != is_auto:
-                            bot.use_auto_reading = new_auto
-                            bot.auto_restart    = True  # Always keep auto_restart active in MANUAL mode so grid traps deploy & restart!
-                            if is_run:
-                                try:
-                                    live_px = get_live_price(sym_code) or sym_p
-                                    bot.deploy_traps(live_px, time.time(), force=True)
-                                except Exception as e:
-                                    import logging; logging.warning(f"Exception: {e}")
-                            st.toast(f"{sym_code} → {'AUTO 🤖' if new_auto else 'MANUAL 🖐️'}")
-                            st.rerun()
-
-                    with hdr_c2:
-                        e_col1, e_col2 = st.columns(2, vertical_alignment="bottom")
-                        with e_col1:
-                            if not is_run:
-                                if st.button("▶ START BOT", key=f"btn_start_{sym_code}", type="primary", width='stretch'):
-                                    m_data["running"] = True
-                                    bot.auto_restart = is_auto
-                                    live_px = get_live_price(sym_code) or sym_p
-                                    if live_px > 0:
-                                        m_data["last_price"] = live_px
-                                    try:
-                                        bot.deploy_traps(live_px, time.time(), force=True)
-                                    except Exception as e:
-                                        import logging; logging.warning(f"Exception: {e}")
-                                    save_bot_state()
-                                    st.rerun()
-                            else:
-                                if st.button("⏹️ STOP BOT", key=f"btn_stop_{sym_code}", width='stretch'):
-                                    m_data["running"] = False
-                                    try:
-                                        brk.cancel_all_orders()   # Cancel MT5 orders so they don't fire unmanaged
-                                    except Exception as e:
-                                        import logging; logging.warning(f"Exception: {e}")
-                                    save_bot_state()
-                                    st.rerun()
-                        with e_col2:
-                            if st.button("🔄 RESET GRID", key=f"btn_reset_{sym_code}", width='stretch', help=f"Reset and re-center grid traps for {sym_code} at current live price"):
+                    # ── ENGINE CONTROL STRIP ───────────────────
+                    e_col1, e_col2 = st.columns(2, vertical_alignment="bottom")
+                    with e_col1:
+                        if not is_run:
+                            if st.button("▶ START BOT", key=f"btn_start_{sym_code}", type="primary", width='stretch'):
+                                m_data["running"] = True
+                                bot.auto_restart = True
                                 live_px = get_live_price(sym_code) or sym_p
                                 if live_px > 0:
                                     m_data["last_price"] = live_px
                                 try:
                                     bot.deploy_traps(live_px, time.time(), force=True)
-                                    bot.deployed = True
-                                    st.toast(f"🔄 {sym_code} Grid Traps Reset & Re-Centered!")
-                                except Exception as reset_err:
-                                    st.toast(f"Notice: {reset_err}")
+                                except Exception as e:
+                                    import logging; logging.warning(f"Exception: {e}")
                                 save_bot_state()
                                 st.rerun()
+                        else:
+                            if st.button("⏹️ STOP BOT", key=f"btn_stop_{sym_code}", width='stretch'):
+                                m_data["running"] = False
+                                try:
+                                    brk.cancel_all_orders()   # Cancel MT5 orders so they don't fire unmanaged
+                                except Exception as e:
+                                    import logging; logging.warning(f"Exception: {e}")
+                                save_bot_state()
+                                st.rerun()
+                    with e_col2:
+                        if st.button("🔄 RESET GRID", key=f"btn_reset_{sym_code}", width='stretch', help=f"Reset and re-center grid traps for {sym_code} at current live price"):
+                            live_px = get_live_price(sym_code) or sym_p
+                            if live_px > 0:
+                                m_data["last_price"] = live_px
+                            try:
+                                bot.deploy_traps(live_px, time.time(), force=True)
+                                bot.deployed = True
+                                st.toast(f"🔄 {sym_code} Grid Traps Reset & Re-Centered!")
+                            except Exception as reset_err:
+                                st.toast(f"Notice: {reset_err}")
+                            save_bot_state()
+                            st.rerun()
 
                     # ── POSITION OPERATIONS CONTROL BAR ─────────────────────────────
                     act_c1, act_c2, act_c3 = st.columns(3, vertical_alignment="center")
@@ -1434,200 +1411,6 @@ with tab_desk:
                             except Exception as _c_err:
                                 st.markdown(f"<div style='font-size:0.72rem;color:#71717a'>Chart: {_c_err}</div>", unsafe_allow_html=True)
 
-                    # ══════════════════════════════════════════════════════════
-                    #  MANUAL MODE — Full Parameter Control Panel
-                    # ══════════════════════════════════════════════════════════
-                    else:
-                        # ── A. SPACING UNIT ───────────────────────────────────
-                        unit_sel = st.radio(
-                            f"📐 Spacing Unit ({sym_code})",
-                            ["🎯 PIPS / POINTS", "% PERCENT"],
-                            horizontal=True,
-                            key=f"unit_{sym_code}",
-                            help=f"1 Pip = ${pip_size} for {sym_code}"
-                        )
-                        is_pips = (unit_sel == "🎯 PIPS / POINTS")
-
-                        # ── B. GRID PARAMETERS ────────────────────────────────
-                        st.markdown("<div style='font-size:0.74rem;color:#71717a;text-transform:uppercase;letter-spacing:.5px;margin-bottom:3px'>📊 Grid Parameters</div>", unsafe_allow_html=True)
-                        p_c1, p_c2 = st.columns(2)
-                        with p_c1:
-                            n_sz = st.number_input(
-                                f"Lot Size", min_value=0.01, max_value=10.0,
-                                value=float(min(10.0, max(0.01, bot.order_size))),
-                                step=0.01, key=f"sz_{sym_code}"
-                            )
-                            if is_pips:
-                                _raw_gp = (bot.grid_gap / 100.0 * sym_p) / pip_size if (sym_p > 0 and pip_size > 0) else 10.0
-                                _dft_gp = float(min(5000.0, max(1.0, round(_raw_gp, 1))))
-                                n_gp_pips = st.number_input(
-                                    f"Grid Gap (Pips) — 1 pip=${pip_size}",
-                                    min_value=1.0, max_value=5000.0, value=_dft_gp,
-                                    step=1.0, key=f"gp_p_{sym_code}",
-                                    help=f"${_dft_gp * pip_size:.4f} price distance per level"
-                                )
-                                n_gp = round((n_gp_pips * pip_size / sym_p) * 100.0, 5) if sym_p > 0 else bot.grid_gap
-                                gap_price_dist = n_gp_pips * pip_size
-                            else:
-                                n_gp = st.number_input(
-                                    f"Grid Gap (%)",
-                                    min_value=0.01, max_value=50.0,
-                                    value=float(min(50.0, max(0.01, bot.grid_gap))),
-                                    step=0.05, key=f"gp_{sym_code}"
-                                )
-                                n_gp_pips = round((n_gp / 100.0 * sym_p) / pip_size, 1) if (sym_p > 0 and pip_size > 0) else 0
-                                gap_price_dist = n_gp / 100.0 * sym_p
-                            n_lv = st.number_input(
-                                f"Grid Levels (1–20)", min_value=1, max_value=20,
-                                value=int(min(20, max(1, getattr(bot, "grid_levels", 5)))),
-                                step=1, key=f"lv_{sym_code}"
-                            )
-
-                        with p_c2:
-                            n_tp = st.number_input(
-                                f"Target Profit ($)", min_value=0.10, max_value=1000.0,
-                                value=float(min(1000.0, max(0.10, bot.target_profit))),
-                                step=0.10, key=f"tp_{sym_code}"
-                            )
-                            if is_pips:
-                                _raw_off = (bot.trap_offset / 100.0 * sym_p) / pip_size if (sym_p > 0 and pip_size > 0) else 5.0
-                                _dft_off = float(min(5000.0, max(1.0, round(_raw_off, 1))))
-                                n_off_pips = st.number_input(
-                                    f"Trap Offset (Pips)",
-                                    min_value=1.0, max_value=5000.0, value=_dft_off,
-                                    step=1.0, key=f"off_p_{sym_code}",
-                                    help=f"${_dft_off * pip_size:.4f} from price before first trap"
-                                )
-                                n_off = round((n_off_pips * pip_size / sym_p) * 100.0, 5) if sym_p > 0 else bot.trap_offset
-                                offset_price_dist = n_off_pips * pip_size
-                            else:
-                                n_off = st.number_input(
-                                    f"Trap Offset (%)", min_value=0.01, max_value=10.0,
-                                    value=float(min(10.0, max(0.01, bot.trap_offset))),
-                                    step=0.05, key=f"off_{sym_code}"
-                                )
-                                n_off_pips = round((n_off / 100.0 * sym_p) / pip_size, 1) if (sym_p > 0 and pip_size > 0) else 0
-                                offset_price_dist = n_off / 100.0 * sym_p
-                            n_mult = st.number_input(
-                                "Lot Multiplier (per Level)",
-                                min_value=1.0, max_value=3.0,
-                                value=float(min(3.0, max(1.0, getattr(bot, "order_size_multiplier", 1.0)))),
-                                step=0.05, key=f"mult_{sym_code}",
-                                help="1.0=flat, 1.25=martingale"
-                            )
-
-                        # ── C. RISK & MANAGEMENT ──────────────────────────────
-                        st.markdown("<div style='font-size:0.74rem;color:#71717a;text-transform:uppercase;letter-spacing:.5px;margin:8px 0 3px'>⚙️ Risk & Management</div>", unsafe_allow_html=True)
-                        r_c1, r_c2, r_c3 = st.columns(3)
-                        with r_c1:
-                            n_sl = st.number_input(
-                                "Stop Loss ($) — 0=OFF", min_value=0.0, max_value=5000.0,
-                                value=float(min(5000.0, max(0.0, getattr(bot, "stop_loss", 0.0)))),
-                                step=1.0, key=f"sl_{sym_code}", help="Cycle closes if float loss hits this"
-                            )
-                            n_dd = st.number_input(
-                                "Daily DD Limit ($) — 0=OFF", min_value=0.0, max_value=5000.0,
-                                value=float(min(5000.0, max(0.0, getattr(bot, "max_daily_drawdown", 0.0)))),
-                                step=5.0, key=f"dd_{sym_code}", help="Hard daily circuit-breaker"
-                            )
-                        with r_c2:
-                            _dur_sec = getattr(bot, "max_cycle_duration", float("inf"))
-                            _dflt_dur_min = 0 if (_dur_sec == float("inf") or _dur_sec is None or _dur_sec <= 0 or str(_dur_sec) == "inf") else int(min(1440, max(0, int(_dur_sec / 60.0))))
-                            n_dur = st.number_input(
-                                "Cycle Timeout (min) — 0=OFF", min_value=0, max_value=1440,
-                                value=_dflt_dur_min, step=5, key=f"dur_{sym_code}", help="Auto-reset if no exit in N mins"
-                            )
-                            n_trail_dist = st.number_input(
-                                "Trail Stop (Pips) — 0=OFF", min_value=0.0, max_value=500.0,
-                                value=float(min(500.0, max(0.0, getattr(bot, "trailing_stop_distance", 0.0)))),
-                                step=1.0, key=f"trail_d_{sym_code}", help=f"1 pip=${pip_size}"
-                            )
-                        with r_c3:
-                            is_auto_mode = getattr(bot, "use_auto_reading", False)
-                            n_oco = st.toggle("🔗 OCO Cancel Opposite",
-                                value=False if is_auto_mode else bool(getattr(bot, "cancel_opposite_on_trigger", False)),
-                                disabled=is_auto_mode,
-                                key=f"oco_{sym_code}", help="OCO is disabled in Auto Mode to preserve dual-sided hedging")
-                            n_be  = st.toggle("🛡️ Breakeven Guard",
-                                value=bool(getattr(bot, "use_breakeven", True)),
-                                key=f"be_{sym_code}", help="Move stop to entry at 50% target")
-                            n_trail = st.toggle("📈 Trailing Stop",
-                                value=bool(getattr(bot, "use_trailing_stop", False)),
-                                key=f"trail_{sym_code}", help="Enable trailing stop")
-
-                        # ── D. APPLY FUNCTION ─────────────────────────────────
-                        def _apply_params():
-                            bot.use_auto_reading        = False  # Guarantee MANUAL mode is active!
-                            bot.order_size              = n_sz
-                            bot.grid_gap                = n_gp
-                            bot.trap_offset             = n_off
-                            bot.target_profit           = n_tp
-                            bot.grid_levels             = n_lv
-                            bot.order_size_multiplier   = n_mult
-                            bot.stop_loss               = n_sl
-                            bot.max_daily_drawdown      = n_dd
-                            bot.max_cycle_duration      = n_dur * 60.0 if n_dur > 0 else float("inf")
-                            bot.cancel_opposite_on_trigger = n_oco
-                            bot.use_breakeven           = n_be
-                            bot.use_trailing_stop       = n_trail
-                            bot.trailing_stop_distance  = n_trail_dist if n_trail else getattr(bot, "trailing_stop_distance", 15.0)
-
-                        # Auto-save on any change
-                        _apply_params()
-
-                        if st.button("⚡ Apply & Re-Deploy Traps", key=f"apply_{sym_code}", width='stretch', type="primary"):
-                            _apply_params()
-                            try:
-                                bot.deploy_traps(sym_p, time.time(), force=True)
-                                bot.deployed = True
-                                st.toast(f"✅ {sym_code} traps re-deployed!")
-                            except Exception as _de:
-                                bot.deployed = True
-                                st.warning(f"Deploy: {_de}")
-                            st.rerun()
-
-                        # ── E. GRID LADDER PREVIEW ────────────────────────────
-                        if sym_p > 0 and n_lv > 0:
-                            _off_d = offset_price_dist if is_pips else (n_off / 100.0 * sym_p)
-                            _gap_d = gap_price_dist    if is_pips else (n_gp  / 100.0 * sym_p)
-                            _pip   = pip_size
-                            _dp    = max(2, len(str(pip_size).split(".")[-1]))
-
-                            rows = ""
-                            for lvl in range(1, int(n_lv) + 1):
-                                bp   = sym_p - _off_d - (lvl - 1) * _gap_d
-                                sp   = sym_p + _off_d + (lvl - 1) * _gap_d
-                                bpip = round(abs(sym_p - bp) / _pip, 1) if _pip > 0 else 0
-                                spip = round(abs(sp - sym_p) / _pip, 1) if _pip > 0 else 0
-                                lot  = round(n_sz * (n_mult ** (lvl - 1)), 3)
-                                rows += (
-                                    f"<tr>"
-                                    f"<td style='color:#a1a1aa'>L{lvl}</td>"
-                                    f"<td style='color:#22c55e'>${bp:,.{_dp}f}</td>"
-                                    f"<td style='color:#22c55e;font-family:JetBrains Mono'>{bpip:.1f}↓</td>"
-                                    f"<td style='color:#ef4444'>${sp:,.{_dp}f}</td>"
-                                    f"<td style='color:#ef4444;font-family:JetBrains Mono'>{spip:.1f}↑</td>"
-                                    f"<td style='color:#facc15;font-family:JetBrains Mono'>{lot:.3f}</td>"
-                                    f"</tr>"
-                                )
-                            st.markdown(f"""
-                            <div style='margin-top:10px'>
-                              <div style='font-size:0.75rem;color:#a1a1aa;margin-bottom:5px'>
-                                📐 <strong>Grid Ladder</strong> &nbsp;·&nbsp;
-                                Entry <span style='color:#fff;font-family:JetBrains Mono'>${sym_p:,.{_dp}f}</span> &nbsp;·&nbsp;
-                                Gap <span style='color:#facc15'>{n_gp_pips:.1f} pips (${_gap_d:.4f})</span> &nbsp;·&nbsp;
-                                Offset <span style='color:#fb923c'>{n_off_pips:.1f} pips (${_off_d:.4f})</span> &nbsp;·&nbsp;
-                                1 pip=<span style='color:#818cf8'>${_pip}</span>
-                              </div>
-                              <table class='fast-table' style='font-size:0.76rem'>
-                                <thead><tr>
-                                  <th>Lvl</th><th>🟢 BUY STOP</th><th>Pips↓</th>
-                                  <th>🔴 SELL STOP</th><th>Pips↑</th><th>🟡 Lots</th>
-                                </tr></thead>
-                                <tbody>{rows}</tbody>
-                              </table>
-                            </div>
-                            """, unsafe_allow_html=True)
 
     st.markdown("<hr style='border-color: #27272a; margin: 16px 0;'/>", unsafe_allow_html=True)
 
@@ -1666,7 +1449,7 @@ with tab_desk:
             pos_cnt = len(brk_r.open_positions)
             trap_cnt = len(brk_r.pending_orders)
             pnl_c = "pnl-green" if pnl_r >= 0 else "pnl-red"
-            prof_mode = getattr(bot_r, "auto_profile", "BALANCED") if getattr(bot_r, "use_auto_reading", False) else "MANUAL"
+            prof_mode = getattr(bot_r, "auto_profile", "BALANCED")
             
             c_st = getattr(bot_r, "cycle_start_time", 0.0)
             c_now = time.time()

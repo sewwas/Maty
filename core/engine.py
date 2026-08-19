@@ -148,8 +148,9 @@ class BreakoutGridBot:
         self.base_bb_width = base_bb_width
         self.adaptive_gap_min_mult = adaptive_gap_min_mult
         self.adaptive_gap_max_mult = adaptive_gap_max_mult
-        self.use_auto_reading = use_auto_reading
+        self.use_auto_reading = True
         self.auto_reading_engine = AutoReadingEngine()
+
 
         sym_str = getattr(self.broker, "symbol", getattr(self, "symbol", ""))
         self._order_size = sanitize_order_size(sym_str, order_size)
@@ -418,7 +419,7 @@ class BreakoutGridBot:
         if not hasattr(self, "auto_restart"):
             self.auto_restart = False
         if not hasattr(self, "use_auto_reading"):
-            self.use_auto_reading = False
+            self.use_auto_reading = True
         if not hasattr(self, "auto_profile"):
             self.auto_profile = "BALANCED"
         if not hasattr(self, "pending_order_side_mode"):
