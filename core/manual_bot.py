@@ -14,9 +14,9 @@ class ManualGridBot(BreakoutGridBot):
             delattr(self, "auto_reading_engine")
 
     def evaluate_dynamic_grid_state(self, current_price: float, timestamp: float):
-        # Prevent the background daemon from automatically refreshing or moving the manual grid.
-        # Manual grids should stay exactly where the user placed them.
-        pass
+        # Auto-deploy initial grid traps on startup if not yet deployed
+        if not getattr(self, "deployed", False) and current_price > 0:
+            self.deploy_traps(current_price, timestamp, force=True)
 
     def deploy_traps(self, current_price: float, timestamp: float, *args, force: bool = False, **kwargs):
         if not current_price or current_price <= 0:

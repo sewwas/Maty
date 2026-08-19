@@ -123,11 +123,14 @@ def get_global_vps_trading_engine_v4():
     shared_manual_markets = {}
     saved_state_map = load_saved_bot_full_state()
     saved_manual_state_map = load_saved_manual_bot_state()
-    use_mt5 = MT5_AVAILABLE
+    use_mt5 = MT5_AVAILABLE or bool(os.environ.get("EXNESS_LOGIN"))
 
     for sym in _symbols:
         magic = get_symbol_magic_number(sym)
-        brk = MT5Broker(symbol=sym, magic_number=magic) if use_mt5 else SimulatedBroker(symbol=sym, magic_number=magic)
+        _env_login = int(os.environ.get("EXNESS_LOGIN")) if os.environ.get("EXNESS_LOGIN", "").isdigit() else None
+        _env_pass = os.environ.get("EXNESS_PASSWORD", "")
+        _env_srv = os.environ.get("EXNESS_SERVER", "")
+        brk = MT5Broker(symbol=sym, login=_env_login, password=_env_pass, server=_env_srv, magic_number=magic) if (use_mt5 and MT5_AVAILABLE) else SimulatedBroker(symbol=sym, magic_number=magic)
         pair_cfg = PAIR_SWEET_SPOTS.get(sym, {"std_gap": 0.07, "std_offset": 0.07, "base_lot": 0.01, "min_tp": 10.0, "lot_mult": 1.25})
         bot = BreakoutGridBot(
             broker=brk,
@@ -278,7 +281,7 @@ st.set_page_config(
 #  2. SESSION STATE INITIALIZATION & BROKER FACTORY
 # ==============================================================================
 if "use_mt5" not in st.session_state:
-    st.session_state.use_mt5 = MT5_AVAILABLE
+    st.session_state.use_mt5 = MT5_AVAILABLE or bool(os.environ.get("EXNESS_LOGIN"))
 
 if "pair_filter" not in st.session_state:
     st.session_state.pair_filter = "ALL"
@@ -713,7 +716,7 @@ with tab_desk:
     # Master Action Toolbar
     tb_c1, tb_c2, tb_c3, tb_c4 = st.columns([3, 3, 3, 3])
     with tb_c1:
-        if st.button("🚀 START ALL AUTO", type="primary", width='stretch'):
+        if st.button("🚀 START ALL AUTO", type="primary", use_container_width=True):
             for _s_code, _m_item in st.session_state.markets.items():
                 _m_item["running"] = True
                 _m_item["bot"].use_auto_reading = True
@@ -729,7 +732,7 @@ with tab_desk:
             st.toast("Started all 6 pairs in Auto Mode!")
             st.rerun()
     with tb_c2:
-        if st.button("⏹️ PAUSE ALL", width='stretch'):
+        if st.button("⏹️ PAUSE ALL", use_container_width=True):
             for _m_item in st.session_state.markets.values():
                 _m_item["running"] = False
                 try:
@@ -740,7 +743,7 @@ with tab_desk:
             st.toast("Paused all pairs and cancelled all pending grid orders.")
             st.rerun()
     with tb_c3:
-        if st.button("🎯 RE-CENTER ALL TRAPS", width='stretch'):
+        if st.button("🎯 RE-CENTER ALL TRAPS", use_container_width=True):
             for _m_item in st.session_state.markets.values():
                 try:
                     _m_item["bot"].deploy_traps(_m_item.get("last_price", 0), time.time(), force=True)
@@ -751,7 +754,7 @@ with tab_desk:
     with tb_c4:
         col_g1, col_g2, col_g3 = st.columns(3)
         with col_g1:
-            if st.button("🟢 CLOSE BUY", key="btn_global_close_buy", width='stretch', help="Close all open BUY positions across all pairs"):
+            if st.button("🟢 CLOSE BUY", key="btn_global_close_buy", use_container_width=True, help="Close all open BUY positions across all pairs"):
                 for _m_item in st.session_state.markets.values():
                     try: _m_item["broker"].close_buy_positions()
                     except Exception as e: import logging; logging.warning(f"Exception: {e}")
@@ -759,7 +762,7 @@ with tab_desk:
                 st.toast("🟢 Closed all BUY positions across all pairs!")
                 st.rerun()
         with col_g2:
-            if st.button("🔴 CLOSE SELL", key="btn_global_close_sell", width='stretch', help="Close all open SELL positions across all pairs"):
+            if st.button("🔴 CLOSE SELL", key="btn_global_close_sell", use_container_width=True, help="Close all open SELL positions across all pairs"):
                 for _m_item in st.session_state.markets.values():
                     try: _m_item["broker"].close_sell_positions()
                     except Exception as e: import logging; logging.warning(f"Exception: {e}")
@@ -767,7 +770,7 @@ with tab_desk:
                 st.toast("🔴 Closed all SELL positions across all pairs!")
                 st.rerun()
         with col_g3:
-            if st.button("🚨 FLATTEN ALL", key="btn_global_flatten_all", type="primary", width='stretch', help="Close all positions & cancel orders across all pairs"):
+            if st.button("🚨 FLATTEN ALL", key="btn_global_flatten_all", type="primary", use_container_width=True, help="Close all positions & cancel orders across all pairs"):
                 for _m_item in st.session_state.markets.values():
                     _m_item["running"] = False
                     try:
@@ -782,7 +785,7 @@ with tab_desk:
     with st.expander("⚡ ONE-CLICK STRATEGY PRESETS & BULK MODIFIERS", expanded=False):
         p_c1, p_c2, p_c3, p_c4 = st.columns(4)
         with p_c1:
-            if st.button("🛡️ CONSERVATIVE PRESET", width='stretch'):
+            if st.button("🛡️ CONSERVATIVE PRESET", use_container_width=True):
                 for m in st.session_state.markets.values():
                     m["bot"].grid_gap = 0.35
                     m["bot"].trap_offset = 0.20
@@ -797,7 +800,7 @@ with tab_desk:
                 st.toast("Applied Conservative Preset across all pairs!")
                 st.rerun()
         with p_c2:
-            if st.button("⚖️ AI BALANCED PRESET", width='stretch'):
+            if st.button("⚖️ AI BALANCED PRESET", use_container_width=True):
                 for m in st.session_state.markets.values():
                     m["bot"].grid_gap = 0.30
                     m["bot"].trap_offset = 0.15
@@ -812,7 +815,7 @@ with tab_desk:
                 st.toast("Applied AI Balanced Preset across all pairs!")
                 st.rerun()
         with p_c3:
-            if st.button("⚡ APPLY 1M ULTRA-FAST SCALPER", width='stretch'):
+            if st.button("⚡ APPLY 1M ULTRA-FAST SCALPER", use_container_width=True):
                 for m in st.session_state.markets.values():
                     m["bot"].grid_gap = 0.07
                     m["bot"].trap_offset = 0.05
@@ -826,7 +829,7 @@ with tab_desk:
                 st.toast("Applied 1m Ultra-Fast Scalper Preset across all pairs!")
                 st.rerun()
         with p_c4:
-            if st.button("🚀 TOGGLE RUNNER MODE (ALL)", width='stretch'):
+            if st.button("🚀 TOGGLE RUNNER MODE (ALL)", use_container_width=True):
                 new_st = not getattr(list(st.session_state.markets.values())[0]["bot"], "use_smart_trailing", True)
                 for m in st.session_state.markets.values():
                     m["bot"].use_smart_trailing = new_st
@@ -838,13 +841,13 @@ with tab_desk:
     # Filter Toolbar
     f_cols = st.columns(len(_symbols) + 1)
     with f_cols[0]:
-        if st.button(f"ALL ({len(_symbols)} Markets)", type="primary" if st.session_state.pair_filter == "ALL" else "secondary", width='stretch'):
+        if st.button(f"ALL ({len(_symbols)} Markets)", type="primary" if st.session_state.pair_filter == "ALL" else "secondary", use_container_width=True):
             st.session_state.pair_filter = "ALL"
             st.rerun()
     for idx_f, s_code in enumerate(_symbols):
         with f_cols[idx_f + 1]:
             s_short = "GOLD" if s_code in ("PAXGUSDT", "XAUUSD", "GOLD") else s_code.replace("USDT", "").replace("USD", "")
-            if st.button(s_short, type="primary" if st.session_state.pair_filter == s_code else "secondary", width='stretch'):
+            if st.button(s_short, type="primary" if st.session_state.pair_filter == s_code else "secondary", use_container_width=True):
                 st.session_state.pair_filter = s_code
                 st.rerun()
 
@@ -927,7 +930,7 @@ with tab_desk:
                     e_col1, e_col2 = st.columns(2, vertical_alignment="bottom")
                     with e_col1:
                         if not is_run:
-                            if st.button("▶ START BOT", key=f"btn_start_{sym_code}", type="primary", width='stretch'):
+                            if st.button("▶ START BOT", key=f"btn_start_{sym_code}", type="primary", use_container_width=True):
                                 m_data["running"] = True
                                 bot.auto_restart = True
                                 live_px = get_live_price(sym_code) or sym_p
@@ -940,7 +943,7 @@ with tab_desk:
                                 save_bot_state()
                                 st.rerun()
                         else:
-                            if st.button("⏹️ STOP BOT", key=f"btn_stop_{sym_code}", width='stretch'):
+                            if st.button("⏹️ STOP BOT", key=f"btn_stop_{sym_code}", use_container_width=True):
                                 m_data["running"] = False
                                 try:
                                     brk.cancel_all_orders()   # Cancel MT5 orders so they don't fire unmanaged
@@ -949,7 +952,7 @@ with tab_desk:
                                 save_bot_state()
                                 st.rerun()
                     with e_col2:
-                        if st.button("🔄 RESET GRID", key=f"btn_reset_{sym_code}", width='stretch', help=f"Reset and re-center grid traps for {sym_code} at current live price"):
+                        if st.button("🔄 RESET GRID", key=f"btn_reset_{sym_code}", use_container_width=True, help=f"Reset and re-center grid traps for {sym_code} at current live price"):
                             live_px = get_live_price(sym_code) or sym_p
                             if live_px > 0:
                                 m_data["last_price"] = live_px
@@ -965,7 +968,7 @@ with tab_desk:
                     # ── POSITION OPERATIONS CONTROL BAR ─────────────────────────────
                     act_c1, act_c2, act_c3 = st.columns(3, vertical_alignment="center")
                     with act_c1:
-                        if st.button("🟢 CLOSE BUY", key=f"btn_close_buy_{sym_code}", width='stretch', help=f"Close ONLY open BUY positions for {sym_code}"):
+                        if st.button("🟢 CLOSE BUY", key=f"btn_close_buy_{sym_code}", use_container_width=True, help=f"Close ONLY open BUY positions for {sym_code}"):
                             try:
                                 brk.close_buy_positions(sym_code)
                                 st.toast(f"🟢 Closed BUY positions for {sym_code}!")
@@ -974,7 +977,7 @@ with tab_desk:
                             save_bot_state()
                             st.rerun()
                     with act_c2:
-                        if st.button("🔴 CLOSE SELL", key=f"btn_close_sell_{sym_code}", width='stretch', help=f"Close ONLY open SELL positions for {sym_code}"):
+                        if st.button("🔴 CLOSE SELL", key=f"btn_close_sell_{sym_code}", use_container_width=True, help=f"Close ONLY open SELL positions for {sym_code}"):
                             try:
                                 brk.close_sell_positions(sym_code)
                                 st.toast(f"🔴 Closed SELL positions for {sym_code}!")
@@ -983,7 +986,7 @@ with tab_desk:
                             save_bot_state()
                             st.rerun()
                     with act_c3:
-                        if st.button("🚨 FLATTEN ALL", key=f"btn_emergency_{sym_code}", width='stretch', help="Close all positions and cancel all pending orders for this pair immediately"):
+                        if st.button("🚨 FLATTEN ALL", key=f"btn_emergency_{sym_code}", use_container_width=True, help="Close all positions and cancel all pending orders for this pair immediately"):
                             m_data["running"] = False
                             try:
                                 brk.close_all_positions(symbol=sym_code)
@@ -1459,7 +1462,7 @@ with tab_desk:
                         # ══════════════════════════════════════════════════════════
                         #  📈 LIVE 1M CANDLESTICK & SMC STRUCTURE CHART
                         # ══════════════════════════════════════════════════════════
-                        with st.expander(f"📈 Live 1m Interactive Chart ({sym_code})", expanded=False):
+                        if st.checkbox(f"📈 Show Live 1m Interactive Chart ({sym_code})", value=False, key=f"chk_chart_{sym_code}_{idx_c}"):
                             try:
                                 from core.data import get_historical_klines
                                 _chart_df = get_historical_klines(sym_code, interval="1m", limit=50)
@@ -1497,7 +1500,7 @@ with tab_desk:
                                         yaxis=dict(showgrid=True, gridcolor='#27272a'),
                                         showlegend=False
                                     )
-                                    st.plotly_chart(_fig, width='stretch', key=f"c1m_{sym_code}")
+                                    st.plotly_chart(_fig, use_container_width=True, key=f"c1m_{sym_code}")
                             except Exception as _c_err:
                                 st.markdown(f"<div style='font-size:0.72rem;color:#71717a'>Chart: {_c_err}</div>", unsafe_allow_html=True)
 
@@ -1521,7 +1524,7 @@ with tab_desk:
                 fig.add_hline(y=ord_obj.trigger_price, line_dash="dash", line_color=line_color, annotation_text=f"{ord_obj.type} @ ${ord_obj.trigger_price:,.2f}")
                 
             fig.update_layout(template="plotly_dark", height=320, margin=dict(l=10, r=10, t=30, b=10), paper_bgcolor="#18181b", plot_bgcolor="#18181b")
-            st.plotly_chart(fig, width='stretch')
+            st.plotly_chart(fig, use_container_width=True)
         else:
             st.info("Accumulating live tick history for price visualization...")
 
@@ -1807,7 +1810,7 @@ with tab_desk:
             try:
                 df_export = pd.DataFrame(filtered_list)
                 csv_data = df_export.to_csv(index=False).encode('utf-8')
-                st.download_button("📥 Export CSV", data=csv_data, file_name="completed_cycles_history.csv", mime="text/csv", width='stretch')
+                st.download_button("📥 Export CSV", data=csv_data, file_name="completed_cycles_history.csv", mime="text/csv", use_container_width=True)
             except Exception as e:
                 import logging; logging.warning(f"Exception: {e}")
 
@@ -1950,21 +1953,21 @@ with tab_manual:
             st.markdown("#### 🚀 Deploy")
             d_col1, d_col2, d_col3 = st.columns(3)
             with d_col1:
-                if st.button("BUY GRID", type="primary", key="man_buy_btn", width='stretch'):
+                if st.button("BUY GRID", type="primary", key="man_buy_btn", use_container_width=True):
                     bot.pending_order_side_mode = "BUY_ONLY"
                     try: bot.deploy_traps(sym_p, time.time(), force=True)
                     except Exception as e: import logging; logging.warning(f"Exception: {e}")
                     st.toast("Manual BUY Grid Deployed!")
                     st.rerun()
             with d_col2:
-                if st.button("SELL GRID", type="primary", key="man_sell_btn", width='stretch'):
+                if st.button("SELL GRID", type="primary", key="man_sell_btn", use_container_width=True):
                     bot.pending_order_side_mode = "SELL_ONLY"
                     try: bot.deploy_traps(sym_p, time.time(), force=True)
                     except Exception as e: import logging; logging.warning(f"Exception: {e}")
                     st.toast("Manual SELL Grid Deployed!")
                     st.rerun()
             with d_col3:
-                if st.button("DUAL GRID", key="man_dual_btn", width='stretch'):
+                if st.button("DUAL GRID", key="man_dual_btn", use_container_width=True):
                     bot.pending_order_side_mode = "BOTH_SIDES"
                     try: bot.deploy_traps(sym_p, time.time(), force=True)
                     except Exception as e: import logging; logging.warning(f"Exception: {e}")
@@ -1974,7 +1977,7 @@ with tab_manual:
             st.markdown("#### 🚨 Panic Actions")
             d_col1, d_col2 = st.columns(2)
             with d_col1:
-                if st.button("FLATTEN POSITIONS", type="primary", key="man_flat_btn", width='stretch'):
+                if st.button("FLATTEN POSITIONS", type="primary", key="man_flat_btn", use_container_width=True):
                     try:
                         brk.close_all_positions(symbol=man_sym)
                         brk.cancel_all_orders(symbol=man_sym)
@@ -1982,7 +1985,7 @@ with tab_manual:
                     st.toast("Manual positions flattened.")
                     st.rerun()
             with d_col2:
-                if st.button("CANCEL ALL TRAPS", key="man_canc_btn", width='stretch'):
+                if st.button("CANCEL ALL TRAPS", key="man_canc_btn", use_container_width=True):
                     try:
                         brk.cancel_all_orders(symbol=man_sym)
                         bot.deployed = False
@@ -2289,7 +2292,7 @@ with tab_myfxbook:
         fig_eq = go.Figure()
         fig_eq.add_trace(go.Scatter(y=eq_points, mode="lines+markers", name="Account Equity ($)", line=dict(color="#22c55e", width=3), fill='tozeroy', fillcolor='rgba(34, 197, 94, 0.1)'))
         fig_eq.update_layout(template="plotly_dark", height=240, margin=dict(l=10, r=10, t=10, b=10), paper_bgcolor="#18181b", plot_bgcolor="#18181b", xaxis_title="Executed Deals", yaxis_title="Equity ($)")
-        st.plotly_chart(fig_eq, width='stretch')
+        st.plotly_chart(fig_eq, use_container_width=True)
 
     st.markdown("<div style='height: 14px;'></div>", unsafe_allow_html=True)
 

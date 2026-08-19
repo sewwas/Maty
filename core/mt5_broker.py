@@ -51,7 +51,7 @@ class MT5Broker:
         self.PositionClass = Position
 
         if not MT5_AVAILABLE:
-            raise ImportError("MetaTrader5 library is not available.")
+            self.is_simulated = True
 
         if isinstance(symbol, int) and isinstance(login, str):
             symbol, login = login, symbol
