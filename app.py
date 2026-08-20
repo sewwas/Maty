@@ -608,6 +608,21 @@ _gross_loss = sum(sum(abs(t.get("pnl", 0)) for t in m["broker"].closed_trades if
 _pf         = (_gross_prof / _gross_loss) if _gross_loss > 0 else (99.9 if _gross_prof > 0 else 0.0)
 
 _active_cnt = sum(1 for m in st.session_state.markets.values() if m.get("running", False))
+_manual_active_cnt = 0
+for m in st.session_state.manual_markets.values():
+    m_brk = m.get("broker")
+    if m_brk and (len(getattr(m_brk, "open_positions", {})) > 0 or len(getattr(m_brk, "pending_orders", {})) > 0):
+        _manual_active_cnt += 1
+
+if _active_cnt > 0 and _manual_active_cnt > 0:
+    _status_text = "🟢 Running (Auto & Manual)"
+elif _active_cnt > 0:
+    _status_text = "🟢 Running (Auto AI)"
+elif _manual_active_cnt > 0:
+    _status_text = "🟢 Running (Manual)"
+else:
+    _status_text = "💤 Idle (Standby)"
+
 _real_cls   = "pnl-green" if _all_real_pnl >= 0 else "pnl-red"
 _float_cls  = "pnl-green" if _all_float_pnl >= 0 else "pnl-red"
 _pf_cls     = "pnl-green" if _pf >= 1.5 else ("pnl-red" if _pf < 1.0 else "")
@@ -615,14 +630,15 @@ _pf_cls     = "pnl-green" if _pf >= 1.5 else ("pnl-red" if _pf < 1.0 else "")
 _net_total_pnl = _all_real_pnl + _all_float_pnl
 _all_traps     = sum(len(m.get("broker").pending_orders) for m in st.session_state.markets.values() if m.get("broker"))
 _net_cls       = "pnl-green" if _net_total_pnl >= 0 else "pnl-red"
+first_broker = list(st.session_state.markets.values())[0]["broker"] if st.session_state.markets else None
 acc_bal        = getattr(first_broker, "balance", equity_val)
 
 st.markdown(f"""
 <div class="metric-strip" style="grid-template-columns: repeat(4, 1fr); gap: 10px;">
     <div class="metric-box">
-        <div class="metric-label">📡 Active AI Engines</div>
-        <div class="metric-val">{_active_cnt} / {len(st.session_state.markets)} Pairs</div>
-        <div class="metric-sub">{"🟢 Running (Auto AI)" if _active_cnt > 0 else "🔴 Idle (Standby)"}</div>
+        <div class="metric-label">📡 Active Engines</div>
+        <div class="metric-val">{_active_cnt + _manual_active_cnt} / {len(st.session_state.markets)} Pairs</div>
+        <div class="metric-sub">{_status_text}</div>
     </div>
     <div class="metric-box">
         <div class="metric-label">💰 Realized Cash PnL</div>
