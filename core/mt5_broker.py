@@ -1003,6 +1003,8 @@ class MT5Broker:
 
         if mt5_positions:
             for p in mt5_positions:
+                if getattr(p, "magic", 0) != self.magic_number and getattr(self, "magic_number", None) is not None:
+                    continue
                 active_pos_tickets.add(p.ticket)
                 pid = self.ticket_to_position_id.get(p.ticket)
 
@@ -1045,6 +1047,8 @@ class MT5Broker:
         found_matching = False
         if positions:
             for p in positions:
+                if getattr(p, "magic", 0) != self.magic_number and getattr(self, "magic_number", None) is not None:
+                    continue
                 p_sym = str(getattr(p, "symbol", "")).upper()
                 if p_sym and any(a in p_sym or p_sym in a for a in aliases):
                     total_pnl += float(getattr(p, "profit", 0.0) or 0.0)
