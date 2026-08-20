@@ -1161,14 +1161,14 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
                 # Uses 5m/15m trend as a standalone direction filter.
                 if t_5m == "BULLISH" or (t_5m == "NEUTRAL" and t_15m == "BULLISH"):
                     place_buy, place_sell = True, False
-            elif t_5m == "BEARISH" or (t_5m == "NEUTRAL" and t_15m == "BEARISH"):
-                place_buy, place_sell = False, True
-            elif rsi_1m <= 38.0 and t_5m == "NEUTRAL" and t_15m == "NEUTRAL":
-                place_buy, place_sell = True, False
-            elif rsi_1m >= 62.0 and t_5m == "NEUTRAL" and t_15m == "NEUTRAL":
-                place_buy, place_sell = False, True
-            else:
-                place_buy, place_sell = True, True
+                elif t_5m == "BEARISH" or (t_5m == "NEUTRAL" and t_15m == "BEARISH"):
+                    place_buy, place_sell = False, True
+                elif rsi_1m <= 38.0 and t_5m == "NEUTRAL" and t_15m == "NEUTRAL":
+                    place_buy, place_sell = True, False
+                elif rsi_1m >= 62.0 and t_5m == "NEUTRAL" and t_15m == "NEUTRAL":
+                    place_buy, place_sell = False, True
+                else:
+                    place_buy, place_sell = True, True
 
         # ─────────────────────────────────────────────────────────────
         # DIRECTIONAL MODE: Limit orders from optimal price levels
