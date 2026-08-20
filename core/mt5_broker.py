@@ -12,6 +12,15 @@ except (ImportError, Exception):
     mt5 = None
     MT5_AVAILABLE = False
 
+if not MT5_AVAILABLE:
+    try:
+        import requests
+        r_bridge = requests.get("http://127.0.0.1:8001/account", timeout=0.5)
+        if r_bridge.status_code == 200 and r_bridge.json().get("connected"):
+            MT5_AVAILABLE = True
+    except Exception:
+        pass
+
 SYMBOL_MAGIC_NUMBERS = {
     "XAUUSD": 998870,
     "GOLD": 998870,
@@ -52,6 +61,19 @@ class MT5Broker:
 
         if not MT5_AVAILABLE:
             self.is_simulated = True
+        else:
+            self.is_simulated = False
+            try:
+                import requests
+                bridge_port = os.getenv("WINE_BRIDGE_PORT", "8001")
+                r_bridge = requests.get(f"http://127.0.0.1:{bridge_port}/account", timeout=0.5)
+                if r_bridge.status_code == 200:
+                    d_b = r_bridge.json()
+                    if d_b.get("connected"):
+                        self.login = int(d_b.get("login", self.login if self.login else 257515247))
+                        self.server = str(d_b.get("server", self.server if self.server else "Exness-MT5Real36"))
+            except Exception:
+                pass
 
         if isinstance(symbol, int) and isinstance(login, str):
             symbol, login = login, symbol
@@ -73,17 +95,19 @@ class MT5Broker:
         self.runner_ids = set()
 
         try:
-            if not mt5.initialize():
-                print(f"Notice: MT5 initialize status: {mt5.last_error()}")
+            if mt5 is not None:
+                if not mt5.initialize():
+                    print(f"Notice: MT5 initialize status: {mt5.last_error()}")
 
-            acc = mt5.account_info()
-            if acc:
-                self.login = int(acc.login)
-                self.server = str(acc.server)
-            elif self.login > 0 and self.password:
-                mt5.login(login=self.login, password=self.password, server=self.server)
+                acc = (mt5.account_info if mt5 is not None else (lambda *a, **k: None))()
+                if acc:
+                    self.login = int(acc.login)
+                    self.server = str(acc.server)
+                elif self.login > 0 and self.password:
+                    mt5.login(login=self.login, password=self.password, server=self.server)
         except Exception as init_err:
             print(f"Notice: MT5 init check: {init_err}")
+
 
     def get_exness_symbol(self, ui_symbol: str) -> str:
         if not hasattr(self, "_exness_symbol_cache"):
@@ -98,46 +122,79 @@ class MT5Broker:
         base_sym = symbol_map.get(ui_symbol, ui_symbol)
 
         res = ui_symbol
-        if MT5_AVAILABLE:
+        if MT5_AVAILABLE and mt5 is not None:
             probes = []
             if self.symbol_suffix:
                 probes.append(f"{base_sym}{self.symbol_suffix}")
             probes.extend([f"{base_sym}m", base_sym, f"{base_sym}c", f"{base_sym}.a", f"{base_sym}_i"])
 
             for candidate in probes:
-                if mt5.symbol_select(candidate, True):
-                    info = mt5.symbol_info(candidate)
+                if (mt5.symbol_select if mt5 is not None else (lambda *a, **k: False))(candidate, True):
+                    info = (mt5.symbol_info if mt5 is not None else (lambda *a, **k: None))(candidate)
                     if info is not None:
                         res = candidate
                         break
 
             if res == ui_symbol:
-                group_symbols = mt5.symbols_get(group=f"*{base_sym}*")
+                group_symbols = (mt5.symbols_get if mt5 is not None else (lambda *a, **k: ()))(group=f"*{base_sym}*")
                 if group_symbols:
                     matching = [s.name for s in group_symbols if s.name.upper().startswith(base_sym.upper())]
                     if matching:
                         matching.sort(key=lambda name: (len(name), name))
                         selected = matching[0]
-                        if mt5.symbol_select(selected, True):
+                        if (mt5.symbol_select if mt5 is not None else (lambda *a, **k: False))(selected, True):
                             res = selected
 
         self._exness_symbol_cache[ui_symbol] = res
         return res
 
+    def get_account_info(self):
+        if mt5 is not None:
+            try:
+                acc_native = (mt5.account_info if mt5 is not None else (lambda *a, **k: None))()
+                if acc_native:
+                    return acc_native
+            except Exception:
+                pass
+        try:
+            import requests
+            bridge_port = os.getenv("WINE_BRIDGE_PORT", "8001")
+            r = requests.get(f"http://127.0.0.1:{bridge_port}/account", timeout=1.0)
+            if r.status_code == 200:
+                d = r.json()
+                if d.get("connected"):
+                    class BridgeAcc:
+                        pass
+                    b = BridgeAcc()
+                    b.login = int(d.get("login", 257515247))
+                    b.server = str(d.get("server", "Exness-MT5Real36"))
+                    b.balance = float(d.get("balance", 1000.0))
+                    b.equity = float(d.get("equity", 1000.0))
+                    b.leverage = int(d.get("leverage", 2000))
+                    b.currency = str(d.get("currency", "USD"))
+                    return b
+        except Exception:
+            pass
+        return None
+
     def ensure_connected(self) -> bool:
-        if not MT5_AVAILABLE:
+        acc = self.get_account_info()
+        if acc:
+            return True
+        if not MT5_AVAILABLE or mt5 is None:
             return False
+
         now = time.time()
         if hasattr(self, "_last_conn_ok") and (now - self._last_conn_ok < 3.0):
             return True
         try:
             if mt5.terminal_info() is None:
                 mt5.initialize()
-            acc = mt5.account_info()
+            acc = (mt5.account_info if mt5 is not None else (lambda *a, **k: None))()
             if acc is None:
                 if self.password:
                     mt5.login(login=self.login, password=self.password, server=self.server)
-                acc = mt5.account_info()
+                acc = (mt5.account_info if mt5 is not None else (lambda *a, **k: None))()
             if acc:
                 self.login = int(acc.login)
                 self.server = str(acc.server)
@@ -153,10 +210,9 @@ class MT5Broker:
         exness_sym = self.get_exness_symbol(self.symbol)
         if exness_sym.endswith("c"):
             return True
-        if self.ensure_connected():
-            acc = mt5.account_info()
-            if acc and hasattr(acc, "currency") and ("USC" in str(acc.currency).upper() or "EUOC" in str(acc.currency).upper()):
-                return True
+        acc = self.get_account_info()
+        if acc and hasattr(acc, "currency") and ("USC" in str(acc.currency).upper() or "EUOC" in str(acc.currency).upper()):
+            return True
         return False
 
     @property
@@ -173,12 +229,11 @@ class MT5Broker:
         if hasattr(self, "_acc_info_cache"):
             acc, ts = self._acc_info_cache
             if now - ts < 1.0 and acc:
-                return float(acc.balance)   # Fixed: was acc.equity
-        if self.ensure_connected():
-            acc = mt5.account_info()
-            self._acc_info_cache = (acc, now)
-            if acc:
-                return float(acc.balance)   # Fixed: was acc.equity
+                return float(acc.balance)
+        acc = self.get_account_info()
+        self._acc_info_cache = (acc, now)
+        if acc:
+            return float(acc.balance)
         return 1000.0
 
     @property
@@ -196,11 +251,10 @@ class MT5Broker:
             acc, ts = self._acc_info_cache
             if now - ts < 1.0 and acc:
                 return float(acc.equity)
-        if self.ensure_connected():
-            acc = mt5.account_info()
-            self._acc_info_cache = (acc, now)
-            if acc:
-                return float(acc.equity)
+        acc = self.get_account_info()
+        self._acc_info_cache = (acc, now)
+        if acc:
+            return float(acc.equity)
         return self.balance
 
     def get_cached_symbol_info(self, exness_symbol: str):
@@ -212,8 +266,8 @@ class MT5Broker:
             if now - ts < 2.0 and info is not None:
                 return info
         if MT5_AVAILABLE and exness_symbol:
-            mt5.symbol_select(exness_symbol, True)
-            info = mt5.symbol_info(exness_symbol)
+            (mt5.symbol_select if mt5 is not None else (lambda *a, **k: False))(exness_symbol, True)
+            info = (mt5.symbol_info if mt5 is not None else (lambda *a, **k: None))(exness_symbol)
         else:
             info = None
         if info:
@@ -233,8 +287,8 @@ class MT5Broker:
             return len(self.pending_orders) + len(self.open_positions)
         try:
             exness_symbol = self.get_exness_symbol(self.symbol)
-            orders = mt5.orders_get(symbol=exness_symbol) if exness_symbol else mt5.orders_get()
-            positions = mt5.positions_get(symbol=exness_symbol) if exness_symbol else mt5.positions_get()
+            orders = (mt5.orders_get if mt5 is not None else (lambda *a, **k: ()))(symbol=exness_symbol) if exness_symbol else (mt5.orders_get if mt5 is not None else (lambda *a, **k: ()))()
+            positions = (mt5.positions_get if mt5 is not None else (lambda *a, **k: ()))(symbol=exness_symbol) if exness_symbol else (mt5.positions_get if mt5 is not None else (lambda *a, **k: ()))()
             # Filter by magic number so multi-symbol bots don't block each other
             n_orders = sum(1 for o in orders if getattr(o, "magic", 0) == self.magic_number) if orders else 0
             n_positions = sum(1 for p in positions if getattr(p, "magic", 0) == self.magic_number) if positions else 0
@@ -299,7 +353,7 @@ class MT5Broker:
         if size < 0.01:
             size = 0.01
 
-        existing_positions = mt5.positions_get(symbol=exness_symbol) if (MT5_AVAILABLE and exness_symbol) else ()
+        existing_positions = (mt5.positions_get if mt5 is not None else (lambda *a, **k: ()))(symbol=exness_symbol) if (MT5_AVAILABLE and exness_symbol) else ()
         if existing_positions:
             total_open_vol = sum(float(getattr(p, "volume", 0.0) or 0.0) for p in existing_positions)
             if len(existing_positions) >= 2 or (total_open_vol + size) > 0.05:
@@ -313,7 +367,7 @@ class MT5Broker:
             ord_px = getattr(p_ord, "trigger_price", getattr(p_ord, "price_open", 0.0))
             if getattr(p_ord, "type", "") == order_type and abs(trigger_price - ord_px) <= px_tolerance:
                 tk = int(getattr(p_ord, "broker_ticket", getattr(p_ord, "mt5_ticket", 0)) or 0)
-                live_o = mt5.orders_get(ticket=tk) if (MT5_AVAILABLE and tk > 0) else None
+                live_o = (mt5.orders_get if mt5 is not None else (lambda *a, **k: ()))(ticket=tk) if (MT5_AVAILABLE and tk > 0) else None
                 if live_o:
                     return p_ord
                 else:
@@ -322,11 +376,11 @@ class MT5Broker:
         if MT5_AVAILABLE:
             for s_alias in set([exness_symbol, self.symbol, f"{exness_symbol}m", f"{exness_symbol}c", "XAUUSD", "XAUUSDm"]):
                 if s_alias:
-                    ords = mt5.orders_get(symbol=s_alias)
+                    ords = (mt5.orders_get if mt5 is not None else (lambda *a, **k: ()))(symbol=s_alias)
                     if ords:
                         existing_orders.extend(list(ords))
             if not existing_orders:
-                all_o = mt5.orders_get()
+                all_o = (mt5.orders_get if mt5 is not None else (lambda *a, **k: ()))()
                 if all_o:
                     clean_target = "XAU" if any(x in self.symbol.upper() for x in ["XAU", "GOLD"]) else ("PAXG" if "PAXG" in self.symbol.upper() else self.symbol.replace("USDT", "").replace("USD", "").upper())
                     existing_orders = [o for o in all_o if clean_target in str(o.symbol).upper()]
@@ -452,12 +506,12 @@ class MT5Broker:
         orders = []
         for s_alias in set([exness_symbol, self.symbol, f"{exness_symbol}m", f"{exness_symbol}c", "XAUUSD", "XAUUSDm"]):
             if s_alias and MT5_AVAILABLE:
-                ords = mt5.orders_get(symbol=s_alias)
+                ords = (mt5.orders_get if mt5 is not None else (lambda *a, **k: ()))(symbol=s_alias)
                 if ords:
                     orders.extend(list(ords))
 
         if not orders and MT5_AVAILABLE:
-            all_o = mt5.orders_get()
+            all_o = (mt5.orders_get if mt5 is not None else (lambda *a, **k: ()))()
             if all_o:
                 clean_target = "XAU" if any(x in self.symbol.upper() for x in ["XAU", "GOLD"]) else ("PAXG" if "PAXG" in self.symbol.upper() else self.symbol.replace("USDT", "").replace("USD", ""))
                 orders = [o for o in all_o if clean_target in str(o.symbol).upper()]
@@ -498,9 +552,9 @@ class MT5Broker:
         if not self.ensure_connected():
             return 0
         exness_symbol = self.get_exness_symbol(self.symbol)
-        poss = mt5.positions_get(symbol=exness_symbol) if (MT5_AVAILABLE and exness_symbol) else None
+        poss = (mt5.positions_get if mt5 is not None else (lambda *a, **k: ()))(symbol=exness_symbol) if (MT5_AVAILABLE and exness_symbol) else None
         if not poss and MT5_AVAILABLE:
-            all_poss = mt5.positions_get()
+            all_poss = (mt5.positions_get if mt5 is not None else (lambda *a, **k: ()))()
             if all_poss:
                 clean_target = "XAU" if any(x in self.symbol.upper() for x in ["XAU", "GOLD"]) else ("PAXG" if "PAXG" in self.symbol.upper() else self.symbol.replace("USDT", "").replace("USD", "").upper())
                 poss = [p for p in all_poss if clean_target in str(p.symbol).upper()]
@@ -591,12 +645,12 @@ class MT5Broker:
         orders_list = []
         for s_alias in set([exness_symbol, sym, f"{exness_symbol}m", f"{exness_symbol}c", "XAUUSD", "XAUUSDm"]):
             if s_alias and MT5_AVAILABLE:
-                ords = mt5.orders_get(symbol=s_alias)
+                ords = (mt5.orders_get if mt5 is not None else (lambda *a, **k: ()))(symbol=s_alias)
                 if ords:
                     orders_list.extend(list(ords))
 
         if not orders_list and MT5_AVAILABLE:
-            all_o = mt5.orders_get()
+            all_o = (mt5.orders_get if mt5 is not None else (lambda *a, **k: ()))()
             if all_o:
                 clean_target = "XAU" if any(x in str(sym).upper() for x in ["XAU", "GOLD"]) else ("PAXG" if "PAXG" in str(sym).upper() else str(sym).replace("USDT", "").replace("USD", "").upper())
                 orders_list = [o for o in all_o if clean_target in str(o.symbol).upper()]
@@ -636,7 +690,7 @@ class MT5Broker:
         if not ticket:
             return None
 
-        pos_list = mt5.positions_get(ticket=ticket)
+        pos_list = (mt5.positions_get if mt5 is not None else (lambda *a, **k: ()))(ticket=ticket)
         if not pos_list:
             return None
 
@@ -719,12 +773,12 @@ class MT5Broker:
 
         pos = None
         if ticket:
-            pos_list = mt5.positions_get(ticket=ticket)
+            pos_list = (mt5.positions_get if mt5 is not None else (lambda *a, **k: ()))(ticket=ticket)
             if pos_list:
                 pos = pos_list[0]
 
         if not pos:
-            pos_list = mt5.positions_get() if MT5_AVAILABLE else ()
+            pos_list = (mt5.positions_get if mt5 is not None else (lambda *a, **k: ()))() if MT5_AVAILABLE else ()
             if pos_list:
                 for p in pos_list:
                     if getattr(p, "ticket", None) == ticket or str(getattr(p, "ticket", "")) == clean_pid:
@@ -798,7 +852,7 @@ class MT5Broker:
         if not ticket:
             return None
 
-        pos_list = mt5.positions_get(ticket=ticket) if MT5_AVAILABLE else None
+        pos_list = (mt5.positions_get if mt5 is not None else (lambda *a, **k: ()))(ticket=ticket) if MT5_AVAILABLE else None
         if not pos_list:
             return None
         pos = pos_list[0]
@@ -900,9 +954,9 @@ class MT5Broker:
 
         if symbol:
             exness_symbol = self.get_exness_symbol(symbol)
-            positions = mt5.positions_get(symbol=exness_symbol) if exness_symbol else None
+            positions = (mt5.positions_get if mt5 is not None else (lambda *a, **k: ()))(symbol=exness_symbol) if exness_symbol else None
         else:
-            positions = mt5.positions_get() if MT5_AVAILABLE else None
+            positions = (mt5.positions_get if mt5 is not None else (lambda *a, **k: ()))() if MT5_AVAILABLE else None
 
         closed = []
         exclude_ids = exclude_ids or set()
@@ -978,7 +1032,7 @@ class MT5Broker:
 
         self.purge_duplicate_mt5_orders()
         self.purge_duplicate_mt5_positions()
-        mt5_orders = mt5.orders_get(symbol=exness_symbol) if exness_symbol else None
+        mt5_orders = (mt5.orders_get if mt5 is not None else (lambda *a, **k: ()))(symbol=exness_symbol) if exness_symbol else None
         active_order_tickets = set()
         if mt5_orders:
             for o in mt5_orders:
@@ -991,9 +1045,9 @@ class MT5Broker:
                     self.pending_orders.pop(oid, None)
                     self.ticket_to_order_id.pop(ticket, None)
 
-        mt5_positions = mt5.positions_get(symbol=exness_symbol) if (MT5_AVAILABLE and exness_symbol) else None
+        mt5_positions = (mt5.positions_get if mt5 is not None else (lambda *a, **k: ()))(symbol=exness_symbol) if (MT5_AVAILABLE and exness_symbol) else None
         if mt5_positions is None and MT5_AVAILABLE:
-            all_poss = mt5.positions_get()
+            all_poss = (mt5.positions_get if mt5 is not None else (lambda *a, **k: ()))()
             if all_poss:
                 clean_target = "XAU" if any(x in self.symbol.upper() for x in ["XAU", "GOLD"]) else ("PAXG" if "PAXG" in self.symbol.upper() else self.symbol.replace("USDT", "").replace("USD", "").upper())
                 mt5_positions = [p for p in all_poss if clean_target in str(p.symbol).upper()]
@@ -1042,7 +1096,7 @@ class MT5Broker:
         if any(x in self.symbol.upper() for x in ["PAXG", "XAU", "GOLD"]):
             aliases.update(["XAUUSD", "GOLD", "PAXGUSDT", "XAUUSDm", "XAUUSDc"])
 
-        positions = mt5.positions_get() if MT5_AVAILABLE else None
+        positions = (mt5.positions_get if mt5 is not None else (lambda *a, **k: ()))() if MT5_AVAILABLE else None
         total_pnl = 0.0
         found_matching = False
         if positions:

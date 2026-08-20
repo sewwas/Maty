@@ -41,7 +41,7 @@ def get_live_price(symbol: str = "PAXGUSDT") -> Optional[float]:
     # 0. Try MT5 Live Tick FIRST (Instant 0.0001s in-memory MT5 lookup)
     try:
         import MetaTrader5 as mt5
-        if mt5.terminal_info() is not None:
+        if mt5 is not None and hasattr(mt5, "terminal_info") and mt5.terminal_info() is not None:
             base_exness = "XAUUSD" if sym in ("PAXGUSDT", "XAUUSD", "GOLD") else sym.replace("USDT", "USD")
             tick = None
             for s_name in [base_exness, f"{base_exness}m", f"{base_exness}c", f"{base_exness}.a"]:
@@ -53,38 +53,39 @@ def get_live_price(symbol: str = "PAXGUSDT") -> Optional[float]:
                 p = float((tick.ask + tick.bid) / 2.0)
                 _LIVE_PRICE_CACHE[sym] = (p, now)
                 return p
-    except Exception as e:
-        import logging; logging.warning(f"Exception: {e}")
+    except Exception:
+        pass
 
     if sym in _LIVE_PRICE_CACHE:
         cached_p, cached_t = _LIVE_PRICE_CACHE[sym]
         if now - cached_t < 3.0:
             return cached_p
 
-    # 1. Try Binance API (0.15s ultra-fast timeout — never hangs VPS)
+    # 1. Try Binance API (1.5s resilient timeout)
     try:
         url = "https://api.binance.com/api/v3/ticker/price"
-        res = requests.get(url, params={"symbol": sym}, timeout=0.15)
+        res = requests.get(url, params={"symbol": sym}, timeout=1.5)
         if res.status_code == 200:
             p = float(res.json().get("price", 0))
             if p > 0:
                 _LIVE_PRICE_CACHE[sym] = (p, now)
                 return p
-    except Exception as e:
-        import logging; logging.warning(f"Exception: {e}")
+    except Exception:
+        pass
 
-    # 2. Fallback to Coinbase API (0.15s ultra-fast timeout)
+    # 2. Fallback to Coinbase API (1.5s resilient timeout)
     base = "PAXG" if sym == "PAXGUSDT" else sym.replace("USDT", "").replace("USD", "")
     try:
         cb_url = f"https://api.coinbase.com/v2/prices/{base}-USD/spot"
-        res = requests.get(cb_url, timeout=0.15)
+        res = requests.get(cb_url, timeout=1.5)
         if res.status_code == 200:
             p = float(res.json().get("data", {}).get("amount", 0))
             if p > 0:
                 _LIVE_PRICE_CACHE[sym] = (p, now)
                 return p
-    except Exception as e:
-        import logging; logging.warning(f"Exception: {e}")
+    except Exception:
+        pass
+
 
     # Instant RAM / Default Price Fallback
     if sym in _LIVE_PRICE_CACHE:

@@ -49,3 +49,13 @@ Thumbs.db
 last_error.txt
 tmp*
 
+# Runtime state files & temporary media
+bot_state.json
+investor_data.json
+manual_bot_state.json
+bandit_report.json
+*.jpeg
+*.jpg
+*.png
+
+

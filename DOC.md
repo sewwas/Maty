@@ -549,7 +549,7 @@ This section details how Profity AI protects real trading capital against the 3 
 
 ### 📊 Container & Infrastructure Status
 - **VPS IP**: `169.58.190.245`
-- **Environment**: Linux Ubuntu + Wine + Docker (`mt5_ubuntu_vps`)
+- **Environment**: Linux Ubuntu + Wine (`mt5_ubuntu_vps`)
 - **RAM Footprint**: ~300 MB – 450 MB (90% lower CPU & RAM usage than Windows emulation)
 - **Restart Policy**: `always` (auto-starts instantly on VPS reboot)
 
@@ -557,6 +557,19 @@ This section details how Profity AI protects real trading capital against the 3 
 1. **Web Desktop UI (Wine MT5 Screen)**: 👉 [http://169.58.190.245:8006](http://169.58.190.245:8006)
 2. **Bot #1 Control Dashboard**: 👉 [http://169.58.190.245:8501](http://169.58.190.245:8501)
 3. **Bot #2 Control Dashboard (Separate MT5 / Account)**: 👉 [http://169.58.190.245:8502](http://169.58.190.245:8502)
+
+### 🔄 Full Format VPS & Native Pure Ubuntu Deployment (NO DOCKER)
+To completely format/wipe Docker and deploy directly on **100% Native Pure Ubuntu OS**, run:
+```bash
+bash deploy_native_ubuntu.sh
+```
+Or paste the single command into your VPS terminal:
+```bash
+sudo systemctl stop docker 2>/dev/null || true
+sudo apt purge -y docker.io docker-ce containerd.io 2>/dev/null || true
+sudo apt update -y && DEBIAN_FRONTEND=noninteractive sudo apt install -y wget curl git python3 python3-pip python3-venv xvfb x11vnc novnc websockify lxde wine64 wine32 cabextract && pip3 install --upgrade pip && pip3 install streamlit starlette plotly pandas numpy requests && mkdir -p ~/mt5_setup && cd ~/mt5_setup && wget -q https://download.mql5.com/cdn/web/metaquotes.software.corp/mt5/mt5setup.exe -O mt5setup.exe && pkill Xvfb 2>/dev/null || true && pkill x11vnc 2>/dev/null || true && pkill websockify 2>/dev/null || true && Xvfb :1 -screen 0 1280x800x16 & sleep 2 && DISPLAY=:1 startlxde & sleep 2 && x11vnc -display :1 -forever -shared -nopw -rfbport 5900 & sleep 2 && websockify -D --web=/usr/share/novnc/ 8006 localhost:5900
+```
+
 
 ### 🤖 Supported Deployment Configurations
 
@@ -575,4 +588,5 @@ This section details how Profity AI protects real trading capital against the 3 
 - **Account 2 (`:8502`)**: Gold (`XAUUSD`) — **Manual / Custom Control Bot** (Manual direction overrides, custom entry triggers, independent risk parameters).
 - **100% Isolated**: Both accounts run Gold simultaneously on Exness servers without interfering with each other!
 
-
+
+

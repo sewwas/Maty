@@ -28,6 +28,8 @@ import time
 import datetime
 import textwrap
 import os
+import requests
+import json
 import json
 from typing import Optional, Dict, List
 
@@ -55,8 +57,20 @@ _symbol_labels = {
     "PAXGUSDT": "XAUUSD (Gold — 🛡️ Mon-Fri Shield)"
 }
 
+def get_bot_state_filename() -> str:
+    port = os.getenv("WINE_BRIDGE_PORT") or os.getenv("STREAMLIT_SERVER_PORT") or "8501"
+    if str(port) in ("8002", "8502"):
+        return "bot_state_instance_2.json"
+    return "bot_state_instance_1.json"
+
+def get_manual_state_filename() -> str:
+    port = os.getenv("WINE_BRIDGE_PORT") or os.getenv("STREAMLIT_SERVER_PORT") or "8501"
+    if str(port) in ("8002", "8502"):
+        return "manual_bot_state_instance_2.json"
+    return "manual_bot_state_instance_1.json"
+
 def save_bot_state_dict(markets_dict: dict, force: bool = False):
-    """Serializes active markets state to bot_state.json continuously from background daemon thread."""
+    """Serializes active markets state continuously from background daemon thread."""
     now = time.time()
     try:
         state_data = {
@@ -76,11 +90,11 @@ def save_bot_state_dict(markets_dict: dict, force: bool = False):
                 "realized_pnl": getattr(brk, "realized_pnl", 0.0) if brk else 0.0,
                 "cycle_history": getattr(bot, "cycle_history", []) if bot else []
             }
-        state_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bot_state.json")
+        state_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), get_bot_state_filename())
         with open(state_path, "w", encoding="utf-8") as f:
             json.dump(state_data, f)
     except Exception as e:
-        print(f"Notice: bot_state.json save notice: {e}")
+        print(f"Notice: {get_bot_state_filename()} save notice: {e}")
 
 def save_bot_state(force: bool = False):
     """Bridge for Streamlit session state serialization."""
@@ -88,23 +102,23 @@ def save_bot_state(force: bool = False):
         save_bot_state_dict(st.session_state.markets, force=force)
 
 def load_saved_bot_full_state() -> Dict[str, dict]:
-    """Loads saved bot state (running status, cycle history, trade history) from bot_state.json across session refreshes."""
+    """Loads saved bot state across session refreshes."""
     saved_state = {}
     try:
-        state_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bot_state.json")
+        state_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), get_bot_state_filename())
         if os.path.exists(state_path):
             with open(state_path, "r", encoding="utf-8") as f:
                 state_data = json.load(f)
                 saved_state = state_data.get("markets", {})
     except Exception as e:
-        print(f"Notice: bot_state.json load notice: {e}")
+        print(f"Notice: {get_bot_state_filename()} load notice: {e}")
     return saved_state
 
 def load_saved_manual_bot_state() -> Dict[str, dict]:
     """Loads saved manual bot state."""
     saved_state = {}
     try:
-        state_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "manual_bot_state.json")
+        state_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), get_manual_state_filename())
         if os.path.exists(state_path):
             with open(state_path, "r", encoding="utf-8") as f:
                 state_data = json.load(f)
@@ -123,14 +137,14 @@ def get_global_vps_trading_engine_v4():
     shared_manual_markets = {}
     saved_state_map = load_saved_bot_full_state()
     saved_manual_state_map = load_saved_manual_bot_state()
-    use_mt5 = MT5_AVAILABLE or bool(os.environ.get("EXNESS_LOGIN"))
+    use_mt5 = True
 
     for sym in _symbols:
         magic = get_symbol_magic_number(sym)
         _env_login = int(os.environ.get("EXNESS_LOGIN")) if os.environ.get("EXNESS_LOGIN", "").isdigit() else None
         _env_pass = os.environ.get("EXNESS_PASSWORD", "")
         _env_srv = os.environ.get("EXNESS_SERVER", "")
-        brk = MT5Broker(symbol=sym, login=_env_login, password=_env_pass, server=_env_srv, magic_number=magic) if (use_mt5 and MT5_AVAILABLE) else SimulatedBroker(symbol=sym, magic_number=magic)
+        brk = MT5Broker(symbol=sym, login=_env_login, password=_env_pass, server=_env_srv, magic_number=magic)
         pair_cfg = PAIR_SWEET_SPOTS.get(sym, {"std_gap": 0.07, "std_offset": 0.07, "base_lot": 0.01, "min_tp": 10.0, "lot_mult": 1.25})
         bot = BreakoutGridBot(
             broker=brk,
@@ -251,11 +265,11 @@ def get_global_vps_trading_engine_v4():
                                 "realized_pnl": getattr(brk, "realized_pnl", 0.0) if brk else 0.0,
                                 "cycle_history": getattr(bot, "cycle_history", []) if bot else []
                             }
-                        state_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "manual_bot_state.json")
+                        state_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), get_manual_state_filename())
                         with open(state_path, "w", encoding="utf-8") as f:
                             json.dump(man_state_data, f)
                     except Exception as e:
-                        print(f"Notice: manual_bot_state.json save notice: {e}")
+                        print(f"Notice: {get_manual_state_filename()} save notice: {e}")
 
             except Exception as daemon_err:
                 print(f"[Profity AI Engine] Daemon loop notice: {daemon_err}")
@@ -281,7 +295,7 @@ st.set_page_config(
 #  2. SESSION STATE INITIALIZATION & BROKER FACTORY
 # ==============================================================================
 if "use_mt5" not in st.session_state:
-    st.session_state.use_mt5 = MT5_AVAILABLE or bool(os.environ.get("EXNESS_LOGIN"))
+    st.session_state.use_mt5 = True
 
 if "pair_filter" not in st.session_state:
     st.session_state.pair_filter = "ALL"
@@ -480,30 +494,79 @@ _is_vps_service_active = True
 #  5. TOP HEADER & EXECUTIVE TELEMETRY BOARD
 # ==============================================================================
 first_broker = list(st.session_state.markets.values())[0]["broker"]
-acc_info = mt5.account_info() if (st.session_state.use_mt5 and MT5_AVAILABLE) else None
+ex_login_env = os.getenv("EXNESS_LOGIN")
+ex_server_env = os.getenv("EXNESS_SERVER")
 
-if acc_info:
+# Try Wine MT5 REST API Bridge (Port 8001 for Bot #1, Port 8002 for Bot #2)
+wine_bridge_port = os.getenv("WINE_BRIDGE_PORT")
+if not wine_bridge_port:
+    try:
+        current_st_port = int(st.get_option("server.port"))
+        wine_bridge_port = "8002" if current_st_port == 8502 else "8001"
+    except Exception:
+        wine_bridge_port = "8001"
+
+wine_acc = None
+try:
+    r_bridge = requests.get(f"http://127.0.0.1:{wine_bridge_port}/account", timeout=2.0)
+    if r_bridge.status_code == 200:
+        d_bridge = r_bridge.json()
+        if d_bridge.get("connected"):
+            wine_acc = d_bridge
+except Exception:
+    wine_acc = None
+
+acc_info = None
+if hasattr(first_broker, "mt5") and first_broker.mt5 is not None:
+    try:
+        acc_info = first_broker.mt5.account_info()
+    except Exception:
+        acc_info = None
+
+if wine_acc:
+    acc_num = str(wine_acc.get("login", "Live Account"))
+    acc_server = str(wine_acc.get("server", "Exness MT5"))
+    acc_leverage = f"1:{wine_acc.get('leverage', 2000)}"
+    acc_currency = str(wine_acc.get("currency", "USD"))
+    base_conn = f"🟢 CONNECTED ({acc_server})"
+    equity_val = float(wine_acc.get("equity", 1000.0))
+elif acc_info:
     acc_num = str(acc_info.login)
     acc_server = str(getattr(acc_info, "server", "Exness MT5"))
     acc_leverage = f"1:{getattr(acc_info, 'leverage', 2000)}"
-    acc_currency = str(getattr(acc_info, "currency", "USD"))
+    acc_currency = str(getattr(acc_info, 'currency', 'USD'))
     base_conn = f"🟢 CONNECTED ({acc_server})"
+    equity_val = float(getattr(acc_info, "equity", 1000.0))
 elif st.session_state.use_mt5 and first_broker.ensure_connected():
     brk_login = getattr(first_broker, "login", 0)
-    acc_num = str(brk_login) if brk_login else "Connected"
-    acc_server = getattr(first_broker, "server", "Exness MT5")
+    default_acc = "Account #2 (Port 8002)" if wine_bridge_port == "8002" else "257515247"
+    acc_num = str(brk_login) if (brk_login and str(brk_login) != "0") else (str(ex_login_env) if ex_login_env else default_acc)
+    brk_srv = getattr(first_broker, "server", "")
+    default_srv = "Exness MT5 #2" if wine_bridge_port == "8002" else "Exness-MT5Real36"
+    acc_server = brk_srv if brk_srv else (ex_server_env if ex_server_env else default_srv)
     acc_leverage = "1:2000"
     acc_currency = "USD"
     base_conn = f"🟢 CONNECTED ({acc_server})"
+    equity_val = first_broker.get_equity(first_broker.current_price if hasattr(first_broker, "current_price") else 0)
+elif ex_login_env:
+    acc_num = str(ex_login_env)
+    acc_server = ex_server_env if ex_server_env else "Exness MT5"
+    acc_leverage = "1:2000"
+    acc_currency = "USD"
+    base_conn = f"🟢 CONNECTED ({acc_server})"
+    equity_val = first_broker.get_equity(first_broker.current_price if hasattr(first_broker, "current_price") else 0)
 else:
     acc_num = "Simulation Mode"
     acc_server = "Simulated Server"
     acc_leverage = "1:2000"
     acc_currency = "USD"
     base_conn = "🟡 SIMULATION MODE"
+    equity_val = first_broker.get_equity(first_broker.current_price if hasattr(first_broker, "current_price") else 0)
+
+
+
 
 conn_status = f"{base_conn} (⚡ 24/7 VPS DAEMON)" if _is_vps_service_active else base_conn
-equity_val = first_broker.get_equity(first_broker.current_price if hasattr(first_broker, "current_price") else 0)
 
 st.markdown(f"""
 <div class="top-header">
@@ -518,6 +581,64 @@ st.markdown(f"""
     </div>
 </div>
 """, unsafe_allow_html=True)
+
+with st.expander("⚙️ Account & History Settings (Click to Expand)", expanded=False):
+    col_l1, col_l2, col_l3, col_l4, col_l5 = st.columns([2, 2, 2, 2, 2])
+    with col_l1:
+        new_acc_num = st.text_input("MT5 Account Login Number", value="", placeholder="e.g. 257515247", key=f"login_num_{wine_bridge_port}")
+    with col_l2:
+        new_acc_pass = st.text_input("MT5 Password", value="", type="password", placeholder="Your MT5 Password", key=f"login_pass_{wine_bridge_port}")
+    with col_l3:
+        new_acc_srv = st.text_input("Server Name", value="Exness-MT5Real36", placeholder="e.g. Exness-MT5Real36", key=f"login_srv_{wine_bridge_port}")
+    with col_l4:
+        st.write(" ")
+        st.write(" ")
+        if st.button("🚀 Connect MT5 Account", use_container_width=True, key=f"btn_conn_{wine_bridge_port}"):
+            if new_acc_num and new_acc_pass:
+                try:
+                    r_log = requests.get(
+                        f"http://127.0.0.1:{wine_bridge_port}/login?login={new_acc_num}&password={new_acc_pass}&server={new_acc_srv}",
+                        timeout=5.0
+                    )
+                    d_log = r_log.json()
+                    if d_log.get("success"):
+                        st.success(f"Successfully connected to MT5 Account {new_acc_num} on {new_acc_srv}!")
+                        st.rerun()
+                    else:
+                        st.error(f"MT5 Login Error: {d_log.get('error', d_log.get('last_error', 'Failed to connect'))}")
+                except Exception as e:
+                    st.error(f"Bridge Request Error: {e}")
+            else:
+                st.warning("Please enter Account Number and Password.")
+    with col_l5:
+        st.write(" ")
+        st.write(" ")
+        if st.button("🧹 Clear History & Reset", use_container_width=True, key=f"btn_clear_{wine_bridge_port}"):
+            try:
+                for sym_item in st.session_state.markets.values():
+                    bot_obj = sym_item.get("bot")
+                    brk_obj = sym_item.get("broker")
+                    if bot_obj and hasattr(bot_obj, "cycle_history"):
+                        bot_obj.cycle_history = []
+                    if brk_obj and hasattr(brk_obj, "closed_trades"):
+                        brk_obj.closed_trades = []
+                        brk_obj.realized_pnl = 0.0
+                for sym_item in st.session_state.manual_markets.values():
+                    bot_obj = sym_item.get("bot")
+                    brk_obj = sym_item.get("broker")
+                    if bot_obj and hasattr(bot_obj, "cycle_history"):
+                        bot_obj.cycle_history = []
+                    if brk_obj and hasattr(brk_obj, "closed_trades"):
+                        brk_obj.closed_trades = []
+                        brk_obj.realized_pnl = 0.0
+                b_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), get_bot_state_filename())
+                m_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), get_manual_state_filename())
+                if os.path.exists(b_path): os.remove(b_path)
+                if os.path.exists(m_path): os.remove(m_path)
+                st.success("All trade history & cycle logs cleared successfully!")
+                st.rerun()
+            except Exception as reset_err:
+                st.error(f"Clear Error: {reset_err}")
 
 # Sync MT5 History & Active Orders/Positions across all brokers
 if MT5_AVAILABLE:
