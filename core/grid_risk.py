@@ -93,20 +93,21 @@ def enforce_profit_lock(self, current_price: float, timestamp: float) -> int:
     is_gold   = any(x in sym_name for x in ["XAU", "GOLD", "PAXG"])
     digits    = 3 if is_gold else (2 if "BTC" in sym_name else 5)
 
-    # Per-symbol defaults
-    if is_gold:
-        default_basket = 1.00
-        default_pos = 1.50
-    elif "BTC" in sym_name:
-        default_basket = 2.00
-        default_pos = 3.00
-    else:
-        default_basket = 0.50
-        default_pos = 0.80
+    # Fetch AI target and ATR for real-data gathering
+    state = compute_basket_state(self, current_price, timestamp)
+    atr_5m = state.get("atr_5m", current_price * 0.002)
 
-    # Dynamic configurable thresholds
-    min_basket_profit = float(getattr(self, "min_basket_profit", default_basket) or default_basket)
-    min_pos_profit    = float(getattr(self, "min_pos_profit", default_pos) or default_pos)
+    ai_target = 0.0
+    if hasattr(self, "last_auto_eval") and isinstance(self.last_auto_eval, dict):
+        ai_target = float(self.last_auto_eval.get("recommended_target_profit", 0.0))
+
+    if ai_target > 0:
+        min_basket_profit = ai_target * 0.50
+        min_pos_profit = max(ai_target * 0.35, atr_5m * 1.5)  # Require at least 1.5x ATR to avoid easy hunts
+    else:
+        # Fallback to ATR-based dynamic locks if AI is offline
+        min_basket_profit = atr_5m * 2.0
+        min_pos_profit = atr_5m * 1.5
     near_zero_floor   = 0.15
 
     actions = 0
@@ -140,18 +141,24 @@ def enforce_profit_lock(self, current_price: float, timestamp: float) -> int:
             else:
                 continue
 
-            # 1. Base Breakeven Lock (+1 pip)
-            lock_sl = round(entry + get_pip_size(sym_name, current_price) * 2 if "BUY" in pos_type else entry - get_pip_size(sym_name, current_price) * 2, digits)
+            # 1. Smarter Breakeven Buffer (ATR-based instead of 2 pips)
+            # Give it some breathing room below the noise floor to avoid easy hunts
+            be_buffer = max(get_pip_size(sym_name, current_price) * 5.0, atr_5m * 0.10)
+            if "BUY" in pos_type:
+                lock_sl = round(entry + be_buffer, digits)
+            else:
+                lock_sl = round(entry - be_buffer, digits)
             
-            # 2. Dynamic Profit Trail (Lock in 50% of peak profit)
-            # If the trade runs well into profit, don't let it drop all the way back to zero.
+            # 2. Dynamic Profit Trail (Chandelier ATR Trail for massive trends)
+            # Instead of locking 50%, tightly hug the price allowing 1.5x ATR breathing room
             if in_profit and pos_profit > (min_pos_profit * 1.5):
-                trail_amount = pos_profit * 0.50
                 if "BUY" in pos_type:
-                    dynamic_sl = round(entry + trail_amount, digits)
+                    dynamic_sl = round(current_price - (atr_5m * 1.5), digits)
+                    # SL never moves backwards
                     lock_sl = max(lock_sl, dynamic_sl)
                 else:
-                    dynamic_sl = round(entry - trail_amount, digits)
+                    dynamic_sl = round(current_price + (atr_5m * 1.5), digits)
+                    # SL never moves backwards
                     lock_sl = min(lock_sl, dynamic_sl)
             
             if "BUY" in pos_type:
@@ -610,8 +617,9 @@ def check_target_profit(self, current_price: float, timestamp: float) -> Optiona
         sym_u = str(getattr(self.broker, "symbol", getattr(self, "symbol_code", ""))).upper()
         # Use user-configured target profit, otherwise use default
         default_target = 10.0 if any(x in sym_u for x in ["XAU", "GOLD", "PAXG"]) else 3.0
+        ai_target = float(getattr(self, "deploy_target_profit", 0.0) or 0.0)
         user_target = float(getattr(self, "target_profit", 0.0) or 0.0)
-        cycle_target = user_target if user_target > 0 else default_target
+        cycle_target = ai_target if ai_target > 0 else (user_target if user_target > 0 else default_target)
         
         # Enforce minimum profit threshold
         effective_cycle_target = max(cycle_target, min_profit_threshold)
@@ -1021,6 +1029,10 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
                     self.last_auto_eval = eval_res
                     offset_pct = float(eval_res.get("buy_offset_pct", offset_pct) or offset_pct)
                     gap_pct = float(eval_res.get("dynamic_gap_pct", gap_pct) or gap_pct)
+                    if "recommended_size" in eval_res:
+                        self.order_size = float(eval_res["recommended_size"])
+                    if "recommended_target_profit" in eval_res:
+                        self.deploy_target_profit = float(eval_res["recommended_target_profit"])
             except Exception as e:
                 import logging; logging.warning(f"Exception: {e}")
 
@@ -1070,17 +1082,11 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
             min_sl_dist = max(b_min_stop * 2.5, _point_alt * 50.0)
 
         acc_eq = self.broker.get_equity() if hasattr(self.broker, "get_equity") else 1000.0
-        base_cfg_levels = getattr(self, "grid_levels", 5) or 5
-        if acc_eq >= 10000.0:
-            effective_levels = min(7, max(3, base_cfg_levels))
-        elif acc_eq >= 5000.0:
-            effective_levels = min(6, max(3, base_cfg_levels))
-        elif acc_eq >= 2000.0:
-            effective_levels = min(5, max(3, base_cfg_levels))
-        elif acc_eq >= 1000.0:
-            effective_levels = min(4, max(3, base_cfg_levels))
+        if hasattr(self, "last_auto_eval") and isinstance(self.last_auto_eval, dict) and "recommended_levels" in self.last_auto_eval:
+            effective_levels = int(self.last_auto_eval["recommended_levels"])
         else:
-            effective_levels = 3
+            base_cfg_levels = getattr(self, "grid_levels", 5) or 5
+            effective_levels = base_cfg_levels
 
         dyn_tp_factor = max(3.0, float(effective_levels * 1.0))
         calculated_dynamic_tp = gap_val * dyn_tp_factor
@@ -1170,9 +1176,9 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
         ranging_mode     = place_buy  and place_sell      # Both sides = choppy
 
         # 3. Chop Restriction (Limit Exposure in Ranging Markets)
-        # Only risk 2 levels in the chop to avoid severe whipsaws.
+        # Only risk 1 level in the chop to avoid severe whipsaws (1 trap per side).
         if ranging_mode:
-            effective_levels = min(effective_levels, 2)
+            effective_levels = 1
 
         # Boost TP by 1.5x in directional modes — we're riding the full trend move
         if directional_sell or directional_buy:
@@ -1190,6 +1196,9 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
         cumulative_gap = 0.0
         expansion_factor = 1.30
 
+        self.active_buy_levels = []
+        self.active_sell_levels = []
+
         for i in range(effective_levels):
             buy_size  = self.calculate_level_size(self.order_size, self.order_size_multiplier, i)
             sell_size = self.calculate_level_size(self.order_size, self.order_size_multiplier, i)
@@ -1199,6 +1208,7 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
                 # 1. SELL_LIMIT ABOVE price → sells the bounce at resistance (TOP)
                 #    Best entry price, highest profit if price rejects from top
                 sell_limit_px = round(ask_ref + base_start_offset + cumulative_gap, digits)
+                self.active_sell_levels.append(sell_limit_px)
                 sell_limit_tp = round(sell_limit_px - dir_tp_dist, digits)
                 sell_limit_sl = round(sell_limit_px + min_sl_dist, digits)
                 try:
@@ -1212,6 +1222,7 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
                 # 2. SELL_STOP BELOW price → sells the breakdown continuation (BOTTOM)
                 #    Catches the move if price skips the top and breaks straight down
                 sell_stop_px = round(bid_ref - base_start_offset - cumulative_gap, digits)
+                self.active_sell_levels.append(sell_stop_px)
                 sell_stop_tp = round(sell_stop_px - dir_tp_dist, digits)
                 sell_stop_sl = round(sell_stop_px + min_sl_dist, digits)
                 try:
@@ -1227,6 +1238,7 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
                 # 1. BUY_LIMIT BELOW price → buys the dip at support (BOTTOM)
                 #    Best entry price, highest profit if price bounces from bottom
                 buy_limit_px = round(bid_ref - base_start_offset - cumulative_gap, digits)
+                self.active_buy_levels.append(buy_limit_px)
                 buy_limit_tp = round(buy_limit_px + dir_tp_dist, digits)
                 buy_limit_sl = round(buy_limit_px - min_sl_dist, digits)
                 try:
@@ -1240,6 +1252,7 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
                 # 2. BUY_STOP ABOVE price → buys the breakout continuation (TOP)
                 #    Catches the move if price skips the bottom and breaks straight up
                 buy_stop_px = round(ask_ref + base_start_offset + cumulative_gap, digits)
+                self.active_buy_levels.append(buy_stop_px)
                 buy_stop_tp = round(buy_stop_px + dir_tp_dist, digits)
                 buy_stop_sl = round(buy_stop_px - min_sl_dist, digits)
                 try:
@@ -1253,6 +1266,7 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
             else:
                 # ── RANGING mode — BUY_STOP + SELL_STOP breakout grid (unchanged) ──
                 buy_px  = round(ask_ref + base_start_offset + cumulative_gap, digits)
+                self.active_buy_levels.append(buy_px)
                 buy_tp  = round(buy_px + min_tp_dist, digits)
                 buy_sl  = round(buy_px - min_sl_dist, digits)
                 try:
@@ -1262,6 +1276,7 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
                     print(f"[{sym_name}] BUY_STOP L{i} error: {e}")
 
                 sell_px = round(bid_ref - base_start_offset - cumulative_gap, digits)
+                self.active_sell_levels.append(sell_px)
                 sell_tp = round(sell_px - min_tp_dist, digits)
                 sell_sl = round(sell_px + min_sl_dist, digits)
                 try:
@@ -1281,6 +1296,8 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
         if placed_count > 0 or len(self.broker.pending_orders) > 0:
             self.deployed = True
             self.deploy_price = current_price  # Store deploy center for stale order cleanup
+            self.deploy_grid_gap = gap_val
+            self.deploy_trap_offset = buy_offset_val
             self.last_deploy_time = timestamp
             print(f"[{sym_name}] ⚡ [GRID DEPLOYED] {placed_count} Traps @ ${current_price:,.2f} | Gap: ${gap_val:.2f} | Offset: ${buy_offset_val:.2f} | Lot: {self.order_size}")
         else:
@@ -1342,8 +1359,13 @@ def cleanup_stale_grid_orders(self, current_price: float) -> int:
 
     tolerance = max(gap_val * 1.5, center_price * 0.005)
 
-    valid_buy_levels = [center_price + buy_offset_val + (i * gap_val) for i in range(self.grid_levels)]
-    valid_sell_levels = [center_price - sell_offset_val - (i * gap_val) for i in range(self.grid_levels)]
+    valid_buy_levels = getattr(self, "active_buy_levels", [])
+    valid_sell_levels = getattr(self, "active_sell_levels", [])
+    
+    if not valid_buy_levels and not valid_sell_levels:
+        # Fallback if somehow not deployed properly
+        valid_buy_levels = [center_price + buy_offset_val + (i * gap_val) for i in range(20)]
+        valid_sell_levels = [center_price - sell_offset_val - (i * gap_val) for i in range(20)]
 
     cancelled_ids = []
 
@@ -1354,9 +1376,9 @@ def cleanup_stale_grid_orders(self, current_price: float) -> int:
         if self.deployed and order_age < 300.0:
             continue
 
-        if order.type == "BUY_STOP":
+        if "BUY" in order.type:
             valid_levels = valid_buy_levels
-        elif order.type == "SELL_STOP":
+        elif "SELL" in order.type:
             valid_levels = valid_sell_levels
         else:
             continue
@@ -1373,12 +1395,12 @@ def cleanup_stale_grid_orders(self, current_price: float) -> int:
     for order_id, order in list(self.broker.pending_orders.items()):
         if order_id in cancelled_ids:
             continue
-        if order.type == "BUY_STOP":
+        if "BUY" in order.type:
             for lvl in valid_buy_levels:
                 if abs(order.trigger_price - lvl) < tolerance:
                     buy_groups[round(lvl, 8)].append((order_id, order))
                     break
-        elif order.type == "SELL_STOP":
+        elif "SELL" in order.type:
             for lvl in valid_sell_levels:
                 if abs(order.trigger_price - lvl) < tolerance:
                     sell_groups[round(lvl, 8)].append((order_id, order))
@@ -1614,9 +1636,17 @@ def trail_stop_loss_5m_structure(self, current_price: float, timestamp: float) -
         adx_5m = _trend_cache["adx"]
         ci_5m = _trend_cache["ci"]
 
-    # Trend is confirmed only when ADX shows strength AND choppiness is low
-    trend_confirmed_bull = (trend_5m == "BULLISH" and adx_5m >= 20.0 and ci_5m <= 55.0)
-    trend_confirmed_bear = (trend_5m == "BEARISH" and adx_5m >= 20.0 and ci_5m <= 55.0)
+    # Use Auto Mode's trend if available, otherwise fallback to 5m trend.
+    auto_mode = getattr(self, "unidirectional_mode", "DUAL")
+    if auto_mode == "BUY_ONLY":
+        trend_confirmed_bull = True
+        trend_confirmed_bear = False
+    elif auto_mode == "SELL_ONLY":
+        trend_confirmed_bull = False
+        trend_confirmed_bear = True
+    else:
+        trend_confirmed_bull = (trend_5m == "BULLISH")
+        trend_confirmed_bear = (trend_5m == "BEARISH")
 
     # ── Step 4: Calculate 5m swing structure levels ──
     # Use last 8 candles (40 min) for swing structure — wide enough to find real structure

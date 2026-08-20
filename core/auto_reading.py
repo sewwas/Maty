@@ -351,7 +351,6 @@ class AutoReadingEngine:
                     self._pending_unidirectional_count = 1
 
                 # Only switch if we've been out of the old trend for 180s (3m) AND the new trend is stable for at least 5 engine ticks
-                # Reduced from 900s to 180s so the bot doesn't get trapped fighting a violent reversal
                 if (now_ts - self._last_unidirectional_ts >= 180.0) and self._pending_unidirectional_count >= 5:
                     self._last_unidirectional_mode = unidirectional_mode
                     self._last_unidirectional_ts = now_ts
@@ -389,14 +388,21 @@ class AutoReadingEngine:
         stop_loss = max(25.0, round(account_equity * 0.10, 2))
         lot_multiplier = 1.25
         max_levels = 10
+        if regime == "TRENDING":
+            max_levels = 12
+            lot_multiplier = 1.35
+        elif regime == "RANGING":
+            max_levels = 8
+            lot_multiplier = 1.15
+            
+        if unidirectional_mode == "DUAL":
+            max_levels = 1
 
         base_gap = 0.05
         base_offset = 0.02
 
         if regime == "RANGING":
-            regime_gap_mult = 0.65
-        elif regime == "TRENDING":
-            regime_gap_mult = 0.90
+            regime_gap_mult = 0.85
         else:
             regime_gap_mult = 1.20
 
