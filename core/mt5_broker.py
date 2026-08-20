@@ -211,8 +211,11 @@ class MT5Broker:
         if exness_sym.endswith("c"):
             return True
         acc = self.get_account_info()
-        if acc and hasattr(acc, "currency") and ("USC" in str(acc.currency).upper() or "EUOC" in str(acc.currency).upper()):
-            return True
+        if acc and hasattr(acc, "currency"):
+            c_str = str(acc.currency).upper().strip()
+            # Explicit cent account currencies. Note: USDC is USD Coin (Standard $1 account), NOT a cent account!
+            if c_str in ("USC", "EUOC", "USCENT", "EURCENT") or c_str == "USC":
+                return True
         return False
 
     @property

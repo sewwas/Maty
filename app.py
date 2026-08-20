@@ -578,8 +578,8 @@ st.markdown(f"""
     </div>
     <div style="font-size: 0.82rem; color: #a1a1aa;">
         <span><strong>Status:</strong> {conn_status}</span> &nbsp;·&nbsp;
-        <span><strong>MT5 Account:</strong> {acc_num}</span> &nbsp;·&nbsp;
-        <span><strong>Equity:</strong> ${equity_val:,.2f}</span>
+        <span><strong>MT5 Account:</strong> {acc_num} ({acc_currency})</span> &nbsp;·&nbsp;
+        <span><strong>Equity:</strong> ${equity_val:,.2f} {acc_currency}</span>
     </div>
 </div>
 """, unsafe_allow_html=True)
