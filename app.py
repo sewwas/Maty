@@ -506,6 +506,8 @@ if not wine_bridge_port:
     except Exception:
         wine_bridge_port = "8001"
 
+os.environ["WINE_BRIDGE_PORT"] = wine_bridge_port
+
 wine_acc = None
 try:
     r_bridge = requests.get(f"http://127.0.0.1:{wine_bridge_port}/account", timeout=2.0)
@@ -582,8 +584,13 @@ st.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 
-with st.expander("⚙️ Account & History Settings (Click to Expand)", expanded=False):
-    col_l1, col_l2, col_l3, col_l4, col_l5 = st.columns([2, 2, 2, 2, 2])
+with st.expander("⚙️ Account & History Settings (1 MT5 Account per Bot Limit)", expanded=False):
+    cur_bot_num = "1" if wine_bridge_port == "8001" else "2"
+    st.info(
+        f"🛡️ **1 MT5 Account Isolation Guard**: Active Bot Dashboard is routing via **Bridge Port {wine_bridge_port}** (Bot #{cur_bot_num}). "
+        f"Each bot instance MUST connect to a separate, unique MT5 account number to prevent order collision and margin cross-pollution."
+    )
+    col_l1, col_l2, col_l3, col_l4, col_l5 = st.columns([2, 2, 2, 2.2, 1.8])
     with col_l1:
         new_acc_num = st.text_input("MT5 Account Login Number", value="", placeholder="e.g. 257515247", key=f"login_num_{wine_bridge_port}")
     with col_l2:
@@ -595,21 +602,44 @@ with st.expander("⚙️ Account & History Settings (Click to Expand)", expanded
         st.write(" ")
         if st.button("🚀 Connect MT5 Account", use_container_width=True, key=f"btn_conn_{wine_bridge_port}"):
             if new_acc_num and new_acc_pass:
+                # 1. Enforce 1 Account Limit per Bot (Cross-Bridge Check)
+                target_port = int(wine_bridge_port)
+                other_port = 8002 if target_port == 8001 else 8001
+                other_bot_num = "2" if other_port == 8002 else "1"
+                
+                is_conflict = False
                 try:
-                    r_log = requests.get(
-                        f"http://127.0.0.1:{wine_bridge_port}/login?login={new_acc_num}&password={new_acc_pass}&server={new_acc_srv}",
-                        timeout=5.0
+                    r_other = requests.get(f"http://127.0.0.1:{other_port}/account", timeout=1.5)
+                    if r_other.status_code == 200:
+                        d_other = r_other.json()
+                        other_login = d_other.get("login")
+                        if d_other.get("connected") and str(other_login).strip() == str(new_acc_num).strip():
+                            is_conflict = True
+                except Exception:
+                    pass
+                
+                if is_conflict:
+                    st.error(
+                        f"⛔ **Account Limit Exceeded**: Account `{new_acc_num}` is ALREADY linked to Bot #{other_bot_num} (Port {other_port}). "
+                        f"Each bot instance must use a separate, unique MT5 account."
                     )
-                    d_log = r_log.json()
-                    if d_log.get("success"):
-                        st.success(f"Successfully connected to MT5 Account {new_acc_num} on {new_acc_srv}!")
-                        st.rerun()
-                    else:
-                        st.error(f"MT5 Login Error: {d_log.get('error', d_log.get('last_error', 'Failed to connect'))}")
-                except Exception as e:
-                    st.error(f"Bridge Request Error: {e}")
+                else:
+                    try:
+                        r_log = requests.get(
+                            f"http://127.0.0.1:{wine_bridge_port}/login?login={new_acc_num.strip()}&password={new_acc_pass.strip()}&server={new_acc_srv.strip()}",
+                            timeout=5.0
+                        )
+                        d_log = r_log.json()
+                        if d_log.get("success"):
+                            st.success(f"✅ Successfully linked MT5 Account {new_acc_num} to Bot #{cur_bot_num} (Port {wine_bridge_port})!")
+                            st.rerun()
+                        else:
+                            err_msg = d_log.get('error', d_log.get('last_error', 'Failed to connect'))
+                            st.error(f"⛔ MT5 Login Error: {err_msg}")
+                    except Exception as e:
+                        st.error(f"Bridge Request Error: {e}")
             else:
-                st.warning("Please enter Account Number and Password.")
+                st.warning("Please enter both MT5 Account Number and Password.")
     with col_l5:
         st.write(" ")
         st.write(" ")
