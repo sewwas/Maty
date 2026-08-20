@@ -592,11 +592,18 @@ def check_target_profit(self, current_price: float, timestamp: float) -> Optiona
     # ─────────────────────────────────────────────────────────────
     # Cycle Max Drawdown (Hard Stop Loss)
     # ─────────────────────────────────────────────────────────────
-    max_cycle_dd = float(getattr(self, "max_cycle_drawdown", 30.0) or 30.0)
-    if total_pnl <= -abs(max_cycle_dd):
-        exit_triggered = True
-        exit_reason = "BOT_CLOSE"
-        print(f"[{self.symbol}] 🛑 [MAX DRAWDOWN HIT] Cycle PnL {total_pnl:.2f} <= -{max_cycle_dd:.2f}. Forcing market close.")
+    is_manual = getattr(self, "manual_override_active", False)
+    
+    if not is_manual:
+        max_cycle_dd = float(getattr(self, "max_cycle_drawdown", 30.0) or 30.0)
+        if total_pnl <= -abs(max_cycle_dd):
+            exit_triggered = True
+            exit_reason = "BOT_CLOSE"
+            print(f"[{self.symbol}] 🛑 [MAX DRAWDOWN HIT] Cycle PnL {total_pnl:.2f} <= -{max_cycle_dd:.2f}. Forcing market close.")
+    else:
+        # In manual mode, we do NOT enforce the hardcoded auto max drawdown. 
+        # The user's manual SL/TP parameters or manual closures govern risk.
+        pass
 
     # ─────────────────────────────────────────────────────────────
     # Standard Stop Loss
