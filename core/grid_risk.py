@@ -650,9 +650,22 @@ def check_target_profit(self, current_price: float, timestamp: float) -> Optiona
                 print(f"[{sym_u}] 🔄 [TREND REVERSAL] Mode changed from BUY to {auto_uni}. Securing +${total_pnl:.2f} early!")
 
         if not exit_triggered and not is_runner_active and total_pnl >= effective_cycle_target:
-            exit_triggered = True
-            exit_reason = "TARGET_PROFIT"
-            print(f"[{sym_u}] 💰 [CYCLE TP HIT] Basket reached peak target of ${effective_cycle_target:.2f} (Total PnL: ${total_pnl:.2f})!")
+            # Smart Trend Hold: Don't close the basket if the trend is strongly in our favor!
+            has_sells = any("SELL" in str(getattr(p, "type", "")).upper() for p in self.broker.open_positions.values())
+            has_buys  = any("BUY"  in str(getattr(p, "type", "")).upper() for p in self.broker.open_positions.values())
+            
+            trend_agrees = False
+            if has_buys and not has_sells and "BUY" in auto_uni:
+                trend_agrees = True
+            elif has_sells and not has_buys and "SELL" in auto_uni:
+                trend_agrees = True
+                
+            if trend_agrees:
+                print(f"[{sym_u}] 📈 [TREND HOLD] Target ${effective_cycle_target:.2f} met, but trend is {auto_uni}! Letting Profit Engine trail.")
+            else:
+                exit_triggered = True
+                exit_reason = "TARGET_PROFIT"
+                print(f"[{sym_u}] 💰 [CYCLE TP HIT] Basket reached peak target of ${effective_cycle_target:.2f} (Total PnL: ${total_pnl:.2f})!")
 
     if exit_triggered:
         print(f"[{self.symbol}] 🎯 [PROFIT TAKING EXIT] {exit_reason} met! Net PnL: ${total_pnl:+.2f} USD")
