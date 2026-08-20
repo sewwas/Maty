@@ -930,7 +930,11 @@ with tab_desk:
                     e_col1, e_col2 = st.columns(2, vertical_alignment="bottom")
                     with e_col1:
                         if not is_run:
-                            if st.button("▶ START BOT", key=f"btn_start_{sym_code}", type="primary", use_container_width=True):
+                            man_sym_data = st.session_state.manual_markets.get(sym_code)
+                            is_man_active = False
+                            if man_sym_data and man_sym_data.get("broker"):
+                                is_man_active = len(man_sym_data["broker"].open_positions) > 0 or len(man_sym_data["broker"].pending_orders) > 0
+                            if st.button("▶ START BOT", key=f"btn_start_{sym_code}", type="primary", use_container_width=True, disabled=is_man_active, help="Disabled because Manual mode is active on this pair" if is_man_active else ""):
                                 m_data["running"] = True
                                 bot.auto_restart = True
                                 live_px = get_live_price(sym_code) or sym_p
@@ -1950,24 +1954,30 @@ with tab_manual:
 
             # Removed Adaptive Gap Control because Manual bot is 100% manual
 
+            auto_sym_data = st.session_state.markets.get(man_sym)
+            is_auto_active = auto_sym_data.get("running", False) if auto_sym_data else False
+            
             st.markdown("#### 🚀 Deploy")
+            if is_auto_active:
+                st.warning("⚠️ Auto Mode is currently active on this pair. Please stop Auto Mode first to deploy manual grids.")
+                
             d_col1, d_col2, d_col3 = st.columns(3)
             with d_col1:
-                if st.button("BUY GRID", type="primary", key="man_buy_btn", use_container_width=True):
+                if st.button("BUY GRID", type="primary", key="man_buy_btn", use_container_width=True, disabled=is_auto_active):
                     bot.pending_order_side_mode = "BUY_ONLY"
                     try: bot.deploy_traps(sym_p, time.time(), force=True)
                     except Exception as e: import logging; logging.warning(f"Exception: {e}")
                     st.toast("Manual BUY Grid Deployed!")
                     st.rerun()
             with d_col2:
-                if st.button("SELL GRID", type="primary", key="man_sell_btn", use_container_width=True):
+                if st.button("SELL GRID", type="primary", key="man_sell_btn", use_container_width=True, disabled=is_auto_active):
                     bot.pending_order_side_mode = "SELL_ONLY"
                     try: bot.deploy_traps(sym_p, time.time(), force=True)
                     except Exception as e: import logging; logging.warning(f"Exception: {e}")
                     st.toast("Manual SELL Grid Deployed!")
                     st.rerun()
             with d_col3:
-                if st.button("DUAL GRID", key="man_dual_btn", use_container_width=True):
+                if st.button("DUAL GRID", key="man_dual_btn", use_container_width=True, disabled=is_auto_active):
                     bot.pending_order_side_mode = "BOTH_SIDES"
                     try: bot.deploy_traps(sym_p, time.time(), force=True)
                     except Exception as e: import logging; logging.warning(f"Exception: {e}")
