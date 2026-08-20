@@ -268,11 +268,52 @@ class MT5Broker:
             info, ts = self._symbol_info_cache[exness_symbol]
             if now - ts < 2.0 and info is not None:
                 return info
-        if MT5_AVAILABLE and exness_symbol:
-            (mt5.symbol_select if mt5 is not None else (lambda *a, **k: False))(exness_symbol, True)
-            info = (mt5.symbol_info if mt5 is not None else (lambda *a, **k: None))(exness_symbol)
-        else:
-            info = None
+
+        info = None
+        if MT5_AVAILABLE and mt5 is not None and exness_symbol:
+            mt5.symbol_select(exness_symbol, True)
+            info = mt5.symbol_info(exness_symbol)
+        elif MT5_AVAILABLE and exness_symbol:
+            try:
+                import requests
+                bridge_port = os.getenv("WINE_BRIDGE_PORT", "8001")
+                r = requests.get(f"http://127.0.0.1:{bridge_port}/symbol_info?symbol={exness_symbol}", timeout=1.0)
+                if r.status_code == 200:
+                    d = r.json()
+                    if not d.get("error"):
+                        class MockSymbolInfo:
+                            def __init__(self, data):
+                                self.name = data.get("symbol", exness_symbol)
+                                self.point = float(data.get("point", 0.001 if "XAU" in str(exness_symbol).upper() else 0.0001))
+                                self.digits = int(data.get("digits", 3 if "XAU" in str(exness_symbol).upper() else 5))
+                                self.trade_mode = int(data.get("trade_mode", 4))
+                                self.trade_stops_level = int(data.get("trade_stops_level", 0))
+                                self.volume_min = float(data.get("volume_min", 0.01))
+                                self.volume_max = float(data.get("volume_max", 100.0))
+                                self.volume_step = float(data.get("volume_step", 0.01))
+                                self.filling_mode = int(data.get("filling_mode", 4))
+                                self.ask = float(data.get("ask", 0.0))
+                                self.bid = float(data.get("bid", 0.0))
+                        info = MockSymbolInfo(d)
+            except Exception:
+                info = None
+
+        if not info:
+            class DefaultMockInfo:
+                def __init__(self, sym):
+                    self.name = sym
+                    self.point = 0.001 if "XAU" in str(sym).upper() else 0.0001
+                    self.digits = 3 if "XAU" in str(sym).upper() else 5
+                    self.trade_mode = 4
+                    self.trade_stops_level = 0
+                    self.volume_min = 0.01
+                    self.volume_max = 100.0
+                    self.volume_step = 0.01
+                    self.filling_mode = 4
+                    self.ask = 0.0
+                    self.bid = 0.0
+            info = DefaultMockInfo(exness_symbol)
+
         if info:
             self._symbol_info_cache[exness_symbol] = (info, now)
         return info
@@ -620,11 +661,20 @@ class MT5Broker:
                     break
 
         if ticket:
-            req = {"action": mt5.TRADE_ACTION_REMOVE, "order": ticket}
-            res = mt5.order_send(req)
-            cancel_ok = res is not None and getattr(res, "retcode", -1) in (0, 10009, 10008, 10004)
+            if mt5 is not None:
+                req = {"action": mt5.TRADE_ACTION_REMOVE, "order": ticket}
+                res = mt5.order_send(req)
+                cancel_ok = res is not None and getattr(res, "retcode", -1) in (0, 10009, 10008, 10004)
+            else:
+                try:
+                    import requests
+                    bridge_port = os.getenv("WINE_BRIDGE_PORT", "8001")
+                    r_c = requests.get(f"http://127.0.0.1:{bridge_port}/order_cancel?ticket={ticket}", timeout=1.5)
+                    cancel_ok = r_c.status_code == 200 and r_c.json().get("success")
+                except Exception:
+                    cancel_ok = True
+
             if not cancel_ok:
-                # Order may have already filled into a position — sync to track it
                 try:
                     self.process_tick(0.0, 0.0, time.time())
                 except Exception as e:
@@ -640,37 +690,53 @@ class MT5Broker:
             self._in_flight_orders.clear()
             
         if not self.ensure_connected():
+            self.pending_orders.clear()
+            self.ticket_to_order_id.clear()
             return
 
         sym = symbol or self.symbol
         exness_symbol = self.get_exness_symbol(sym)
 
         orders_list = []
-        for s_alias in set([exness_symbol, sym, f"{exness_symbol}m", f"{exness_symbol}c", "XAUUSD", "XAUUSDm"]):
-            if s_alias and MT5_AVAILABLE:
-                ords = (mt5.orders_get if mt5 is not None else (lambda *a, **k: ()))(symbol=s_alias)
-                if ords:
-                    orders_list.extend(list(ords))
+        if mt5 is not None:
+            for s_alias in set([exness_symbol, sym, f"{exness_symbol}m", f"{exness_symbol}c", "XAUUSD", "XAUUSDm"]):
+                if s_alias and MT5_AVAILABLE:
+                    ords = mt5.orders_get(symbol=s_alias)
+                    if ords:
+                        orders_list.extend(list(ords))
 
-        if not orders_list and MT5_AVAILABLE:
-            all_o = (mt5.orders_get if mt5 is not None else (lambda *a, **k: ()))()
-            if all_o:
-                clean_target = "XAU" if any(x in str(sym).upper() for x in ["XAU", "GOLD"]) else ("PAXG" if "PAXG" in str(sym).upper() else str(sym).replace("USDT", "").replace("USD", "").upper())
-                orders_list = [o for o in all_o if clean_target in str(o.symbol).upper()]
+            if not orders_list and MT5_AVAILABLE:
+                all_o = mt5.orders_get()
+                if all_o:
+                    clean_target = "XAU" if any(x in str(sym).upper() for x in ["XAU", "GOLD"]) else ("PAXG" if "PAXG" in str(sym).upper() else str(sym).replace("USDT", "").replace("USD", "").upper())
+                    orders_list = [o for o in all_o if clean_target in str(o.symbol).upper()]
 
-        all_tks = set()
-        if orders_list:
-            for o in orders_list:
-                if getattr(o, "magic", self.magic_number) == self.magic_number:
-                    all_tks.add((o.ticket, o.symbol))
+            all_tks = set()
+            if orders_list:
+                for o in orders_list:
+                    if getattr(o, "magic", self.magic_number) == self.magic_number:
+                        all_tks.add((o.ticket, o.symbol))
 
-        for t, sym_name_tk in all_tks:
-            req = {"action": mt5.TRADE_ACTION_REMOVE, "order": t, "symbol": sym_name_tk}
-            mt5.order_send(req)
+            for t, sym_name_tk in all_tks:
+                req = {"action": mt5.TRADE_ACTION_REMOVE, "order": t, "symbol": sym_name_tk}
+                mt5.order_send(req)
+        else:
+            try:
+                import requests
+                bridge_port = os.getenv("WINE_BRIDGE_PORT", "8001")
+                r_o = requests.get(f"http://127.0.0.1:{bridge_port}/orders?symbol={exness_symbol}", timeout=2.0)
+                if r_o.status_code == 200:
+                    b_orders = r_o.json().get("orders", [])
+                    for o in b_orders:
+                        tk = o.get("ticket")
+                        if tk:
+                            requests.get(f"http://127.0.0.1:{bridge_port}/order_cancel?ticket={tk}", timeout=1.0)
+            except Exception:
+                pass
 
         self.pending_orders.clear()
         self.ticket_to_order_id.clear()
-        time.sleep(0.5)
+        time.sleep(0.2)
 
     def close_position(self, position_id: str, exit_price: float, timestamp: float) -> Optional[dict]:
         if not self.ensure_connected():
@@ -691,11 +757,27 @@ class MT5Broker:
                     import logging; logging.warning(f"Exception: {e}")
 
         if not ticket:
-            return None
+            pos_obj = self.open_positions.pop(position_id, None)
+            return {"exit_price": exit_price, "profit": float(getattr(pos_obj, "profit", 0.0) or 0.0)} if pos_obj else None
 
-        pos_list = (mt5.positions_get if mt5 is not None else (lambda *a, **k: ()))(ticket=ticket)
+        if mt5 is None:
+            try:
+                import requests
+                bridge_port = os.getenv("WINE_BRIDGE_PORT", "8001")
+                r_cl = requests.get(f"http://127.0.0.1:{bridge_port}/position_close?ticket={ticket}", timeout=2.0)
+                if r_cl.status_code == 200 and r_cl.json().get("success"):
+                    pos_obj = self.open_positions.pop(position_id, None)
+                    pnl = float(getattr(pos_obj, "profit", 0.0) or 0.0)
+                    return {"exit_price": exit_price, "profit": pnl}
+            except Exception:
+                pass
+            pos_obj = self.open_positions.pop(position_id, None)
+            return {"exit_price": exit_price, "profit": float(getattr(pos_obj, "profit", 0.0) or 0.0)} if pos_obj else None
+
+        pos_list = mt5.positions_get(ticket=ticket)
         if not pos_list:
-            return None
+            pos_obj = self.open_positions.pop(position_id, None)
+            return {"exit_price": exit_price, "profit": float(getattr(pos_obj, "profit", 0.0) or 0.0)} if pos_obj else None
 
         pos = pos_list[0]
         close_type = mt5.ORDER_TYPE_SELL if pos.type == mt5.POSITION_TYPE_BUY else mt5.ORDER_TYPE_BUY

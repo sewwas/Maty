@@ -728,7 +728,11 @@ def process_engine_tick(self, previous_price: float, current_price: float, times
 
             # ── Check pending orders ──
             if hasattr(self.broker, "pending_orders") and hasattr(self.broker, "ticket_to_order_id"):
-                mt5_o = mt5_tick_check.orders_get(symbol=ex_s) if mt5_tick_check else None
+                try:
+                    import MetaTrader5 as mt5_tick_check
+                    mt5_o = (mt5_tick_check.orders_get if hasattr(mt5_tick_check, "orders_get") else lambda *a, **k: None)(symbol=ex_s)
+                except Exception:
+                    mt5_o = None
                 if mt5_o:
                     has_orders = True
                     self.deployed = True
@@ -740,23 +744,26 @@ def process_engine_tick(self, previous_price: float, current_price: float, times
                         self.broker.pending_orders[loc_o.order_id] = loc_o
 
             # ── CYCLE OVERLAP GUARD: also check MT5 live positions ──
-            # Even if local cache says 0, MT5 may still have positions from
-            # the closing cycle (broker cache lags by 1-2 ticks).
-            if not has_orders and mt5_tick_check:
-                mt5_p = mt5_tick_check.positions_get(symbol=ex_s)
-                if not mt5_p:
-                    # Fallback: search all positions for this symbol
-                    all_p = mt5_tick_check.positions_get()
-                    if all_p:
-                        clean_tgt = "XAU" if any(x in (ex_s or "").upper() for x in ["XAU", "GOLD"]) else (
-                            "PAXG" if "PAXG" in (ex_s or "").upper() else
-                            (ex_s or "").replace("USDT", "").replace("USD", "").upper()
-                        )
-                        mt5_p = [p for p in all_p if clean_tgt in str(p.symbol).upper()]
+            if not has_orders:
+                mt5_p = None
+                try:
+                    import MetaTrader5 as mt5_p_check
+                    if hasattr(mt5_p_check, "positions_get"):
+                        mt5_p = mt5_p_check.positions_get(symbol=ex_s)
+                        if not mt5_p:
+                            all_p = mt5_p_check.positions_get()
+                            if all_p:
+                                clean_tgt = "XAU" if any(x in (ex_s or "").upper() for x in ["XAU", "GOLD"]) else (
+                                    "PAXG" if "PAXG" in (ex_s or "").upper() else
+                                    (ex_s or "").replace("USDT", "").replace("USD", "").upper()
+                                )
+                                mt5_p = [p for p in all_p if clean_tgt in str(p.symbol).upper()]
+                except Exception:
+                    mt5_p = None
+
                 if mt5_p and len(mt5_p) > 0:
                     has_orders = True   # Lingering positions still open — do NOT redeploy
                     self.deployed = True
-                    # Re-sync local cache so next tick picks them up properly
                     try:
                         self.broker.process_tick(current_price, current_price, timestamp)
                     except Exception as e:
