@@ -1000,7 +1000,9 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
         gap_pct = float(getattr(self, "grid_gap", 0.07) or 0.07)
         offset_pct = float(getattr(self, "trap_offset", 0.07) or 0.07)
         
-        if hasattr(self, "auto_reading_engine"):
+        is_manual = getattr(self, "manual_override_active", False)
+
+        if not is_manual and hasattr(self, "auto_reading_engine"):
             try:
                 from core.data import get_historical_klines, calculate_technical_indicators
                 try:
@@ -1082,7 +1084,7 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
             min_sl_dist = max(b_min_stop * 2.5, _point_alt * 50.0)
 
         acc_eq = self.broker.get_equity() if hasattr(self.broker, "get_equity") else 1000.0
-        if hasattr(self, "last_auto_eval") and isinstance(self.last_auto_eval, dict) and "recommended_levels" in self.last_auto_eval:
+        if not is_manual and hasattr(self, "last_auto_eval") and isinstance(self.last_auto_eval, dict) and "recommended_levels" in self.last_auto_eval:
             effective_levels = int(self.last_auto_eval["recommended_levels"])
         else:
             base_cfg_levels = getattr(self, "grid_levels", 5) or 5
@@ -1129,7 +1131,7 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
 
         side_cfg = str(getattr(self, "pending_order_side_mode", "AUTO_ADAPTIVE")).upper()
         _auto_eval_decided = False
-        if side_cfg == "AUTO_ADAPTIVE" and hasattr(self, "last_auto_eval") and isinstance(self.last_auto_eval, dict):
+        if not is_manual and side_cfg == "AUTO_ADAPTIVE" and hasattr(self, "last_auto_eval") and isinstance(self.last_auto_eval, dict):
             auto_uni = str(self.last_auto_eval.get("unidirectional_mode", "AUTO")).upper()
             if "BUY" in auto_uni and "ONLY" in auto_uni:
                 side_cfg = "BUY_ONLY"
@@ -1151,10 +1153,14 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
             # AutoReadingEngine already evaluated — trust its decision, don't override
             place_buy, place_sell = True, True
         else:
-            # FALLBACK ONLY when AutoReadingEngine did NOT run (auto_reading disabled).
-            # Uses 5m/15m trend as a standalone direction filter.
-            if t_5m == "BULLISH" or (t_5m == "NEUTRAL" and t_15m == "BULLISH"):
-                place_buy, place_sell = True, False
+            if is_manual:
+                # In manual mode, if no side is explicitly selected, default to DUAL (no secret trend filtering)
+                place_buy, place_sell = True, True
+            else:
+                # FALLBACK ONLY when AutoReadingEngine did NOT run (auto_reading disabled).
+                # Uses 5m/15m trend as a standalone direction filter.
+                if t_5m == "BULLISH" or (t_5m == "NEUTRAL" and t_15m == "BULLISH"):
+                    place_buy, place_sell = True, False
             elif t_5m == "BEARISH" or (t_5m == "NEUTRAL" and t_15m == "BEARISH"):
                 place_buy, place_sell = False, True
             elif rsi_1m <= 38.0 and t_5m == "NEUTRAL" and t_15m == "NEUTRAL":
@@ -1177,7 +1183,7 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
 
         # 3. Chop Restriction (Limit Exposure in Ranging Markets)
         # Only risk 1 level in the chop to avoid severe whipsaws (1 trap per side).
-        if ranging_mode:
+        if ranging_mode and not is_manual:
             effective_levels = 1
 
         # Boost TP by 1.5x in directional modes — we're riding the full trend move
