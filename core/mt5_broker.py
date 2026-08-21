@@ -426,18 +426,75 @@ class MT5Broker:
 
     def place_order(self, order_type: str, price: float, size: float, timestamp: float, tp: float = 0.0, sl: float = 0.0) -> Any:
         from core.engine import Order
+        
+        if not self.ensure_connected():
+            if mt5 is not None:
+                raise RuntimeError("MT5 connection offline.")
+
+        exness_symbol = self.get_exness_symbol(self.symbol)
+        symbol_info = self.get_cached_symbol_info(exness_symbol)
+        if symbol_info is None:
+            if mt5 is not None:
+                raise RuntimeError(f"Symbol {exness_symbol} info not found.")
+            else:
+                class DummySym:
+                    point = 0.001
+                    digits = 3
+                    trade_stops_level = 0
+                symbol_info = DummySym()
+
+        if getattr(symbol_info, "trade_mode", 4) == 0:
+            if mt5 is not None:
+                raise TradeDisabledError(f"Exness server has disabled trading for {exness_symbol} on this account.")
+
+        point = symbol_info.point
+        stops_level = getattr(symbol_info, "trade_stops_level", 0) or 0
+        min_stop_dist = max(stops_level * point, point * 50.0)
+
+        if mt5 is not None:
+            tick = mt5.symbol_info_tick(exness_symbol)
+            ask = tick.ask if tick else price
+            bid = tick.bid if tick else price
+        else:
+            ask = price
+            bid = price
+
+        if order_type == "BUY_STOP":
+            mt5_type = mt5.ORDER_TYPE_BUY_STOP if mt5 is not None else 4
+            # BUY_STOP must be ABOVE current ask
+            trigger_price = price if price > (ask + min_stop_dist) else (ask + min_stop_dist)
+        elif order_type == "SELL_STOP":
+            mt5_type = mt5.ORDER_TYPE_SELL_STOP if mt5 is not None else 5
+            # SELL_STOP must be BELOW current bid
+            trigger_price = price if price < (bid - min_stop_dist) else (bid - min_stop_dist)
+        elif order_type == "BUY_LIMIT":
+            mt5_type = mt5.ORDER_TYPE_BUY_LIMIT if mt5 is not None else 2
+            # BUY_LIMIT must be BELOW current ask (buy when price drops to this level)
+            trigger_price = price if price < (ask - min_stop_dist) else (ask - min_stop_dist)
+        elif order_type == "SELL_LIMIT":
+            mt5_type = mt5.ORDER_TYPE_SELL_LIMIT if mt5 is not None else 3
+            # SELL_LIMIT must be ABOVE current bid (sell when price rises to this level)
+            trigger_price = price if price > (bid + min_stop_dist) else (bid + min_stop_dist)
+        else:
+            mt5_type = mt5.ORDER_TYPE_BUY_STOP if mt5 is not None else 4
+            trigger_price = price if price > (ask + min_stop_dist) else (ask + min_stop_dist)
+
         if mt5 is None:
             try:
                 import requests
+                import os
+                bridge_port = os.getenv("WINE_BRIDGE_PORT", "8001")
                 sl_val = max(0.0, float(sl or 0.0))
                 tp_val = max(0.0, float(tp or 0.0))
-                url = f"http://127.0.0.1:{bridge_port}/order_send?symbol={exness_symbol}&type={order_type}&price={price}&volume={size}&sl={sl_val}&tp={tp_val}&magic={self.magic_number}"
+                # Pass the dynamically adjusted trigger_price instead of the raw requested price
+                url = f"http://127.0.0.1:{bridge_port}/order_send?symbol={exness_symbol}&type={order_type}&price={round(trigger_price, symbol_info.digits)}&volume={size}&sl={sl_val}&tp={tp_val}&magic={self.magic_number}"
                 r_resp = requests.get(url, timeout=3.0)
                 if r_resp.status_code == 200:
                     data = r_resp.json()
                     if data.get("success"):
+                        import time
                         ticket = data.get("ticket", int(time.time()))
-                        loc_ord = Order(order_type, price, size, timestamp)
+                        loc_ord = Order(order_type, trigger_price, size, timestamp)
                         loc_ord.order_id = f"mt5_{ticket}"
                         loc_ord.broker_ticket = ticket
                         self.pending_orders[loc_ord.order_id] = loc_ord
@@ -448,45 +505,6 @@ class MT5Broker:
             except Exception as e:
                 print(f"[{self.symbol}] REST Bridge order_send exception: {e}")
             return None
-
-        if not self.ensure_connected():
-            raise RuntimeError("MT5 connection offline.")
-
-        exness_symbol = self.get_exness_symbol(self.symbol)
-        symbol_info = self.get_cached_symbol_info(exness_symbol)
-        if symbol_info is None:
-            raise RuntimeError(f"Symbol {exness_symbol} info not found.")
-
-        if getattr(symbol_info, "trade_mode", 4) == 0:
-            raise TradeDisabledError(f"Exness server has disabled trading for {exness_symbol} on this account.")
-
-        point = symbol_info.point
-        stops_level = getattr(symbol_info, "trade_stops_level", 0) or 0
-        min_stop_dist = max(stops_level * point, point * 50.0)
-
-        tick = mt5.symbol_info_tick(exness_symbol)
-        ask = tick.ask if tick else price
-        bid = tick.bid if tick else price
-
-        if order_type == "BUY_STOP":
-            mt5_type = mt5.ORDER_TYPE_BUY_STOP
-            # BUY_STOP must be ABOVE current ask
-            trigger_price = price if price > (ask + min_stop_dist) else (ask + min_stop_dist)
-        elif order_type == "SELL_STOP":
-            mt5_type = mt5.ORDER_TYPE_SELL_STOP
-            # SELL_STOP must be BELOW current bid
-            trigger_price = price if price < (bid - min_stop_dist) else (bid - min_stop_dist)
-        elif order_type == "BUY_LIMIT":
-            mt5_type = mt5.ORDER_TYPE_BUY_LIMIT
-            # BUY_LIMIT must be BELOW current ask (buy when price drops to this level)
-            trigger_price = price if price < (ask - min_stop_dist) else (ask - min_stop_dist)
-        elif order_type == "SELL_LIMIT":
-            mt5_type = mt5.ORDER_TYPE_SELL_LIMIT
-            # SELL_LIMIT must be ABOVE current bid (sell when price rises to this level)
-            trigger_price = price if price > (bid + min_stop_dist) else (bid + min_stop_dist)
-        else:
-            mt5_type = mt5.ORDER_TYPE_BUY_STOP
-            trigger_price = price if price > (ask + min_stop_dist) else (ask + min_stop_dist)
 
         digits = symbol_info.digits
         trigger_price = round(trigger_price, digits)
@@ -770,7 +788,7 @@ class MT5Broker:
                     r_c = requests.get(f"http://127.0.0.1:{bridge_port}/order_cancel?ticket={ticket}", timeout=1.5)
                     cancel_ok = r_c.status_code == 200 and r_c.json().get("success")
                 except Exception:
-                    cancel_ok = True
+                    cancel_ok = False
 
             if not cancel_ok:
                 try:
@@ -778,9 +796,10 @@ class MT5Broker:
                 except Exception as e:
                     import logging; logging.warning(f"Exception: {e}")
 
-        self.pending_orders.pop(order_id, None)
-        if ticket:
-            self.ticket_to_order_id.pop(ticket, None)
+        if cancel_ok or (ticket is None):
+            self.pending_orders.pop(order_id, None)
+            if ticket:
+                self.ticket_to_order_id.pop(ticket, None)
         return order
 
     def cancel_all_orders(self, symbol: Optional[str] = None):
@@ -869,8 +888,7 @@ class MT5Broker:
                     return {"exit_price": exit_price, "profit": pnl}
             except Exception:
                 pass
-            pos_obj = self.open_positions.pop(position_id, None)
-            return {"exit_price": exit_price, "profit": float(getattr(pos_obj, "profit", 0.0) or 0.0)} if pos_obj else None
+            return None
 
         pos_list = mt5.positions_get(ticket=ticket)
         if not pos_list:
@@ -986,7 +1004,7 @@ class MT5Broker:
                     r_m = requests.get(f"http://127.0.0.1:{bridge_port}/modify_sl_tp?ticket={ticket}&sl={final_sl}&tp={final_tp}", timeout=2.0)
                     is_ok = r_m.status_code == 200 and r_m.json().get("success")
                 except Exception:
-                    is_ok = True
+                    is_ok = False
             else:
                 req = {
                     "action": mt5.TRADE_ACTION_SLTP,
@@ -1070,7 +1088,7 @@ class MT5Broker:
                 r_pc = requests.get(f"http://127.0.0.1:{bridge_port}/position_close?ticket={ticket}&volume={close_vol}", timeout=3.0)
                 is_ok = r_pc.status_code == 200 and r_pc.json().get("success")
             except Exception:
-                is_ok = True
+                is_ok = False
         else:
             mt5_close_type = mt5.ORDER_TYPE_SELL if pos.type == mt5.POSITION_TYPE_BUY else mt5.ORDER_TYPE_BUY
             tick = mt5.symbol_info_tick(pos.symbol)
@@ -1179,8 +1197,6 @@ class MT5Broker:
                         return [{"position_id": "all", "pnl": 0.0, "side": side or "ALL"}]
             except Exception as e:
                 print(f"[MT5Broker] REST Bridge close_all exception: {e}")
-            self.open_positions.clear()
-            self.ticket_to_position_id.clear()
             return closed
 
         if symbol:
