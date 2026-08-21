@@ -189,13 +189,20 @@ class MT5BridgeHandler(BaseHTTPRequestHandler):
             if "symbol=" in self.path:
                 sym = self.path.split("symbol=")[1].split("&")[0]
             info = None
-            for s in [sym, f"{sym}m", f"{sym}c", f"{sym}.a"]:
-                if mt5.symbol_select(s, True):
-                    info = mt5.symbol_info(s)
-                    if info:
-                        break
+            tick = None
+            candidates = [sym, f"{sym}c", f"{sym}m", f"{sym}.a"]
+            if any(x in sym.upper() for x in ["XAU", "GOLD", "PAXG"]):
+                candidates.extend(["XAUUSDc", "XAUUSDm", "XAUUSD", "GOLD", "GOLDm"])
+            for s in candidates:
+                try:
+                    if mt5.symbol_select(s, True):
+                        info = mt5.symbol_info(s)
+                        tick = mt5.symbol_info_tick(s)
+                        if info and tick and tick.ask > 0:
+                            break
+                except Exception:
+                    pass
             if info:
-                tick = mt5.symbol_info_tick(info.name)
                 res = {
                     "symbol": info.name,
                     "point": getattr(info, "point", 0.001),
@@ -277,8 +284,10 @@ class MT5BridgeHandler(BaseHTTPRequestHandler):
                 order_type_str = params.get("type", "BUY_STOP").upper()
                 price = float(params.get("price", 0.0))
                 volume = float(params.get("volume", 0.01))
-                sl = float(params.get("sl", 0.0))
-                tp = float(params.get("tp", 0.0))
+                sl = float(params.get("sl", 0.0) or 0.0)
+                tp = float(params.get("tp", 0.0) or 0.0)
+                if sl < 0: sl = 0.0
+                if tp < 0: tp = 0.0
                 magic = int(params.get("magic", 998870))
 
                 type_map = {

@@ -100,27 +100,27 @@ class ManualGridBot(BreakoutGridBot):
                 if directional_sell:
                     sell_stop_px = round(bid_ref - base_start_offset - cumulative_gap, digits)
                     try:
-                        r = self.broker.place_order("SELL_STOP", sell_stop_px, sell_size, timestamp, tp=-1.0, sl=-1.0)
+                        r = self.broker.place_order("SELL_STOP", sell_stop_px, sell_size, timestamp, tp=0.0, sl=0.0)
                         if r: placed_count += 1
                     except Exception as e: print(f"[{sym_name}] SELL_STOP L{i} error: {e}")
 
                 elif directional_buy:
                     buy_stop_px = round(ask_ref + base_start_offset + cumulative_gap, digits)
                     try:
-                        r = self.broker.place_order("BUY_STOP", buy_stop_px, buy_size, timestamp, tp=-1.0, sl=-1.0)
+                        r = self.broker.place_order("BUY_STOP", buy_stop_px, buy_size, timestamp, tp=0.0, sl=0.0)
                         if r: placed_count += 1
                     except Exception as e: print(f"[{sym_name}] BUY_STOP L{i} error: {e}")
 
                 else:
                     buy_px  = round(ask_ref + base_start_offset + cumulative_gap, digits)
                     try:
-                        r = self.broker.place_order("BUY_STOP", buy_px, buy_size, timestamp, tp=-1.0, sl=-1.0)
+                        r = self.broker.place_order("BUY_STOP", buy_px, buy_size, timestamp, tp=0.0, sl=0.0)
                         if r: placed_count += 1
                     except Exception as e: print(f"[{sym_name}] BUY_STOP L{i} error: {e}")
 
                     sell_px = round(bid_ref - base_start_offset - cumulative_gap, digits)
                     try:
-                        r = self.broker.place_order("SELL_STOP", sell_px, sell_size, timestamp, tp=-1.0, sl=-1.0)
+                        r = self.broker.place_order("SELL_STOP", sell_px, sell_size, timestamp, tp=0.0, sl=0.0)
                         if r: placed_count += 1
                     except Exception as e: print(f"[{sym_name}] SELL_STOP L{i} error: {e}")
 
@@ -243,10 +243,12 @@ class ManualGridBot(BreakoutGridBot):
 
         # 2. Check Basket PNL Take Profit
         if current_open > 0:
-            total_pnl = self.broker.get_floating_pnl(current_price)
+            total_pnl_raw = self.broker.get_floating_pnl(current_price)
+            is_cent = getattr(self.broker, "is_cent_account", False)
+            total_pnl = (total_pnl_raw / 100.0) if is_cent else total_pnl_raw
             target_usd = float(getattr(self, "target_profit", 15.0))
             if target_usd > 0 and total_pnl >= target_usd:
-                print(f"[{self.symbol}] 🎯 [MANUAL TP HIT] Basket PNL ${total_pnl:.2f} >= Target ${target_usd:.2f}. Closing all & restarting.")
+                print(f"[{self.symbol}] 🎯 [MANUAL TP HIT] Basket PNL ${total_pnl:.2f} (raw={total_pnl_raw:.2f}) >= Target ${target_usd:.2f}. Closing all & restarting.")
                 try:
                     self.broker.close_all_positions(symbol=self.symbol)
                     self.broker.cancel_all_orders(symbol=self.symbol)

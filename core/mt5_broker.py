@@ -420,9 +420,9 @@ class MT5Broker:
         if mt5 is None:
             try:
                 import requests
-                bridge_port = os.getenv("WINE_BRIDGE_PORT", "8001")
-                exness_symbol = self.get_exness_symbol(self.symbol)
-                url = f"http://127.0.0.1:{bridge_port}/order_send?symbol={exness_symbol}&type={order_type}&price={price}&volume={size}&sl={sl}&tp={tp}&magic={self.magic_number}"
+                sl_val = max(0.0, float(sl or 0.0))
+                tp_val = max(0.0, float(tp or 0.0))
+                url = f"http://127.0.0.1:{bridge_port}/order_send?symbol={exness_symbol}&type={order_type}&price={price}&volume={size}&sl={sl_val}&tp={tp_val}&magic={self.magic_number}"
                 r_resp = requests.get(url, timeout=3.0)
                 if r_resp.status_code == 200:
                     data = r_resp.json()
