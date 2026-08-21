@@ -111,10 +111,10 @@ manual_hist_code = """
                 st.info("No manual trades closed yet.")
 """
 
-target_string = '''                    <tbody>{trap_rows}</tbody>
+target_string = """                    <tbody>{trap_rows}</tbody>
                   </table>
                 </div>
-                ''', unsafe_allow_html=True)'''
+                ''', unsafe_allow_html=True)"""
 
 code = code.replace(target_string, target_string + '\n' + manual_hist_code)
 
