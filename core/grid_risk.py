@@ -642,11 +642,33 @@ def check_target_profit(self, current_price: float, timestamp: float) -> Optiona
     is_manual = getattr(self, "manual_override_active", False)
     
     if not is_manual:
-        max_cycle_dd = float(getattr(self, "max_cycle_drawdown", 30.0) or 30.0)
-        if total_pnl <= -abs(max_cycle_dd):
-            exit_triggered = True
-            exit_reason = "BOT_CLOSE"
-            print(f"[{self.symbol}] 🛑 [MAX DRAWDOWN HIT] Cycle PnL {total_pnl:.2f} <= -{max_cycle_dd:.2f}. Forcing market close.")
+        auto_uni = getattr(self, "auto_universe_bias", "")
+        
+        # 1. Dynamic Trend Reversal Cut (Universe Bias)
+        if total_pnl < 0 and auto_uni:
+            has_sells = any("SELL" in str(getattr(p, "type", "")).upper() for p in self.broker.open_positions.values())
+            has_buys  = any("BUY"  in str(getattr(p, "type", "")).upper() for p in self.broker.open_positions.values())
+            is_bullish = any(x in auto_uni for x in ["BUY", "BULLISH"])
+            is_bearish = any(x in auto_uni for x in ["SELL", "BEARISH"])
+            
+            if has_buys and not has_sells and is_bearish and not is_bullish:
+                exit_triggered = True
+                exit_reason = "BOT_CLOSE"
+                print(f"[{self.symbol}] 🛑 [TREND FLIP LOSS CUT] Universe Bias flipped to {auto_uni}. Cutting basket loss of ${total_pnl:.2f} early!")
+            elif has_sells and not has_buys and is_bullish and not is_bearish:
+                exit_triggered = True
+                exit_reason = "BOT_CLOSE"
+                print(f"[{self.symbol}] 🛑 [TREND FLIP LOSS CUT] Universe Bias flipped to {auto_uni}. Cutting basket loss of ${total_pnl:.2f} early!")
+
+        # 2. Extreme Drawdown (Catastrophic Fallback)
+        if not exit_triggered:
+            # 3x the normal drawdown to give room for trades, but protect against flash crashes
+            max_cycle_dd = float(getattr(self, "max_cycle_drawdown", 30.0) or 30.0)
+            extreme_dd = max_cycle_dd * 3.0
+            if total_pnl <= -abs(extreme_dd):
+                exit_triggered = True
+                exit_reason = "BOT_CLOSE"
+                print(f"[{self.symbol}] 🛑 [EXTREME DRAWDOWN HIT] Cycle PnL {total_pnl:.2f} <= -{extreme_dd:.2f}. Forcing market close despite trend.")
     else:
         # In manual mode, we do NOT enforce the hardcoded auto max drawdown. 
         # The user's manual SL/TP parameters or manual closures govern risk.
