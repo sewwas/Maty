@@ -55,6 +55,47 @@ def calculate_ratchet_breakeven(entry_price: float, position_type: str, current_
         return min(entry_price - (pip_size * 2.0), current_price + (pip_size * 15.0))
 
 
+def is_auto_100pct_confirmed(self) -> bool:
+    """
+    🟢 AUTO MODE TREND CONFIRMATION GATE.
+
+    Returns True ONLY when ALL of the following conditions are met:
+      1. Auto Reading Engine has decided a clear unidirectional side (BUY_ONLY or SELL_ONLY).
+         DUAL / BOTH / ranging signals return False immediately.
+      2. ADX >= 25 — confirms that a genuine trending move is underway (not ranging noise).
+      3. Choppiness Index < 50 — market is trending, not consolidating.
+
+    When True → unlock aggressive SL-to-positive & tight TP snap logic.
+    When False → fall back to standard conservative defaults.
+    """
+    # Gate 1: Must be in auto mode with a clear directional bias
+    auto_uni = str(getattr(self, "unidirectional_mode",
+                           getattr(self, "auto_universe_bias", "DUAL"))).upper()
+    if not (("BUY" in auto_uni and "ONLY" in auto_uni) or
+            ("SELL" in auto_uni and "ONLY" in auto_uni)):
+        return False  # DUAL / ranging — do not activate aggressive mode
+
+    # Also check last_auto_eval for the most-recent engine decision
+    last_eval = getattr(self, "last_auto_eval", None)
+    if isinstance(last_eval, dict):
+        eval_uni = str(last_eval.get("unidirectional_mode", "DUAL")).upper()
+        if not (("BUY" in eval_uni and "ONLY" in eval_uni) or
+                ("SELL" in eval_uni and "ONLY" in eval_uni)):
+            return False
+
+    # Gate 2: ADX >= 20 (trending) and CI < 55 (not ranging)
+    # Lowered from 25/50 → 20/55 so confirmation fires more readily,
+    # allowing the aggressive profit-lock & trail to kick in sooner.
+    trail_cache = getattr(self, "_trail_trend_cache", None)
+    if trail_cache:
+        adx = float(trail_cache.get("adx", 0.0))
+        ci  = float(trail_cache.get("ci", 100.0))
+        if adx < 20.0 or ci >= 55.0:
+            return False  # Weak trend or choppy — stay conservative
+
+    return True
+
+
 def enforce_profit_lock(self, current_price: float, timestamp: float) -> int:
     """
     PRIORITY-0 PROFIT PROTECTION — Runs FIRST on every tick before any other logic.
@@ -101,13 +142,26 @@ def enforce_profit_lock(self, current_price: float, timestamp: float) -> int:
     if hasattr(self, "last_auto_eval") and isinstance(self.last_auto_eval, dict):
         ai_target = float(self.last_auto_eval.get("recommended_target_profit", 0.0))
 
+    # 🟢 100% CONFIRMED TREND: lock profit faster & tighter to guarantee gains
+    _is_100pct = is_auto_100pct_confirmed(self)
+
     if ai_target > 0:
-        min_basket_profit = ai_target * 0.50
-        min_pos_profit = max(ai_target * 0.35, atr_5m * 1.5)  # Require at least 1.5x ATR to avoid easy hunts
+        if _is_100pct:
+            # Confirmed trend → lock basket at 35% of target, position at 20% or 1×ATR
+            # This fires EARLIER so profit is secured before any reversal hunt
+            min_basket_profit = ai_target * 0.35
+            min_pos_profit    = max(ai_target * 0.20, atr_5m * 1.0)
+        else:
+            min_basket_profit = ai_target * 0.50
+            min_pos_profit    = max(ai_target * 0.35, atr_5m * 1.5)  # Require at least 1.5x ATR to avoid easy hunts
     else:
         # Fallback to ATR-based dynamic locks if AI is offline
-        min_basket_profit = atr_5m * 2.0
-        min_pos_profit = atr_5m * 1.5
+        if _is_100pct:
+            min_basket_profit = atr_5m * 1.2   # Confirmed: lock at 1.2×ATR (was 2.0×)
+            min_pos_profit    = atr_5m * 0.8   # Confirmed: per-pos lock at 0.8×ATR (was 1.5×)
+        else:
+            min_basket_profit = atr_5m * 2.0
+            min_pos_profit    = atr_5m * 1.5
     near_zero_floor   = 0.15
 
     actions = 0
@@ -1114,7 +1168,7 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
         if not is_manual and hasattr(self, "last_auto_eval") and isinstance(self.last_auto_eval, dict) and "recommended_levels" in self.last_auto_eval:
             effective_levels = int(self.last_auto_eval["recommended_levels"])
         else:
-            base_cfg_levels = getattr(self, "grid_levels", 5) or 5
+            base_cfg_levels = getattr(self, "grid_levels", 3) or 3  # 📊 Mode 2: 3 levels × 2 = 6 pending (medium confidence)
             effective_levels = base_cfg_levels
 
         dyn_tp_factor = max(3.0, float(effective_levels * 1.0))
@@ -1213,21 +1267,36 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
         if ranging_mode and not is_manual:
             effective_levels = 1
 
-        # Boost TP by 1.5x in directional modes — we're riding the full trend move
-        if directional_sell or directional_buy:
-            dir_tp_dist = min_tp_dist * 1.5
+        # ── 100% Trend Confirmed: aggressive grid mode ──────────────────────────
+        # When is_auto_100pct_confirmed fires we switch to a LIMIT-ONLY grid:
+        #   • TP boosted to 2.5× (max profit)
+        #   • Offset tightened to 0.35× ATR → enter closer to price for bigger gain
+        #   • Level gap compressed → denser stacking → more fills at better prices
+        #   • +1 extra level → more coverage on the confirmed move
+        #   • STOP orders REMOVED → never get filled against the trend direction
+        _is_100pct_grid = is_auto_100pct_confirmed(self)
+
+        if (directional_sell or directional_buy) and _is_100pct_grid:
+            dir_tp_dist     = min_tp_dist * 2.5   # 🔥 Max-profit TP (was 1.5×)
+            effective_levels = min(effective_levels + 1, 8)  # One extra level, cap at 8
+            _confirmed_offset_mult = 0.35          # Tighter entry — ride the trend open
+            _confirmed_gap_mult    = 0.70          # Compressed gap → denser stack
+        elif directional_sell or directional_buy:
+            dir_tp_dist     = min_tp_dist * 1.5   # Standard directional TP
+            _confirmed_offset_mult = 0.65
+            _confirmed_gap_mult    = 1.00
         else:
-            dir_tp_dist = min_tp_dist
+            dir_tp_dist     = min_tp_dist
+            _confirmed_offset_mult = 0.65
+            _confirmed_gap_mult    = 1.00
 
         placed_count = 0
-        # 1. Dynamic ATR-Based Trap Placement
-        # We use 0.65x ATR to confidently dodge the noise while catching the trend early.
-        # User's manual buy_offset_val is strictly enforced as a minimum distance.
-        dynamic_atr_offset = (atr_5m * 0.65) if (atr_5m is not None and atr_5m > 0) else 0.0
-        base_start_offset = max(b_min_stop + 1.0, dynamic_atr_offset, buy_offset_val)
+        # Dynamic ATR-Based Trap Placement — offset & gap scaled by confirmation state
+        dynamic_atr_offset  = (atr_5m * _confirmed_offset_mult) if (atr_5m is not None and atr_5m > 0) else 0.0
+        base_start_offset   = max(b_min_stop + 1.0, dynamic_atr_offset, buy_offset_val)
 
-        cumulative_gap = 0.0
-        expansion_factor = 1.30
+        cumulative_gap   = 0.0
+        expansion_factor = 1.30 * _confirmed_gap_mult   # Compressed gaps when confirmed
 
         self.active_buy_levels = []
         self.active_sell_levels = []
@@ -1237,64 +1306,96 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
             sell_size = self.calculate_level_size(self.order_size, self.order_size_multiplier, i)
 
             if directional_sell:
-                # ── SELL CONFIRMED: dual-entry for maximum fill coverage ──
-                # 1. SELL_LIMIT ABOVE price → sells the bounce at resistance (TOP)
-                #    Best entry price, highest profit if price rejects from top
-                sell_limit_px = round(ask_ref + base_start_offset + cumulative_gap, digits)
-                self.active_sell_levels.append(sell_limit_px)
-                sell_limit_tp = round(sell_limit_px - dir_tp_dist, digits)
-                sell_limit_sl = round(sell_limit_px + min_sl_dist, digits)
-                try:
-                    r = self.broker.place_order("SELL_LIMIT", sell_limit_px, sell_size, timestamp, tp=sell_limit_tp, sl=sell_limit_sl)
-                    if r:
-                        placed_count += 1
-                        print(f"[{sym_name}] 📤 [SELL_LIMIT] L{i} @ ${sell_limit_px:,.3f} TP:${sell_limit_tp:,.3f}")
-                except Exception as e:
-                    print(f"[{sym_name}] SELL_LIMIT L{i} error: {e}")
+                if _is_100pct_grid:
+                    # ═══════════════════════════════════════════════════════
+                    # 🔥 100% CONFIRMED SELL — LIMIT-ONLY STACKED GRID
+                    # Only SELL_LIMIT above price. No SELL_STOP below price.
+                    # Reason: trend is fully confirmed DOWN → price will pull
+                    # back UP to our limit, giving the best possible entry.
+                    # Counter-trend SELL_STOP is removed — no hunting risk.
+                    # ═══════════════════════════════════════════════════════
+                    sell_limit_px = round(ask_ref + base_start_offset + cumulative_gap, digits)
+                    self.active_sell_levels.append(sell_limit_px)
+                    sell_limit_tp = round(sell_limit_px - dir_tp_dist, digits)
+                    sell_limit_sl = round(sell_limit_px + min_sl_dist, digits)
+                    try:
+                        r = self.broker.place_order("SELL_LIMIT", sell_limit_px, sell_size, timestamp, tp=sell_limit_tp, sl=sell_limit_sl)
+                        if r:
+                            placed_count += 1
+                            print(f"[{sym_name}] 🔥 [CONFIRMED SELL_LIMIT] L{i} @ ${sell_limit_px:,.3f} TP:${sell_limit_tp:,.3f} SL:${sell_limit_sl:,.3f} (100% confirmed)")
+                    except Exception as e:
+                        print(f"[{sym_name}] SELL_LIMIT L{i} error: {e}")
+                else:
+                    # ── Standard dual-entry SELL (LIMIT + STOP) ──
+                    sell_limit_px = round(ask_ref + base_start_offset + cumulative_gap, digits)
+                    self.active_sell_levels.append(sell_limit_px)
+                    sell_limit_tp = round(sell_limit_px - dir_tp_dist, digits)
+                    sell_limit_sl = round(sell_limit_px + min_sl_dist, digits)
+                    try:
+                        r = self.broker.place_order("SELL_LIMIT", sell_limit_px, sell_size, timestamp, tp=sell_limit_tp, sl=sell_limit_sl)
+                        if r:
+                            placed_count += 1
+                            print(f"[{sym_name}] 📤 [SELL_LIMIT] L{i} @ ${sell_limit_px:,.3f} TP:${sell_limit_tp:,.3f}")
+                    except Exception as e:
+                        print(f"[{sym_name}] SELL_LIMIT L{i} error: {e}")
 
-                # 2. SELL_STOP BELOW price → sells the breakdown continuation (BOTTOM)
-                #    Catches the move if price skips the top and breaks straight down
-                sell_stop_px = round(bid_ref - base_start_offset - cumulative_gap, digits)
-                self.active_sell_levels.append(sell_stop_px)
-                sell_stop_tp = round(sell_stop_px - dir_tp_dist, digits)
-                sell_stop_sl = round(sell_stop_px + min_sl_dist, digits)
-                try:
-                    r = self.broker.place_order("SELL_STOP", sell_stop_px, sell_size, timestamp, tp=sell_stop_tp, sl=sell_stop_sl)
-                    if r:
-                        placed_count += 1
-                        print(f"[{sym_name}] 📉 [SELL_STOP] L{i} @ ${sell_stop_px:,.3f} TP:${sell_stop_tp:,.3f}")
-                except Exception as e:
-                    print(f"[{sym_name}] SELL_STOP L{i} error: {e}")
+                    sell_stop_px = round(bid_ref - base_start_offset - cumulative_gap, digits)
+                    self.active_sell_levels.append(sell_stop_px)
+                    sell_stop_tp = round(sell_stop_px - dir_tp_dist, digits)
+                    sell_stop_sl = round(sell_stop_px + min_sl_dist, digits)
+                    try:
+                        r = self.broker.place_order("SELL_STOP", sell_stop_px, sell_size, timestamp, tp=sell_stop_tp, sl=sell_stop_sl)
+                        if r:
+                            placed_count += 1
+                            print(f"[{sym_name}] 📉 [SELL_STOP] L{i} @ ${sell_stop_px:,.3f} TP:${sell_stop_tp:,.3f}")
+                    except Exception as e:
+                        print(f"[{sym_name}] SELL_STOP L{i} error: {e}")
 
             elif directional_buy:
-                # ── BUY CONFIRMED: dual-entry for maximum fill coverage ──
-                # 1. BUY_LIMIT BELOW price → buys the dip at support (BOTTOM)
-                #    Best entry price, highest profit if price bounces from bottom
-                buy_limit_px = round(bid_ref - base_start_offset - cumulative_gap, digits)
-                self.active_buy_levels.append(buy_limit_px)
-                buy_limit_tp = round(buy_limit_px + dir_tp_dist, digits)
-                buy_limit_sl = round(buy_limit_px - min_sl_dist, digits)
-                try:
-                    r = self.broker.place_order("BUY_LIMIT", buy_limit_px, buy_size, timestamp, tp=buy_limit_tp, sl=buy_limit_sl)
-                    if r:
-                        placed_count += 1
-                        print(f"[{sym_name}] 📥 [BUY_LIMIT] L{i} @ ${buy_limit_px:,.3f} TP:${buy_limit_tp:,.3f}")
-                except Exception as e:
-                    print(f"[{sym_name}] BUY_LIMIT L{i} error: {e}")
+                if _is_100pct_grid:
+                    # ═══════════════════════════════════════════════════════
+                    # 🔥 100% CONFIRMED BUY — LIMIT-ONLY STACKED GRID
+                    # Only BUY_LIMIT below price. No BUY_STOP above price.
+                    # Reason: trend is fully confirmed UP → price will dip
+                    # DOWN to our limit, giving the best possible entry.
+                    # Counter-trend BUY_STOP is removed — no hunting risk.
+                    # ═══════════════════════════════════════════════════════
+                    buy_limit_px = round(bid_ref - base_start_offset - cumulative_gap, digits)
+                    self.active_buy_levels.append(buy_limit_px)
+                    buy_limit_tp = round(buy_limit_px + dir_tp_dist, digits)
+                    buy_limit_sl = round(buy_limit_px - min_sl_dist, digits)
+                    try:
+                        r = self.broker.place_order("BUY_LIMIT", buy_limit_px, buy_size, timestamp, tp=buy_limit_tp, sl=buy_limit_sl)
+                        if r:
+                            placed_count += 1
+                            print(f"[{sym_name}] 🔥 [CONFIRMED BUY_LIMIT] L{i} @ ${buy_limit_px:,.3f} TP:${buy_limit_tp:,.3f} SL:${buy_limit_sl:,.3f} (100% confirmed)")
+                    except Exception as e:
+                        print(f"[{sym_name}] BUY_LIMIT L{i} error: {e}")
+                else:
+                    # ── Standard dual-entry BUY (LIMIT + STOP) ──
+                    buy_limit_px = round(bid_ref - base_start_offset - cumulative_gap, digits)
+                    self.active_buy_levels.append(buy_limit_px)
+                    buy_limit_tp = round(buy_limit_px + dir_tp_dist, digits)
+                    buy_limit_sl = round(buy_limit_px - min_sl_dist, digits)
+                    try:
+                        r = self.broker.place_order("BUY_LIMIT", buy_limit_px, buy_size, timestamp, tp=buy_limit_tp, sl=buy_limit_sl)
+                        if r:
+                            placed_count += 1
+                            print(f"[{sym_name}] 📥 [BUY_LIMIT] L{i} @ ${buy_limit_px:,.3f} TP:${buy_limit_tp:,.3f}")
+                    except Exception as e:
+                        print(f"[{sym_name}] BUY_LIMIT L{i} error: {e}")
 
-                # 2. BUY_STOP ABOVE price → buys the breakout continuation (TOP)
-                #    Catches the move if price skips the bottom and breaks straight up
-                buy_stop_px = round(ask_ref + base_start_offset + cumulative_gap, digits)
-                self.active_buy_levels.append(buy_stop_px)
-                buy_stop_tp = round(buy_stop_px + dir_tp_dist, digits)
-                buy_stop_sl = round(buy_stop_px - min_sl_dist, digits)
-                try:
-                    r = self.broker.place_order("BUY_STOP", buy_stop_px, buy_size, timestamp, tp=buy_stop_tp, sl=buy_stop_sl)
-                    if r:
-                        placed_count += 1
-                        print(f"[{sym_name}] 📈 [BUY_STOP] L{i} @ ${buy_stop_px:,.3f} TP:${buy_stop_tp:,.3f}")
-                except Exception as e:
-                    print(f"[{sym_name}] BUY_STOP L{i} error: {e}")
+                    buy_stop_px = round(ask_ref + base_start_offset + cumulative_gap, digits)
+                    self.active_buy_levels.append(buy_stop_px)
+                    buy_stop_tp = round(buy_stop_px + dir_tp_dist, digits)
+                    buy_stop_sl = round(buy_stop_px - min_sl_dist, digits)
+                    try:
+                        r = self.broker.place_order("BUY_STOP", buy_stop_px, buy_size, timestamp, tp=buy_stop_tp, sl=buy_stop_sl)
+                        if r:
+                            placed_count += 1
+                            print(f"[{sym_name}] 📈 [BUY_STOP] L{i} @ ${buy_stop_px:,.3f} TP:${buy_stop_tp:,.3f}")
+                    except Exception as e:
+                        print(f"[{sym_name}] BUY_STOP L{i} error: {e}")
 
             else:
                 # ── RANGING mode — BUY_STOP + SELL_STOP breakout grid (unchanged) ──
@@ -1688,19 +1789,23 @@ def trail_stop_loss_5m_structure(self, current_price: float, timestamp: float) -
     recent_swing_high = float(np.max(highs[-swing_lookback:]))    # Lower High for SELL SL
 
     # ── Step 5: Calculate anti-hunt minimum SL distances ──
-    # SL must be at least 1.5× ATR away from current price to survive stop hunts
+    # When 100% confirmed: trail TIGHTER (0.8×ATR) to hug price & capture max profit.
+    # When not confirmed:  stay WIDE (1.5×ATR) to avoid cheap stop-hunts.
+    _is_100pct_trail = is_auto_100pct_confirmed(self)
+    _trail_atr_mult  = 0.8 if _is_100pct_trail else 1.5
+
     if is_gold:
-        min_sl_distance = max(8.00, atr_5m * 1.5)     # Gold: minimum $8, or 1.5× ATR
-        breakeven_buffer = 2.50                         # Gold: lock $2.50 profit at breakeven
+        min_sl_distance  = max(4.00 if _is_100pct_trail else 8.00, atr_5m * _trail_atr_mult)
+        breakeven_buffer = 1.00 if _is_100pct_trail else 2.50   # Confirmed → lock sooner
     elif "BTC" in sym_name:
-        min_sl_distance = max(150.0, atr_5m * 1.5)
-        breakeven_buffer = 50.0
+        min_sl_distance  = max(80.0 if _is_100pct_trail else 150.0, atr_5m * _trail_atr_mult)
+        breakeven_buffer = 25.0 if _is_100pct_trail else 50.0
     elif "ETH" in sym_name:
-        min_sl_distance = max(10.0, atr_5m * 1.5)
-        breakeven_buffer = 3.0
+        min_sl_distance  = max(5.0 if _is_100pct_trail else 10.0, atr_5m * _trail_atr_mult)
+        breakeven_buffer = 1.5 if _is_100pct_trail else 3.0
     else:
-        min_sl_distance = max(0.0005, atr_5m * 1.5)    # Forex
-        breakeven_buffer = 0.0002
+        min_sl_distance  = max(0.0003 if _is_100pct_trail else 0.0005, atr_5m * _trail_atr_mult)
+        breakeven_buffer = 0.0001 if _is_100pct_trail else 0.0002
 
     modified_count = 0
 
@@ -1863,18 +1968,34 @@ def align_basket_take_profits(self, current_price: float, timestamp: float) -> i
         atr_5m = current_price * 0.002
 
     # ── Calculate optimal TP distance per symbol ──
-    # TP should be 1.5× to 2.5× ATR — close enough to fill, far enough for real profit
+    # 🟢 100% CONFIRMED TREND: extend TP to 3.5×ATR to ride the full move for max profit.
+    # Unconfirmed: standard 2.0×ATR so TP still fills quickly.
+    _is_100pct_tp = is_auto_100pct_confirmed(self)
+    _tp_atr_mult  = 3.5 if _is_100pct_tp else 2.0
+
     if is_gold:
-        optimal_tp_dist = max(6.00, min(15.00, atr_5m * 2.0))
+        if _is_100pct_tp:
+            optimal_tp_dist = max(10.00, min(40.00, atr_5m * _tp_atr_mult))  # Confirmed: reach further
+        else:
+            optimal_tp_dist = max(6.00, min(15.00, atr_5m * _tp_atr_mult))
         min_tp_dist = 4.00   # Gold: at least $4 TP to cover spread + commission
     elif "BTC" in sym_name:
-        optimal_tp_dist = max(100.0, min(500.0, atr_5m * 2.0))
+        if _is_100pct_tp:
+            optimal_tp_dist = max(200.0, min(1200.0, atr_5m * _tp_atr_mult))
+        else:
+            optimal_tp_dist = max(100.0, min(500.0, atr_5m * _tp_atr_mult))
         min_tp_dist = 60.0
     elif "ETH" in sym_name:
-        optimal_tp_dist = max(5.0, min(30.0, atr_5m * 2.0))
+        if _is_100pct_tp:
+            optimal_tp_dist = max(10.0, min(80.0, atr_5m * _tp_atr_mult))
+        else:
+            optimal_tp_dist = max(5.0, min(30.0, atr_5m * _tp_atr_mult))
         min_tp_dist = 3.0
     else:
-        optimal_tp_dist = max(0.0003, min(0.0030, atr_5m * 2.0))
+        if _is_100pct_tp:
+            optimal_tp_dist = max(0.0006, min(0.0080, atr_5m * _tp_atr_mult))
+        else:
+            optimal_tp_dist = max(0.0003, min(0.0030, atr_5m * _tp_atr_mult))
         min_tp_dist = 0.0002
 
     buy_positions = []
