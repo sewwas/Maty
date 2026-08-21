@@ -823,8 +823,8 @@ def process_engine_tick(self, previous_price: float, current_price: float, times
 
     if not has_orders:
         self.deployed = False
-        if timestamp >= getattr(self, "_last_deploy_error_time", 0.0) + 3.0:
-            self._last_deploy_error_time = timestamp   # Prevent runaway deploy loop on every tick
+        if timestamp >= getattr(self, "_last_deploy_attempt_time", 0.0) + 3.0:
+            self._last_deploy_attempt_time = timestamp   # Prevent runaway deploy loop on every tick
             self.deploy_traps(current_price, timestamp, force=True)
         return None
 
@@ -1005,7 +1005,7 @@ def process_engine_tick(self, previous_price: float, current_price: float, times
                 if mt5_pos and len(mt5_pos) > 0:
                     mt5_clear = False
                     print(f"[{self.symbol}] ⏳ [CYCLE GUARD] Cycle ended but {len(mt5_pos)} position(s) still live on MT5 — delaying redeploy")
-                    self._last_deploy_error_time = timestamp + 3.0  # Force a 3s wait before next deploy attempt
+                    self._last_deploy_attempt_time = timestamp + 3.0  # Force a 3s wait before next deploy attempt
         except Exception as e:
             pass
 
@@ -1498,7 +1498,7 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
 
 def repair_grid(self, current_price: float, timestamp: float) -> int:
     if not self.deployed and len(self.broker.pending_orders) == 0 and len(self.broker.open_positions) == 0:
-        if timestamp >= getattr(self, "_last_deploy_error_time", 0.0) + 3.0:
+        if timestamp >= getattr(self, "_last_deploy_attempt_time", 0.0) + 3.0:
             self.deploy_traps(current_price, timestamp)
     return 0
 
