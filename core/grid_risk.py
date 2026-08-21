@@ -6,15 +6,16 @@ def get_pip_size(symbol: str, current_price: float = 0.0) -> float:
     sym = (symbol or "").upper()
     try:
         import MetaTrader5 as mt5_ref
-        sym_lookup = "XAUUSD" if any(x in sym for x in ["PAXG", "XAU", "GOLD"]) else (sym.replace("USDT", "USD") if "USDT" in sym else sym)
-        info = mt5_ref.symbol_info(sym_lookup) or mt5_ref.symbol_info(f"{sym_lookup}m") or mt5_ref.symbol_info(f"{sym_lookup}c")
-        if info is not None and info.point > 0:
-            if info.digits in (3, 5):
-                return info.point * 10.0
-            elif info.digits in (2, 4):
-                return info.point
-            else:
-                return info.point * 10.0 if info.point < 0.1 else info.point
+        if mt5_ref is not None and hasattr(mt5_ref, "symbol_info"):
+            sym_lookup = "XAUUSD" if any(x in sym for x in ["PAXG", "XAU", "GOLD"]) else (sym.replace("USDT", "USD") if "USDT" in sym else sym)
+            info = mt5_ref.symbol_info(sym_lookup) or mt5_ref.symbol_info(f"{sym_lookup}m") or mt5_ref.symbol_info(f"{sym_lookup}c")
+            if info is not None and info.point > 0:
+                if info.digits in (3, 5):
+                    return info.point * 10.0
+                elif info.digits in (2, 4):
+                    return info.point
+                else:
+                    return info.point * 10.0 if info.point < 0.1 else info.point
     except Exception as e:
         import logging; logging.warning(f"Exception: {e}")
 
@@ -32,14 +33,15 @@ def sanitize_order_size(symbol: str, raw_size: float) -> float:
     sym = (symbol or "").upper()
     try:
         import MetaTrader5 as mt5_ref
-        sym_lookup = "XAUUSD" if any(x in sym for x in ["PAXG", "XAU", "GOLD"]) else (sym.replace("USDT", "USD") if "USDT" in sym else sym)
-        info = mt5_ref.symbol_info(sym_lookup) or mt5_ref.symbol_info(f"{sym_lookup}m") or mt5_ref.symbol_info(f"{sym_lookup}c")
-        if info is not None:
-            v_min = getattr(info, "volume_min", 0.01) or 0.01
-            v_max = getattr(info, "volume_max", 100.0) or 100.0
-            v_step = getattr(info, "volume_step", 0.01) or 0.01
-            size = round(round(raw_size / v_step) * v_step, 4) if v_step > 0 else round(raw_size, 4)
-            return max(v_min, min(v_max, size))
+        if mt5_ref is not None and hasattr(mt5_ref, "symbol_info"):
+            sym_lookup = "XAUUSD" if any(x in sym for x in ["PAXG", "XAU", "GOLD"]) else (sym.replace("USDT", "USD") if "USDT" in sym else sym)
+            info = mt5_ref.symbol_info(sym_lookup) or mt5_ref.symbol_info(f"{sym_lookup}m") or mt5_ref.symbol_info(f"{sym_lookup}c")
+            if info is not None:
+                v_min = getattr(info, "volume_min", 0.01) or 0.01
+                v_max = getattr(info, "volume_max", 100.0) or 100.0
+                v_step = getattr(info, "volume_step", 0.01) or 0.01
+                size = round(round(raw_size / v_step) * v_step, 4) if v_step > 0 else round(raw_size, 4)
+                return max(v_min, min(v_max, size))
     except Exception as e:
         import logging; logging.warning(f"Exception: {e}")
 
@@ -794,31 +796,28 @@ def process_engine_tick(self, previous_price: float, current_price: float, times
             if not self.broker.ensure_connected():
                 return None
             ex_s = self.broker.get_exness_symbol(self.symbol) if hasattr(self.broker, "get_exness_symbol") else self.symbol
-            import MetaTrader5 as mt5_tick_check
-
-            # ── Check pending orders ──
-            if hasattr(self.broker, "pending_orders") and hasattr(self.broker, "ticket_to_order_id"):
-                try:
-                    import MetaTrader5 as mt5_tick_check
-                    mt5_o = (mt5_tick_check.orders_get if hasattr(mt5_tick_check, "orders_get") else lambda *a, **k: None)(symbol=ex_s)
-                except Exception:
-                    mt5_o = None
-                if mt5_o:
-                    has_orders = True
-                    self.deployed = True
-                    from core.engine import Order
-                    for mo in mt5_o:
-                        loc_o = Order("BUY_STOP" if getattr(mo, "type", 2) in (2, 4) else "SELL_STOP", getattr(mo, "price_open", current_price), getattr(mo, "volume_initial", 0.01), getattr(mo, "time_setup", timestamp))
-                        loc_o.order_id = f"mt5_{mo.ticket}"
-                        loc_o.broker_ticket = mo.ticket
-                        self.broker.pending_orders[loc_o.order_id] = loc_o
+            try:
+                import MetaTrader5 as mt5_tick_check
+                if mt5_tick_check is not None and hasattr(mt5_tick_check, "orders_get") and callable(getattr(mt5_tick_check, "orders_get", None)):
+                    mt5_o = mt5_tick_check.orders_get(symbol=ex_s)
+                    if mt5_o:
+                        has_orders = True
+                        self.deployed = True
+                        from core.engine import Order
+                        for mo in mt5_o:
+                            loc_o = Order("BUY_STOP" if getattr(mo, "type", 2) in (2, 4) else "SELL_STOP", getattr(mo, "price_open", current_price), getattr(mo, "volume_initial", 0.01), getattr(mo, "time_setup", timestamp))
+                            loc_o.order_id = f"mt5_{mo.ticket}"
+                            loc_o.broker_ticket = mo.ticket
+                            self.broker.pending_orders[loc_o.order_id] = loc_o
+            except Exception:
+                pass
 
             # ── CYCLE OVERLAP GUARD: also check MT5 live positions ──
             if not has_orders:
                 mt5_p = None
                 try:
                     import MetaTrader5 as mt5_p_check
-                    if hasattr(mt5_p_check, "positions_get"):
+                    if mt5_p_check is not None and hasattr(mt5_p_check, "positions_get") and callable(getattr(mt5_p_check, "positions_get", None)):
                         mt5_p = mt5_p_check.positions_get(symbol=ex_s)
                         if not mt5_p:
                             all_p = mt5_p_check.positions_get()
@@ -1012,22 +1011,23 @@ def process_engine_tick(self, previous_price: float, current_price: float, times
         mt5_clear = True
         try:
             import MetaTrader5 as _mt5_chk
-            ex_s2 = self.broker.get_exness_symbol(self.symbol) if hasattr(self.broker, "get_exness_symbol") else self.symbol
-            mt5_pos = _mt5_chk.positions_get(symbol=ex_s2)
-            if not mt5_pos:
-                all_p2 = _mt5_chk.positions_get()
-                if all_p2:
-                    clean_tgt2 = "XAU" if any(x in (ex_s2 or "").upper() for x in ["XAU", "GOLD"]) else (
-                        "PAXG" if "PAXG" in (ex_s2 or "").upper() else
-                        (ex_s2 or "").replace("USDT", "").replace("USD", "").upper()
-                    )
-                    mt5_pos = [p for p in all_p2 if clean_tgt2 in str(p.symbol).upper()]
-            if mt5_pos and len(mt5_pos) > 0:
-                mt5_clear = False
-                print(f"[{self.symbol}] ⏳ [CYCLE GUARD] Cycle ended but {len(mt5_pos)} position(s) still live on MT5 — delaying redeploy")
-                self._last_deploy_error_time = timestamp + 3.0  # Force a 3s wait before next deploy attempt
+            if _mt5_chk is not None and hasattr(_mt5_chk, "positions_get") and callable(getattr(_mt5_chk, "positions_get", None)):
+                ex_s2 = self.broker.get_exness_symbol(self.symbol) if hasattr(self.broker, "get_exness_symbol") else self.symbol
+                mt5_pos = _mt5_chk.positions_get(symbol=ex_s2)
+                if not mt5_pos:
+                    all_p2 = _mt5_chk.positions_get()
+                    if all_p2:
+                        clean_tgt2 = "XAU" if any(x in (ex_s2 or "").upper() for x in ["XAU", "GOLD"]) else (
+                            "PAXG" if "PAXG" in (ex_s2 or "").upper() else
+                            (ex_s2 or "").replace("USDT", "").replace("USD", "").upper()
+                        )
+                        mt5_pos = [p for p in all_p2 if clean_tgt2 in str(p.symbol).upper()]
+                if mt5_pos and len(mt5_pos) > 0:
+                    mt5_clear = False
+                    print(f"[{self.symbol}] ⏳ [CYCLE GUARD] Cycle ended but {len(mt5_pos)} position(s) still live on MT5 — delaying redeploy")
+                    self._last_deploy_error_time = timestamp + 3.0  # Force a 3s wait before next deploy attempt
         except Exception as e:
-            import logging; logging.warning(f"Exception: {e}")
+            pass
 
         if getattr(self, "auto_restart", True) and mt5_clear:
             self.deploy_traps(current_price, timestamp, force=True)
@@ -1084,13 +1084,29 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
             try:
                 ex_sym = self.broker.get_exness_symbol(sym_name)
                 import MetaTrader5 as mt5_ref
-                tick_info = mt5_ref.symbol_info_tick(ex_sym)
-                if tick_info and tick_info.ask > 0 and tick_info.bid > 0:
-                    ask_ref = tick_info.ask
-                    bid_ref = tick_info.bid
-                    current_price = (ask_ref + bid_ref) / 2.0
+                if mt5_ref is not None and hasattr(mt5_ref, "symbol_info_tick"):
+                    tick_info = mt5_ref.symbol_info_tick(ex_sym)
+                    if tick_info and tick_info.ask > 0 and tick_info.bid > 0:
+                        ask_ref = tick_info.ask
+                        bid_ref = tick_info.bid
+                        current_price = (ask_ref + bid_ref) / 2.0
+                else:
+                    # Linux/Wine VPS — fetch tick via REST bridge
+                    import requests as _req
+                    import os as _os
+                    _bport = _os.getenv("WINE_BRIDGE_PORT", "8001")
+                    _r = _req.get(f"http://127.0.0.1:{_bport}/tick?symbol={ex_sym}", timeout=2.0)
+                    if _r.status_code == 200:
+                        _td = _r.json()
+                        _ask = float(_td.get("ask", 0))
+                        _bid = float(_td.get("bid", 0))
+                        if _ask > 0 and _bid > 0:
+                            ask_ref = _ask
+                            bid_ref = _bid
+                            current_price = (_ask + _bid) / 2.0
             except Exception as e:
                 import logging; logging.warning(f"Exception: {e}")
+
 
         if ask_ref <= 0: ask_ref = current_price
         if bid_ref <= 0: bid_ref = current_price

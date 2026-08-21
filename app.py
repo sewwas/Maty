@@ -497,7 +497,7 @@ first_broker = list(st.session_state.markets.values())[0]["broker"]
 ex_login_env = os.getenv("EXNESS_LOGIN")
 ex_server_env = os.getenv("EXNESS_SERVER")
 
-# Try Wine MT5 REST API Bridge (Port 8001 for Bot #1, Port 8002 for Bot #2)
+# ── Determine which bridge port THIS instance uses ────────────────────────────
 wine_bridge_port = os.getenv("WINE_BRIDGE_PORT")
 if not wine_bridge_port:
     try:
@@ -505,18 +505,25 @@ if not wine_bridge_port:
         wine_bridge_port = "8002" if current_st_port == 8502 else "8001"
     except Exception:
         wine_bridge_port = "8001"
-
 os.environ["WINE_BRIDGE_PORT"] = wine_bridge_port
 
-wine_acc = None
-try:
-    r_bridge = requests.get(f"http://127.0.0.1:{wine_bridge_port}/account", timeout=2.0)
-    if r_bridge.status_code == 200:
-        d_bridge = r_bridge.json()
-        if d_bridge.get("connected"):
-            wine_acc = d_bridge
-except Exception:
-    wine_acc = None
+# ── Query BOTH bridges for account info ───────────────────────────────────
+def _query_bridge(port_str: str) -> Optional[dict]:
+    try:
+        r = requests.get(f"http://127.0.0.1:{port_str}/account", timeout=2.0)
+        if r.status_code == 200:
+            d = r.json()
+            if d.get("connected") and str(d.get("login", "")).isdigit() and int(d.get("login", 0)) > 0:
+                return d
+    except Exception:
+        pass
+    return None
+
+wine_acc  = _query_bridge("8001")   # Bot #1
+wine_acc2 = _query_bridge("8002")   # Bot #2
+
+# Active bridge for THIS instance
+wine_acc_active = wine_acc if wine_bridge_port == "8001" else wine_acc2
 
 acc_info = None
 if hasattr(first_broker, "mt5") and first_broker.mt5 is not None:
@@ -525,64 +532,106 @@ if hasattr(first_broker, "mt5") and first_broker.mt5 is not None:
     except Exception:
         acc_info = None
 
-if wine_acc:
-    acc_num = str(wine_acc.get("login", "Live Account"))
-    acc_server = str(wine_acc.get("server", "Exness MT5"))
-    acc_leverage = f"1:{wine_acc.get('leverage', 2000)}"
-    acc_currency = str(wine_acc.get("currency", "USD"))
-    base_conn = f"🟢 CONNECTED ({acc_server})"
-    equity_val = float(wine_acc.get("equity", 1000.0))
+# ── Build per-account display data ───────────────────────────────────────
+def _acc_display(bridge_data: Optional[dict], bot_label: str, port_str: str) -> dict:
+    if bridge_data:
+        return {
+            "connected": True,
+            "num":      str(bridge_data.get("login", "??")),
+            "server":   str(bridge_data.get("server", "Exness MT5")),
+            "leverage": f"1:{bridge_data.get('leverage', 2000)}",
+            "currency": str(bridge_data.get("currency", "USD")),
+            "equity":   float(bridge_data.get("equity", 0.0)),
+            "balance":  float(bridge_data.get("balance", 0.0)),
+            "label":    bot_label,
+            "port":     port_str,
+            "status":   f"🟢 CONNECTED",
+        }
+    # Not connected via bridge — try env vars as fallback
+    env_idx = "1" if port_str == "8001" else "2"
+    env_login  = os.getenv(f"EXNESS_LOGIN_{env_idx}") or (ex_login_env if port_str == "8001" else None)
+    env_server = os.getenv(f"EXNESS_SERVER_{env_idx}") or (ex_server_env if port_str == "8001" else None)
+    if env_login:
+        return {
+            "connected": False,
+            "num":      env_login,
+            "server":   env_server or "Exness MT5",
+            "leverage": "1:2000",
+            "currency": "USD",
+            "equity":   0.0,
+            "balance":  0.0,
+            "label":    bot_label,
+            "port":     port_str,
+            "status":   f"🟡 BRIDGE OFFLINE",
+        }
+    return {
+        "connected": False,
+        "num":      "Not Linked",
+        "server":   "—",
+        "leverage": "—",
+        "currency": "USD",
+        "equity":   0.0,
+        "balance":  0.0,
+        "label":    bot_label,
+        "port":     port_str,
+        "status":   f"🔴 NOT CONNECTED",
+    }
+
+acc1 = _acc_display(wine_acc,  "Bot #1", "8001")
+acc2 = _acc_display(wine_acc2, "Bot #2", "8002")
+
+# For backward compat: set equity_val, acc_num, etc. for the active instance
+if wine_acc_active:
+    acc_num       = str(wine_acc_active.get("login", "Live Account"))
+    acc_server    = str(wine_acc_active.get("server", "Exness MT5"))
+    acc_leverage  = f"1:{wine_acc_active.get('leverage', 2000)}"
+    acc_currency  = str(wine_acc_active.get("currency", "USD"))
+    base_conn     = f"🟢 CONNECTED ({acc_server})"
+    equity_val    = float(wine_acc_active.get("equity", 1000.0))
 elif acc_info:
-    acc_num = str(acc_info.login)
-    acc_server = str(getattr(acc_info, "server", "Exness MT5"))
+    acc_num      = str(acc_info.login)
+    acc_server   = str(getattr(acc_info, "server", "Exness MT5"))
     acc_leverage = f"1:{getattr(acc_info, 'leverage', 2000)}"
     acc_currency = str(getattr(acc_info, 'currency', 'USD'))
-    base_conn = f"🟢 CONNECTED ({acc_server})"
-    equity_val = float(getattr(acc_info, "equity", 1000.0))
+    base_conn    = f"🟢 CONNECTED ({acc_server})"
+    equity_val   = float(getattr(acc_info, "equity", 1000.0))
 elif st.session_state.use_mt5 and first_broker.ensure_connected():
-    brk_login = getattr(first_broker, "login", 0)
-    default_acc = "Account #2 (Port 8002)" if wine_bridge_port == "8002" else "257515247"
-    acc_num = str(brk_login) if (brk_login and str(brk_login) != "0") else (str(ex_login_env) if ex_login_env else default_acc)
-    brk_srv = getattr(first_broker, "server", "")
-    default_srv = "Exness MT5 #2" if wine_bridge_port == "8002" else "Exness-MT5Real36"
-    acc_server = brk_srv if brk_srv else (ex_server_env if ex_server_env else default_srv)
+    brk_login    = getattr(first_broker, "login", 0)
+    default_acc  = "Account #2 (Port 8002)" if wine_bridge_port == "8002" else "257515247"
+    acc_num      = str(brk_login) if (brk_login and str(brk_login) != "0") else (str(ex_login_env) if ex_login_env else default_acc)
+    brk_srv      = getattr(first_broker, "server", "")
+    default_srv  = "Exness MT5 #2" if wine_bridge_port == "8002" else "Exness-MT5Real36"
+    acc_server   = brk_srv if brk_srv else (ex_server_env if ex_server_env else default_srv)
     acc_leverage = "1:2000"
     acc_currency = "USD"
-    base_conn = f"🟢 CONNECTED ({acc_server})"
-    equity_val = first_broker.get_equity(first_broker.current_price if hasattr(first_broker, "current_price") else 0)
+    base_conn    = f"🟢 CONNECTED ({acc_server})"
+    equity_val   = first_broker.get_equity(first_broker.current_price if hasattr(first_broker, "current_price") else 0)
 elif ex_login_env:
-    acc_num = str(ex_login_env)
-    acc_server = ex_server_env if ex_server_env else "Exness MT5"
+    acc_num      = str(ex_login_env)
+    acc_server   = ex_server_env if ex_server_env else "Exness MT5"
     acc_leverage = "1:2000"
     acc_currency = "USD"
-    base_conn = f"🟢 CONNECTED ({acc_server})"
-    equity_val = first_broker.get_equity(first_broker.current_price if hasattr(first_broker, "current_price") else 0)
+    base_conn    = f"🟢 CONNECTED ({acc_server})"
+    equity_val   = first_broker.get_equity(first_broker.current_price if hasattr(first_broker, "current_price") else 0)
 else:
-    acc_num = "Simulation Mode"
-    acc_server = "Simulated Server"
+    acc_num      = "Simulation Mode"
+    acc_server   = "Simulated Server"
     acc_leverage = "1:2000"
     acc_currency = "USD"
-    base_conn = "🟡 SIMULATION MODE"
-    equity_val = first_broker.get_equity(first_broker.current_price if hasattr(first_broker, "current_price") else 0)
-
-
-
+    base_conn    = "🟡 SIMULATION MODE"
+    equity_val   = first_broker.get_equity(first_broker.current_price if hasattr(first_broker, "current_price") else 0)
 
 conn_status = f"{base_conn} (⚡ 24/7 VPS DAEMON)" if _is_vps_service_active else base_conn
 
-st.markdown(f"""
-<div class="top-header">
-    <div>
-        <span class="brand-title">Profity AI</span>
-        <span class="brand-badge">Institutional Master Pool</span>
-    </div>
-    <div style="font-size: 0.82rem; color: #a1a1aa;">
-        <span><strong>Status:</strong> {conn_status}</span> &nbsp;·&nbsp;
-        <span><strong>MT5 Account:</strong> {acc_num} ({acc_currency})</span> &nbsp;·&nbsp;
-        <span><strong>Equity:</strong> ${equity_val:,.2f} {acc_currency}</span>
-    </div>
-</div>
-""", unsafe_allow_html=True)
+# ── DUAL ACCOUNT HEADER ───────────────────────────────────────────────────
+def _acc_badge(a: dict) -> str:
+    color = "#22c55e" if a["connected"] else ("#eab308" if a["num"] != "Not Linked" else "#ef4444")
+    eq_str = f"${a['equity']:,.2f}" if a['equity'] > 0 else "—"
+    return f"""<div style="display:flex;flex-direction:column;gap:2px;"><div style="display:flex;align-items:center;gap:6px;"><span style="width:8px;height:8px;border-radius:50%;background:{color};display:inline-block;"></span><span style="font-weight:700;color:#fff;font-size:0.82rem;">{a['label']}</span><span style="color:#71717a;font-size:0.75rem;">(Port {a['port']})</span></div><div style="font-family:'JetBrains Mono',monospace;font-size:0.78rem;color:#a1a1aa;">#{a['num']} &nbsp;|&nbsp; {a['server']}</div><div style="font-size:0.76rem;color:#71717a;">Equity: <span style="color:{color};font-weight:600;">{eq_str} {a['currency']}</span> &nbsp;·&nbsp; {a['status']}</div></div>"""
+
+header_html = f"""<div class="top-header" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;padding:12px 20px;background:#18181b;border:1px solid #27272a;border-radius:8px;margin-bottom:12px;"><div style="display:flex;align-items:center;gap:10px;"><span class="brand-title" style="font-size:1.2rem;font-weight:800;letter-spacing:-0.5px;color:#ffffff;">Profity AI</span><span class="brand-badge" style="background:#27272a;color:#a1a1aa;font-size:0.70rem;font-weight:600;padding:3px 8px;border-radius:4px;text-transform:uppercase;">Institutional Master Pool</span><span class="brand-badge" style="background:#1a2e1a;color:#22c55e;font-size:0.70rem;font-weight:600;padding:3px 8px;border-radius:4px;">⚡ 24/7 VPS</span></div><div style="display:flex;gap:24px;align-items:center;"><div style="border-left:2px solid #27272a;padding-left:20px;">{_acc_badge(acc1)}</div><div style="border-left:2px solid #27272a;padding-left:20px;">{_acc_badge(acc2)}</div></div></div>"""
+
+st.markdown(header_html, unsafe_allow_html=True)
 
 with st.expander("⚙️ Account & History Settings (1 MT5 Account per Bot Limit)", expanded=False):
     cur_bot_num = "1" if wine_bridge_port == "8001" else "2"
@@ -1073,16 +1122,32 @@ with tab_desk:
                 try:
                     import MetaTrader5 as mt5_check
                     ex_s = brk.get_exness_symbol(sym_code) if hasattr(brk, "get_exness_symbol") else sym_code
-                    mt5_ords = mt5_check.orders_get(symbol=ex_s) if (mt5_check and mt5_check.initialize()) else None
+                    mt5_ords = None
+                    if mt5_check is not None and hasattr(mt5_check, "orders_get"):
+                        mt5_ords = mt5_check.orders_get(symbol=ex_s)
+                    else:
+                        # Linux/VPS: check via REST bridge
+                        try:
+                            import requests as _req, os as _os
+                            _bp = _os.getenv("WINE_BRIDGE_PORT", "8001")
+                            _r = _req.get(f"http://127.0.0.1:{_bp}/orders?symbol={ex_s}", timeout=2.0)
+                            if _r.status_code == 200:
+                                mt5_ords = _r.json().get("orders", []) or None
+                        except Exception:
+                            mt5_ords = None
                     if not mt5_ords:
                         bot.deploy_traps(sym_p, time.time(), force=True)
                     else:
                         bot.deployed = True
                         from core.engine import Order
-                        for mo in mt5_ords:
-                            loc_o = Order("BUY_STOP" if getattr(mo, "type", 2) in (2, 4) else "SELL_STOP", getattr(mo, "price_open", sym_p), getattr(mo, "volume_initial", 0.01), getattr(mo, "time_setup", time.time()))
-                            loc_o.order_id = f"mt5_{mo.ticket}"
-                            loc_o.broker_ticket = mo.ticket
+                        for mo in (mt5_ords if isinstance(mt5_ords, list) else list(mt5_ords)):
+                            _px = float(getattr(mo, "price_open", mo.get("price_open", sym_p)) if isinstance(mo, dict) else getattr(mo, "price_open", sym_p))
+                            _vol = float(getattr(mo, "volume_initial", mo.get("volume", 0.01)) if isinstance(mo, dict) else getattr(mo, "volume_initial", 0.01))
+                            _tk = int(getattr(mo, "ticket", mo.get("ticket", 0)) if isinstance(mo, dict) else getattr(mo, "ticket", 0))
+                            _tp = int(getattr(mo, "type", mo.get("type", 2)) if isinstance(mo, dict) else getattr(mo, "type", 2))
+                            loc_o = Order("BUY_STOP" if _tp in (2, 4) else "SELL_STOP", _px, _vol, time.time())
+                            loc_o.order_id = f"mt5_{_tk}"
+                            loc_o.broker_ticket = _tk
                             brk.pending_orders[loc_o.order_id] = loc_o
                 except Exception as e:
                     import logging; logging.warning(f"Exception: {e}")
@@ -1330,42 +1395,33 @@ with tab_desk:
                         open_pos  = len(brk.open_positions)
                         pend_ord  = len(brk.pending_orders)
 
-                        if MT5_AVAILABLE:
+                        if hasattr(brk, "_fetch_live_orders"):
                             try:
-                                import MetaTrader5 as mt5_chk
                                 ex_s_chk = getattr(brk, "get_exness_symbol", lambda x: x)(sym_code) or sym_code
                                 chk_aliases = {ex_s_chk.upper(), sym_code.upper()}
                                 if any(x in sym_code.upper() for x in ["PAXG", "XAU", "GOLD"]):
                                     chk_aliases.update(["XAUUSD", "GOLD", "PAXGUSDT", "XAUUSDm", "XAUUSDc"])
                                 
-                                live_o = None
-                                for _a in chk_aliases:
-                                    live_o = mt5_chk.orders_get(symbol=_a)
-                                    if live_o:
-                                        break
+                                live_o = brk._fetch_live_orders(ex_s_chk)
                                 if not live_o:
-                                    _all_o = mt5_chk.orders_get()
+                                    _all_o = brk._fetch_live_orders()
                                     if _all_o:
-                                        live_o = [o for o in _all_o if any(_a in str(o.symbol).upper() for _a in chk_aliases)]
+                                        live_o = [o for o in _all_o if any(_a in str(getattr(o, "symbol", "")).upper() for _a in chk_aliases)]
                                 if live_o:
                                     pend_ord = max(pend_ord, len(live_o))
                                     
-                                live_p = None
-                                for _a in chk_aliases:
-                                    live_p = mt5_chk.positions_get(symbol=_a)
-                                    if live_p:
-                                        break
+                                live_p = brk._fetch_live_positions(ex_s_chk)
                                 if not live_p:
-                                    _all_p = mt5_chk.positions_get()
+                                    _all_p = brk._fetch_live_positions()
                                     if _all_p:
-                                        live_p = [p for p in _all_p if any(_a in str(p.symbol).upper() for _a in chk_aliases)]
+                                        live_p = [p for p in _all_p if any(_a in str(getattr(p, "symbol", "")).upper() for _a in chk_aliases)]
                                 if live_p:
                                     open_pos = max(open_pos, len(live_p))
                                     pair_pnl = sum(float(getattr(p, "profit", 0.0) or 0.0) for p in live_p)
                                     if not brk.open_positions:
                                         for p in live_p:
                                             pos_id = str(getattr(p, "ticket", getattr(p, "position_id", id(p))))
-                                            p_type = "BUY" if getattr(p, "type", 0) == 0 else "SELL"
+                                            p_type = "BUY" if getattr(p, "type", 0) in (0, "BUY") else "SELL"
                                             p_entry = float(getattr(p, "price_open", getattr(p, "entry_price", 0.0)))
                                             p_vol = float(getattr(p, "volume", getattr(p, "size", 0.01)))
                                             p_pnl = float(getattr(p, "profit", 0.0))
@@ -1377,7 +1433,7 @@ with tab_desk:
                                 
                                 pnl_cls = "pnl-green" if pair_pnl >= 0 else "pnl-red"
                             except Exception as e:
-                                import logging; logging.warning(f"Exception: {e}")
+                                import logging; logging.warning(f"Telemetry sync exception: {e}")
                         realized  = getattr(brk, "realized_pnl", 0.0)
                         cycles    = len(getattr(bot, "cycle_history", []))
 

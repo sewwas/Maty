@@ -4,12 +4,21 @@ Runs inside Wine Python 3.11 on VPS.
 Interfaces directly with Windows MetaTrader 5 terminal64.exe under Wine.
 Exposes lightweight REST API on port 8001 (Bot #1) or port 8002 (Bot #2) for native Linux app.py.
 """
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 import json
 import os
 import sys
+import time
+import threading
 import urllib.request
 import MetaTrader5 as mt5
+
+_mt5_ready = False
+_mt5_lock = threading.Lock()
+_mt5_saved_login = None
+_mt5_saved_pwd = None
+_mt5_saved_srv = None
+_mt5_path = None
 
 CONFIG_FILE_TMPL = "bridge_config_{port}.json"
 
@@ -59,6 +68,8 @@ class MT5BridgeHandler(BaseHTTPRequestHandler):
             self.wfile.write(json.dumps({"status": "ok", "port": port}).encode())
             return
 
+        ensure_mt5(port)
+
         if self.path == "/account":
             acc = mt5.account_info()
             if acc:
@@ -97,16 +108,39 @@ class MT5BridgeHandler(BaseHTTPRequestHandler):
             sym = "XAUUSD"
             if "symbol=" in self.path:
                 sym = self.path.split("symbol=")[1].split("&")[0]
-            tick = None
-            for s in [sym, f"{sym}m", f"{sym}c", f"{sym}.a"]:
-                if mt5.symbol_select(s, True):
-                    tick = mt5.symbol_info_tick(s)
-                    if tick and tick.ask and tick.bid:
+            
+            candidates = [
+                sym, f"{sym}m", f"{sym}c", f"{sym}.a",
+                sym.replace("USDT", "USD"),
+                f"{sym.replace('USDT', 'USD')}m",
+                f"{sym.replace('USDT', 'USD')}c"
+            ]
+            if any(k in sym.upper() for k in ["XAU", "GOLD", "PAXG"]):
+                candidates.extend(["XAUUSD", "XAUUSDm", "XAUUSDc", "XAUUSD.a", "GOLD", "GOLDm"])
+
+            found_sym = None
+            ask_val, bid_val = 0.0, 0.0
+
+            for s in candidates:
+                try:
+                    mt5.symbol_select(s, True)
+                    t = mt5.symbol_info_tick(s)
+                    if t and t.ask > 0 and t.bid > 0:
+                        found_sym = s
+                        ask_val, bid_val = float(t.ask), float(t.bid)
                         break
-            if tick:
-                res = {"symbol": sym, "ask": tick.ask, "bid": tick.bid, "price": (tick.ask + tick.bid) / 2.0}
+                    si = mt5.symbol_info(s)
+                    if si and getattr(si, "ask", 0) > 0 and getattr(si, "bid", 0) > 0:
+                        found_sym = s
+                        ask_val, bid_val = float(si.ask), float(si.bid)
+                        break
+                except Exception:
+                    pass
+
+            if found_sym and ask_val > 0:
+                res = {"symbol": found_sym, "ask": ask_val, "bid": bid_val, "price": (ask_val + bid_val) / 2.0}
             else:
-                res = {"error": "Tick unavailable"}
+                res = {"error": f"Tick unavailable for {sym}"}
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
@@ -259,7 +293,26 @@ class MT5BridgeHandler(BaseHTTPRequestHandler):
                 is_market = order_type_str in ("BUY", "SELL")
                 action = mt5.TRADE_ACTION_DEAL if is_market else mt5.TRADE_ACTION_PENDING
 
-                s_info = mt5.symbol_info(sym)
+                candidates = [
+                    sym, f"{sym}m", f"{sym}c", f"{sym}.a",
+                    sym.replace("USDT", "USD"),
+                    f"{sym.replace('USDT', 'USD')}m",
+                    f"{sym.replace('USDT', 'USD')}c"
+                ]
+                if any(k in sym.upper() for k in ["XAU", "GOLD", "PAXG"]):
+                    candidates.extend(["XAUUSD", "XAUUSDm", "XAUUSDc", "XAUUSD.a", "GOLD", "GOLDm"])
+
+                s_info = None
+                for s_try in candidates:
+                    try:
+                        mt5.symbol_select(s_try, True)
+                        s_info = mt5.symbol_info(s_try)
+                        if s_info:
+                            sym = s_try
+                            break
+                    except Exception:
+                        pass
+
                 filling_flags = getattr(s_info, "filling_mode", 0) if s_info else 0
                 best_filling = mt5.ORDER_FILLING_RETURN
                 if filling_flags & 4: best_filling = mt5.ORDER_FILLING_RETURN
@@ -283,7 +336,7 @@ class MT5BridgeHandler(BaseHTTPRequestHandler):
                 if res_send and res_send.retcode in (0, 10004, 10008, 10009):
                     res = {"success": True, "ticket": res_send.order or res_send.deal, "retcode": res_send.retcode}
                 else:
-                    err_txt = res_send.comment if res_send else str(mt5.last_error())
+                    err_txt = getattr(res_send, 'comment', None) or str(mt5.last_error())
                     res = {"success": False, "error": err_txt, "retcode": getattr(res_send, "retcode", -1)}
             except Exception as e:
                 res = {"success": False, "error": str(e)}
@@ -317,26 +370,146 @@ class MT5BridgeHandler(BaseHTTPRequestHandler):
                 query = self.path.split("?")[1] if "?" in self.path else ""
                 params = dict(p.split("=") for p in query.split("&") if "=" in p)
                 ticket = int(params.get("ticket", 0))
+                req_vol = float(params.get("volume", 0.0))
                 poss = mt5.positions_get(ticket=ticket)
                 if poss:
                     pos = poss[0]
+                    vol_to_close = req_vol if (req_vol > 0 and req_vol <= pos.volume) else pos.volume
                     close_type = mt5.ORDER_TYPE_SELL if pos.type == mt5.ORDER_TYPE_BUY else mt5.ORDER_TYPE_BUY
                     tick = mt5.symbol_info_tick(pos.symbol)
                     price = tick.bid if pos.type == mt5.ORDER_TYPE_BUY else tick.ask
+                    
+                    symbol_info = mt5.symbol_info(pos.symbol)
+                    filling_mode = getattr(symbol_info, "filling_mode", 0) if symbol_info else 0
+                    best_filling = mt5.ORDER_FILLING_IOC
+                    if filling_mode & 1: best_filling = mt5.ORDER_FILLING_FOK
+                    elif filling_mode & 4: best_filling = mt5.ORDER_FILLING_RETURN
+
                     req = {
                         "action": mt5.TRADE_ACTION_DEAL,
                         "symbol": pos.symbol,
-                        "volume": pos.volume,
+                        "volume": vol_to_close,
                         "type": close_type,
                         "position": pos.ticket,
                         "price": price,
                         "magic": pos.magic,
-                        "comment": "Maty Bridge Close"
+                        "comment": "Maty Bridge Close",
+                        "type_filling": best_filling
                     }
                     res_cl = mt5.order_send(req)
-                    res = {"success": bool(res_cl and res_cl.retcode in (0, 10009)), "retcode": getattr(res_cl, "retcode", -1)}
+                    if res_cl is None or getattr(res_cl, "retcode", -1) not in (0, 10009, 10008, 10004):
+                        for alt in [mt5.ORDER_FILLING_FOK, mt5.ORDER_FILLING_IOC, mt5.ORDER_FILLING_RETURN]:
+                            req["type_filling"] = alt
+                            res_cl = mt5.order_send(req)
+                            if res_cl and res_cl.retcode in (0, 10009, 10008, 10004):
+                                break
+                    res = {"success": bool(res_cl and res_cl.retcode in (0, 10009, 10008, 10004)), "retcode": getattr(res_cl, "retcode", -1)}
                 else:
                     res = {"success": False, "error": "Position not found"}
+            except Exception as e:
+                res = {"success": False, "error": str(e)}
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(res).encode())
+            return
+
+        if self.path.startswith("/modify_sl_tp"):
+            try:
+                query = self.path.split("?")[1] if "?" in self.path else ""
+                params = dict(p.split("=") for p in query.split("&") if "=" in p)
+                ticket = int(params.get("ticket", 0))
+                sl_val = float(params.get("sl", 0.0))
+                tp_val = float(params.get("tp", 0.0))
+                poss = mt5.positions_get(ticket=ticket)
+                if poss:
+                    pos = poss[0]
+                    req = {
+                        "action": mt5.TRADE_ACTION_SLTP,
+                        "symbol": pos.symbol,
+                        "position": int(ticket),
+                        "sl": float(sl_val),
+                        "tp": float(tp_val),
+                    }
+                    res_m = mt5.order_send(req)
+                    res = {"success": bool(res_m and res_m.retcode in (0, 10009, 10008, 10004)), "retcode": getattr(res_m, "retcode", -1)}
+                else:
+                    res = {"success": False, "error": "Position not found"}
+            except Exception as e:
+                res = {"success": False, "error": str(e)}
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(res).encode())
+            return
+        if self.path.startswith("/close_all"):
+            try:
+                query = self.path.split("?")[1] if "?" in self.path else ""
+                params = dict(p.split("=") for p in query.split("&") if "=" in p)
+                sym = params.get("symbol", "")
+                side_filter = params.get("side", "").upper()
+                
+                poss = mt5.positions_get(symbol=sym) if sym else mt5.positions_get()
+                closed_count = 0
+                if poss:
+                    for pos in list(poss):
+                        pos_side = "BUY" if pos.type == mt5.POSITION_TYPE_BUY else "SELL"
+                        if side_filter and side_filter != pos_side:
+                            continue
+                        close_type = mt5.ORDER_TYPE_SELL if pos.type == mt5.POSITION_TYPE_BUY else mt5.ORDER_TYPE_BUY
+                        tick = mt5.symbol_info_tick(pos.symbol)
+                        price = (tick.bid if close_type == mt5.ORDER_TYPE_SELL else tick.ask) if tick else getattr(pos, "price_current", 0.0)
+                        
+                        symbol_info = mt5.symbol_info(pos.symbol)
+                        filling_mode = getattr(symbol_info, "filling_mode", 0) if symbol_info else 0
+                        best_filling = mt5.ORDER_FILLING_IOC
+                        if filling_mode & 1: best_filling = mt5.ORDER_FILLING_FOK
+                        elif filling_mode & 4: best_filling = mt5.ORDER_FILLING_RETURN
+
+                        req = {
+                            "action": mt5.TRADE_ACTION_DEAL,
+                            "symbol": pos.symbol,
+                            "volume": pos.volume,
+                            "type": close_type,
+                            "position": pos.ticket,
+                            "price": price,
+                            "magic": getattr(pos, "magic", 0),
+                            "comment": "Maty Emergency Flatten",
+                            "type_filling": best_filling
+                        }
+                        res_cl = mt5.order_send(req)
+                        if res_cl and res_cl.retcode in (0, 10009, 10008, 10004):
+                            closed_count += 1
+                        else:
+                            for alt in [mt5.ORDER_FILLING_FOK, mt5.ORDER_FILLING_IOC, mt5.ORDER_FILLING_RETURN]:
+                                req["type_filling"] = alt
+                                res_cl = mt5.order_send(req)
+                                if res_cl and res_cl.retcode in (0, 10009, 10008, 10004):
+                                    closed_count += 1
+                                    break
+                res = {"success": True, "closed_count": closed_count}
+            except Exception as e:
+                res = {"success": False, "error": str(e)}
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(res).encode())
+            return
+
+        if self.path.startswith("/cancel_all"):
+            try:
+                query = self.path.split("?")[1] if "?" in self.path else ""
+                params = dict(p.split("=") for p in query.split("&") if "=" in p)
+                sym = params.get("symbol", "")
+                orders = mt5.orders_get(symbol=sym) if sym else mt5.orders_get()
+                cancelled_count = 0
+                if orders:
+                    for o in list(orders):
+                        req = {"action": mt5.TRADE_ACTION_REMOVE, "order": o.ticket}
+                        res_c = mt5.order_send(req)
+                        if res_c and res_c.retcode in (0, 10009, 10008, 10004):
+                            cancelled_count += 1
+                res = {"success": True, "cancelled_count": cancelled_count}
             except Exception as e:
                 res = {"success": False, "error": str(e)}
             self.send_response(200)
@@ -348,37 +521,104 @@ class MT5BridgeHandler(BaseHTTPRequestHandler):
         self.send_response(404)
         self.end_headers()
 
+def ensure_mt5(port: int) -> bool:
+    global _mt5_ready, _mt5_saved_login, _mt5_saved_pwd, _mt5_saved_srv, _mt5_path
+    try:
+        term = mt5.terminal_info()
+        if term is not None:
+            _mt5_ready = True
+            return True
+    except Exception:
+        pass
+
+    with _mt5_lock:
+        try:
+            term = mt5.terminal_info()
+            if term is not None:
+                _mt5_ready = True
+                return True
+        except Exception:
+            pass
+
+        cfg = get_bridge_config(port)
+        _mt5_saved_login = cfg.get("login")
+        _mt5_saved_pwd = cfg.get("password")
+        _mt5_saved_srv = cfg.get("server", "Exness-MT5Real36")
+        if not _mt5_path:
+            _mt5_path = r"C:\Program Files\MetaTrader 5_2\terminal64.exe" if port == 8002 else r"C:\Program Files\MetaTrader 5\terminal64.exe"
+
+        init_ok = False
+        if _mt5_saved_login and _mt5_saved_pwd:
+            is_conflict, other_p = check_other_bridge_conflict(port, _mt5_saved_login)
+            if not is_conflict:
+                try:
+                    init_ok = mt5.initialize(path=_mt5_path, login=_mt5_saved_login, password=_mt5_saved_pwd, server=_mt5_saved_srv, timeout=5000)
+                    if init_ok:
+                        mt5.login(login=_mt5_saved_login, password=_mt5_saved_pwd, server=_mt5_saved_srv, timeout=5000)
+                        _mt5_ready = True
+                        return True
+                except Exception as e:
+                    print(f"[Bridge {port}] Login error: {e}")
+
+        if not init_ok:
+            try:
+                init_ok = mt5.initialize(path=_mt5_path, timeout=5000)
+            except Exception:
+                pass
+        if not init_ok:
+            try:
+                init_ok = mt5.initialize(timeout=5000)
+            except Exception:
+                pass
+        
+        _mt5_ready = bool(init_ok)
+        return _mt5_ready
+
+class CustomServer(ThreadingHTTPServer):
+    allow_reuse_address = True
+    daemon_threads = True
+
 if __name__ == "__main__":
     port = int(sys.argv[1]) if len(sys.argv) > 1 else int(os.getenv("PORT", 8001))
     os.environ["PORT"] = str(port)
-    mt5_path = os.getenv("MT5_PATH")
-    if not mt5_path:
-        mt5_path = r"C:\Program Files\MetaTrader 5_2\terminal64.exe" if port == 8002 else r"C:\Program Files\MetaTrader 5\terminal64.exe"
-    
-    cfg = get_bridge_config(port)
-    saved_login = cfg.get("login")
-    saved_pwd = cfg.get("password")
-    saved_srv = cfg.get("server", "Exness-MT5Real36")
+    _mt5_path = os.getenv("MT5_PATH")
+    if not _mt5_path:
+        _mt5_path = r"C:\Program Files\MetaTrader 5_2\terminal64.exe" if port == 8002 else r"C:\Program Files\MetaTrader 5\terminal64.exe"
 
-    init_ok = False
-    if saved_login and saved_pwd:
-        is_conflict, other_p = check_other_bridge_conflict(port, saved_login)
-        if not is_conflict:
-            init_ok = mt5.initialize(path=mt5_path, login=saved_login, password=saved_pwd, server=saved_srv)
-            if init_ok:
-                login_ok = mt5.login(login=saved_login, password=saved_pwd, server=saved_srv)
-                if login_ok:
-                    print(f"MetaTrader5 restored saved login {saved_login} on port {port}!")
+    # ── Auto-seed bridge config from environment variables ──────────────────────
+    # Set EXNESS_LOGIN_1 / EXNESS_PASSWORD_1 / EXNESS_SERVER_1 for Bot #1 (port 8001)
+    # Set EXNESS_LOGIN_2 / EXNESS_PASSWORD_2 / EXNESS_SERVER_2 for Bot #2 (port 8002)
+    _idx = "1" if port == 8001 else "2"
+    _env_login  = os.getenv(f"EXNESS_LOGIN_{_idx}") or os.getenv("EXNESS_LOGIN", "")
+    _env_pass   = os.getenv(f"EXNESS_PASSWORD_{_idx}") or os.getenv("EXNESS_PASSWORD", "")
+    _env_server = os.getenv(f"EXNESS_SERVER_{_idx}") or os.getenv("EXNESS_SERVER", "Exness-MT5Real36")
+    _cfg_path   = CONFIG_FILE_TMPL.format(port=port)
 
-    if not init_ok:
-        init_ok = mt5.initialize(path=mt5_path)
-    
-    if not init_ok:
-        print(f"MT5 Init status on port {port}: {mt5.last_error()}")
+    if _env_login and _env_pass and not os.path.exists(_cfg_path):
+        try:
+            save_bridge_config(port, int(_env_login), _env_pass, _env_server)
+            print(f"[Bridge {port}] Auto-seeded credentials for account {_env_login} from environment variables.")
+        except Exception as _seed_err:
+            print(f"[Bridge {port}] Warning: Could not auto-seed config: {_seed_err}")
+    elif os.path.exists(_cfg_path):
+        _existing_cfg = get_bridge_config(port)
+        print(f"[Bridge {port}] Loaded saved credentials for account {_existing_cfg.get('login', '?')}.")
+    # ────────────────────────────────────────────────────────────────────────────
+
+    threading.Thread(target=ensure_mt5, args=(port,), daemon=True).start()
+
+    server = None
+    for attempt in range(10):
+        try:
+            server = CustomServer(("127.0.0.1", port), MT5BridgeHandler)
+            print(f"[Bridge {port}] REST server listening on port {port} (attempt {attempt+1})...")
+            break
+        except Exception as e:
+            print(f"[Bridge {port}] Bind attempt {attempt+1} failed: {e}, retrying in 1s...")
+            time.sleep(1)
+
+    if server:
+        server.serve_forever()
     else:
-        print(f"MetaTrader5 initialized successfully in Wine on port {port}!")
-    
-    server = HTTPServer(("0.0.0.0", port), MT5BridgeHandler)
-    print(f"MT5 Bridge Server listening on port {port}...")
-    server.serve_forever()
-
+        print(f"[Bridge {port}] Failed to bind after 10 attempts!")
+        sys.exit(1)

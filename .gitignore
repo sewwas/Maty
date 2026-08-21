@@ -51,11 +51,17 @@ tmp*
 
 # Runtime state files & temporary media
 bot_state.json
+bot_state_*.json
 investor_data.json
 manual_bot_state.json
+manual_bot_state_*.json
 bandit_report.json
 *.jpeg
 *.jpg
 *.png
+
+# Private Account Credentials
+bridge_config_*.json
+portal_config.json
 
 
