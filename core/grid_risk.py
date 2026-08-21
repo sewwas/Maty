@@ -758,6 +758,25 @@ def check_target_profit(self, current_price: float, timestamp: float) -> Optiona
             exit_reason = "TARGET_PROFIT"
             print(f"[{sym_u}] 💰 [CYCLE TP HIT] Basket reached target of ${effective_cycle_target:.2f} (Total PnL: ${total_pnl:.2f})! Instant Close All.")
 
+        # ── 3. High-Water Mark Peak-Profit Trailing Lock ──
+        # If the cycle made solid profit and starts pulling back, close immediately to secure gains!
+        if not exit_triggered and max_pnl >= min_profit_threshold * 2.0:
+            is_gold = any(x in sym_u for x in ["XAU", "GOLD", "PAXG"])
+            min_lock_activation = 2.0 if is_gold else 1.0
+            
+            if max_pnl >= min_lock_activation:
+                if max_pnl >= 10.0:
+                    locked_floor = max_pnl * 0.70  # Lock 70% of peak gains, tolerate 30% pullback
+                elif max_pnl >= 5.0:
+                    locked_floor = max_pnl * 0.60  # Lock 60% of peak gains
+                else:
+                    locked_floor = max(0.50, max_pnl * 0.50)  # Lock at least $0.50+ profit
+                
+                if total_pnl <= locked_floor and total_pnl > 0:
+                    exit_triggered = True
+                    exit_reason = "TARGET_PROFIT"
+                    print(f"[{sym_u}] 🏆 [PEAK PROFIT TRAIL LOCK] Peak was +${max_pnl:.2f}. Pullback reached floor +${locked_floor:.2f} (current: +${total_pnl:.2f}). Securing gains!")
+
     if exit_triggered:
         print(f"[{self.symbol}] 🎯 [PROFIT TAKING EXIT] {exit_reason} met! Net PnL: ${total_pnl:+.2f} USD")
         if hasattr(self.broker, "cancel_all_orders"):

@@ -90,13 +90,23 @@ class BacktestBroker:
     def close_all_positions(self, exit_price: float = 0.0, timestamp: float = 0.0, symbol=None, side=None, exclude_ids=None):
         closed = []
         exclude_ids = exclude_ids or set()
+        px = exit_price if exit_price > 0 else (self.last_bid if side == "BUY" else self.last_ask)
         for pid in list(self.open_positions.keys()):
             if pid in exclude_ids:
                 continue
-            res = self.close_position(pid, exit_price, timestamp)
+            pos = self.open_positions.get(pid)
+            if pos and side and str(pos.type).upper() != str(side).upper():
+                continue
+            res = self.close_position(pid, px if px > 0 else getattr(pos, 'entry_price', 2000.0), timestamp)
             if res:
                 closed.append(res)
         return closed
+
+    def close_buy_positions(self, symbol=None):
+        return self.close_all_positions(side="BUY")
+
+    def close_sell_positions(self, symbol=None):
+        return self.close_all_positions(side="SELL")
 
     def get_floating_pnl(self, current_price: float) -> float:
         total_pnl = 0.0
@@ -111,25 +121,37 @@ class BacktestBroker:
         self.last_bid = bid
         triggered = []
         
-        # Check pending order activations with realistic adverse execution slippage simulation
+        # Check pending order activations (LIMIT + STOP) with execution slippage simulation
         pip_unit = 0.10
         for oid, o in list(self.pending_orders.items()):
+            is_triggered = False
+            fill_price = o.trigger_price
+            pos_type = "BUY"
+            
             if o.type == "BUY_STOP" and ask >= o.trigger_price:
-                slippage = random.uniform(0.0, 1.5) * pip_unit
-                entry_price = o.trigger_price + slippage
-                pid = f"pos_{len(self.open_positions)+1}_{int(timestamp)}"
-                pos = Position(type="BUY", entry_price=entry_price, size=o.size, entry_time=timestamp)
-                pos.position_id = pid
-                pos.tp = getattr(o, 'tp', 0.0)
-                pos.sl = getattr(o, 'sl', 0.0)
-                self.open_positions[pid] = pos
-                del self.pending_orders[oid]
-                triggered.append(pos)
+                slippage = random.uniform(0.0, 1.0) * pip_unit
+                fill_price = o.trigger_price + slippage
+                is_triggered = True
+                pos_type = "BUY"
             elif o.type == "SELL_STOP" and bid <= o.trigger_price:
-                slippage = random.uniform(0.0, 1.5) * pip_unit
-                entry_price = o.trigger_price - slippage
+                slippage = random.uniform(0.0, 1.0) * pip_unit
+                fill_price = o.trigger_price - slippage
+                is_triggered = True
+                pos_type = "SELL"
+            elif o.type == "BUY_LIMIT" and ask <= o.trigger_price:
+                slippage = random.uniform(0.0, 0.5) * pip_unit
+                fill_price = o.trigger_price - slippage
+                is_triggered = True
+                pos_type = "BUY"
+            elif o.type == "SELL_LIMIT" and bid >= o.trigger_price:
+                slippage = random.uniform(0.0, 0.5) * pip_unit
+                fill_price = o.trigger_price + slippage
+                is_triggered = True
+                pos_type = "SELL"
+                
+            if is_triggered:
                 pid = f"pos_{len(self.open_positions)+1}_{int(timestamp)}"
-                pos = Position(type="SELL", entry_price=entry_price, size=o.size, entry_time=timestamp)
+                pos = Position(type=pos_type, entry_price=fill_price, size=o.size, entry_time=timestamp)
                 pos.position_id = pid
                 pos.tp = getattr(o, 'tp', 0.0)
                 pos.sl = getattr(o, 'sl', 0.0)
