@@ -331,7 +331,7 @@ class AutoReadingEngine:
 
         now_ts = time.time()
         
-        # 6. Apply strict 5-minute (300s) trend lock cooldown with 'Sustained Signal' verification
+        # 6. Apply responsive trend confirmation with debouncing (switch after 2 verified ticks / 10s)
         if not hasattr(self, "_last_unidirectional_mode"):
             self._last_unidirectional_mode = unidirectional_mode
             self._last_unidirectional_ts = now_ts
@@ -350,8 +350,8 @@ class AutoReadingEngine:
                     self._pending_unidirectional_mode = unidirectional_mode
                     self._pending_unidirectional_count = 1
 
-                # Only switch if we've been out of the old trend for 180s (3m) AND the new trend is stable for at least 5 engine ticks
-                if (now_ts - self._last_unidirectional_ts >= 180.0) and self._pending_unidirectional_count >= 5:
+                # Responsive switch after 2 consecutive confirmed ticks (or 10s) — eliminates 3-minute lag
+                if (now_ts - self._last_unidirectional_ts >= 10.0) or self._pending_unidirectional_count >= 2:
                     self._last_unidirectional_mode = unidirectional_mode
                     self._last_unidirectional_ts = now_ts
                     self._pending_unidirectional_count = 0

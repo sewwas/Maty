@@ -950,6 +950,14 @@ def process_engine_tick(self, previous_price: float, current_price: float, times
     elif current_open == 0 and current_pending > 0 and current_pending < last_pending:
         needs_refresh = True
         refresh_reason = "Pending order(s) canceled"
+    else:
+        # Check if AI mode flipped (e.g. BUY_ONLY -> SELL_ONLY) with 0 active positions
+        curr_uni = str(getattr(self, "unidirectional_mode", getattr(self, "auto_universe_bias", ""))).upper()
+        last_uni = str(getattr(self, "_last_synced_uni_mode", curr_uni)).upper()
+        if curr_uni and last_uni and curr_uni != last_uni and current_open == 0 and current_pending > 0:
+            needs_refresh = True
+            refresh_reason = f"Trend bias flipped ({last_uni} -> {curr_uni})"
+        self._last_synced_uni_mode = curr_uni
 
     if needs_refresh:
         print(f"[{self.symbol}] 🔄 [GRID REFRESH] {refresh_reason}. Canceling {current_pending} remaining pending orders to deploy a new grid.")
