@@ -905,6 +905,7 @@ def process_engine_tick(self, previous_price: float, current_price: float, times
     if len(getattr(self.broker, "open_positions", {})) > 0:
         try:
             enforce_profit_lock(self, current_price, timestamp)
+            enforce_trend_aware_position_guard(self, current_price, timestamp)  # 🔄 Trend flip → quick exit; trend aligned → hold for max profit
             trail_stop_loss_5m_structure(self, current_price, timestamp)
             # evaluate_partial_tp(self, current_price, timestamp)             # Disabled per user: scale-outs bleed in chop
             align_basket_take_profits(self, current_price, timestamp)       # ATR basket TP alignment (fallback/tighten)
@@ -1686,6 +1687,119 @@ def sync_cycle_history_from_trades(self):
                     "exit_time": ts_val,
                     "is_win": pnl_val > 0.0
                 })
+
+
+def enforce_trend_aware_position_guard(self, current_price: float, timestamp: float) -> int:
+    """
+    🔄 TREND-AWARE POSITION GUARD — Runs every tick.
+
+    Rule 1 — TREND FLIPPED AGAINST POSITION (Quick Exit):
+      If the active auto-mode trend has reversed against an open position:
+        • If position is in ANY profit  → close immediately, lock the gain.
+        • If position is at a SMALL loss (within cut_loss_threshold) → close
+          now before the loss grows larger (stop-hunt avoidance).
+        • If loss already exceeds threshold → leave it to the hard SL.
+      This prevents SL/TP being hunted by the reversal move.
+
+    Rule 2 — TREND STILL WITH POSITION (Hold for Max Profit):
+      If trend is aligned with the open position, do NOT interfere.
+      enforce_profit_lock + trail_stop_loss will ride the move for
+      maximum profit automatically — no early exit needed.
+    """
+    if not getattr(self.broker, "open_positions", None):
+        return 0
+
+    now_ts = timestamp or time.time()
+    last_tg = getattr(self, "_last_trend_guard_time", 0.0)
+    if now_ts - last_tg < 2.0:   # Throttle: check every 2 s
+        return 0
+    self._last_trend_guard_time = now_ts
+
+    sym_name = str(getattr(self.broker, "symbol", getattr(self, "symbol_code", ""))).upper()
+    is_gold  = any(x in sym_name for x in ["XAU", "GOLD", "PAXG"])
+    digits   = 3 if is_gold else (2 if "BTC" in sym_name else 5)
+
+    # ── Resolve current trend from freshest available source ──────────────────
+    # Primary: last_auto_eval (most recent AI decision)
+    auto_uni = str(getattr(self, "unidirectional_mode",
+                           getattr(self, "auto_universe_bias", "DUAL"))).upper()
+    last_eval = getattr(self, "last_auto_eval", None)
+    if isinstance(last_eval, dict):
+        eval_uni = str(last_eval.get("unidirectional_mode", "DUAL")).upper()
+        if eval_uni and eval_uni != "DUAL":
+            auto_uni = eval_uni   # Always prefer freshest AI call
+
+    # Secondary: 5m technical trend cache (updated every 60 s)
+    trail_cache = getattr(self, "_trail_trend_cache", None)
+    trend_5m = str(trail_cache.get("trend", "NEUTRAL")).upper() if trail_cache else "NEUTRAL"
+
+    trend_is_bull = ("BUY"  in auto_uni and "ONLY" in auto_uni) or trend_5m == "BULLISH"
+    trend_is_bear = ("SELL" in auto_uni and "ONLY" in auto_uni) or trend_5m == "BEARISH"
+
+    if not trend_is_bull and not trend_is_bear:
+        return 0   # DUAL / ranging — no clear trend call, do nothing
+
+    # ── Per-symbol cut-loss threshold ─────────────────────────────────────────
+    # Only cut losses SMALLER than this; larger losses are left to the hard SL.
+    if is_gold:
+        cut_loss_threshold = -4.00    # Gold: cut if floating loss < $4
+    elif "BTC" in sym_name:
+        cut_loss_threshold = -120.0
+    elif "ETH" in sym_name:
+        cut_loss_threshold = -8.0
+    else:
+        cut_loss_threshold = -0.0006  # Forex
+
+    closed = 0
+    for pos_id, pos_obj in list(self.broker.open_positions.items()):
+        try:
+            pos_type  = str(getattr(pos_obj, "type", "")).upper()
+            entry     = float(getattr(pos_obj, "entry_price",
+                              getattr(pos_obj, "price_open", current_price)) or current_price)
+
+            if "BUY" in pos_type:
+                floating_pnl  = current_price - entry
+                trend_against = trend_is_bear   # BUY open but market bearish → flip
+                trend_with    = trend_is_bull
+            elif "SELL" in pos_type:
+                floating_pnl  = entry - current_price
+                trend_against = trend_is_bull   # SELL open but market bullish → flip
+                trend_with    = trend_is_bear
+            else:
+                continue
+
+            if trend_with:
+                # ✅ Trend is aligned — hold and let profit engine run for max gain
+                continue
+
+            if trend_against:
+                # ❌ Trend has flipped against this position
+                if floating_pnl >= 0:
+                    # In profit → close immediately to secure the gain
+                    should_close = True
+                    tag    = "💰 [TREND FLIP — PROFIT SECURED]"
+                    detail = f"locking +${floating_pnl:.{digits}f} before reversal hunt"
+                elif floating_pnl > cut_loss_threshold:
+                    # Small loss within acceptable range → cut it now
+                    should_close = True
+                    tag    = "✂️ [TREND FLIP — LOSS CUT]"
+                    detail = f"cutting ${floating_pnl:.{digits}f} loss (trend={auto_uni})"
+                else:
+                    # Large loss already exceeded threshold — hard SL will handle it
+                    should_close = False
+
+                if should_close:
+                    try:
+                        self.broker.close_position(pos_id, current_price, timestamp)
+                        closed += 1
+                        print(f"[{sym_name}] {tag} {pos_type} #{pos_id} "
+                              f"@ {current_price:.{digits}f} | {detail}")
+                    except Exception as e:
+                        import logging; logging.warning(f"Exception: {e}")
+        except Exception as e:
+            import logging; logging.warning(f"Exception: {e}")
+
+    return closed
 
 
 def trail_stop_loss_5m_structure(self, current_price: float, timestamp: float) -> int:
