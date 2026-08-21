@@ -1387,9 +1387,24 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
             _confirmed_gap_mult    = 1.00
 
         placed_count = 0
-        # Dynamic ATR-Based Trap Placement — offset & gap scaled by confirmation state
+        # 1. Live Spread Anti-Hunt Protection (Adds 1.5x live spread buffer so broker spikes never falsely trigger traps)
+        live_spread = max(0.0, float(ask_ref - bid_ref)) if (ask_ref > 0 and bid_ref > 0 and ask_ref >= bid_ref) else 0.0
+        spread_anti_hunt_buffer = max(live_spread * 1.5, 0.0)
+
+        # 2. Dynamic ATR-Based Trap Placement — scaled by confirmation state & live spread
         dynamic_atr_offset  = (atr_5m * _confirmed_offset_mult) if (atr_5m is not None and atr_5m > 0) else 0.0
-        base_start_offset   = max(b_min_stop + 1.0, dynamic_atr_offset, buy_offset_val)
+        base_start_offset   = max(b_min_stop + 1.0, dynamic_atr_offset, buy_offset_val) + spread_anti_hunt_buffer
+
+        # 3. Institutional Smart Money Concepts (SMC) & FVG Key Level Snapping
+        bull_ob  = 0.0
+        bear_ob  = 0.0
+        bull_fvg = 0.0
+        bear_fvg = 0.0
+        if hasattr(self, "last_auto_eval") and isinstance(self.last_auto_eval, dict):
+            bull_ob  = float(self.last_auto_eval.get("bullish_ob", 0.0) or 0.0)
+            bear_ob  = float(self.last_auto_eval.get("bearish_ob", 0.0) or 0.0)
+            bull_fvg = float(self.last_auto_eval.get("bullish_fvg_high", 0.0) or 0.0)
+            bear_fvg = float(self.last_auto_eval.get("bearish_fvg_low", 0.0) or 0.0)
 
         cumulative_gap   = 0.0
         expansion_factor = 1.30 * _confirmed_gap_mult   # Compressed gaps when confirmed
@@ -1407,14 +1422,19 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
                     # 🔥 100% CONFIRMED SELL — 3 LIMIT + 3 STOP HYBRID GRID
                     # SELL_LIMIT above price  → sells the bounce (pullback entry)
                     # SELL_STOP  below price  → sells the breakdown (continuation)
-                    # Covers BOTH: price pulls back up OR just keeps dropping.
                     # ═══════════════════════════════════════════════════════
                     _c_levels = 3   # Fixed 3 per side in confirmed mode
                     _c_gap    = 0.0
                     for ci in range(_c_levels):
                         c_size = self.calculate_level_size(self.order_size, self.order_size_multiplier, ci)
-                        # ── SELL_LIMIT above: wait for bounce, best entry ──
+                        # ── SELL_LIMIT above: wait for bounce, best entry with SMC snapping ──
                         sl_lim_px = round(ask_ref + base_start_offset + _c_gap, digits)
+                        if ci == 0:
+                            if bear_ob > (ask_ref + b_min_stop) and (bear_ob - ask_ref) <= (base_start_offset * 1.6):
+                                sl_lim_px = round(bear_ob, digits)
+                            elif bear_fvg > (ask_ref + b_min_stop) and (bear_fvg - ask_ref) <= (base_start_offset * 1.6):
+                                sl_lim_px = round(bear_fvg, digits)
+
                         self.active_sell_levels.append(sl_lim_px)
                         sl_lim_tp = round(sl_lim_px - dir_tp_dist, digits)
                         sl_lim_sl = round(sl_lim_px + min_sl_dist, digits)
@@ -1442,6 +1462,12 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
                 else:
                     # ── Standard dual-entry SELL (LIMIT + STOP) ──
                     sell_limit_px = round(ask_ref + base_start_offset + cumulative_gap, digits)
+                    if i == 0:
+                        if bear_ob > (ask_ref + b_min_stop) and (bear_ob - ask_ref) <= (base_start_offset * 1.6):
+                            sell_limit_px = round(bear_ob, digits)
+                        elif bear_fvg > (ask_ref + b_min_stop) and (bear_fvg - ask_ref) <= (base_start_offset * 1.6):
+                            sell_limit_px = round(bear_fvg, digits)
+
                     self.active_sell_levels.append(sell_limit_px)
                     sell_limit_tp = round(sell_limit_px - dir_tp_dist, digits)
                     sell_limit_sl = round(sell_limit_px + min_sl_dist, digits)
@@ -1471,14 +1497,19 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
                     # 🔥 100% CONFIRMED BUY — 3 LIMIT + 3 STOP HYBRID GRID
                     # BUY_LIMIT below price  → buys the dip (pullback entry)
                     # BUY_STOP  above price  → buys the breakout (continuation)
-                    # Covers BOTH: price pulls back down OR just keeps rising.
                     # ═══════════════════════════════════════════════════════
                     _c_levels = 3   # Fixed 3 per side in confirmed mode
                     _c_gap    = 0.0
                     for ci in range(_c_levels):
                         c_size = self.calculate_level_size(self.order_size, self.order_size_multiplier, ci)
-                        # ── BUY_LIMIT below: wait for dip, best entry ──
+                        # ── BUY_LIMIT below: wait for dip, best entry with SMC snapping ──
                         bl_lim_px = round(bid_ref - base_start_offset - _c_gap, digits)
+                        if ci == 0:
+                            if bull_ob > 0 and bull_ob < (bid_ref - b_min_stop) and (bid_ref - bull_ob) <= (base_start_offset * 1.6):
+                                bl_lim_px = round(bull_ob, digits)
+                            elif bull_fvg > 0 and bull_fvg < (bid_ref - b_min_stop) and (bid_ref - bull_fvg) <= (base_start_offset * 1.6):
+                                bl_lim_px = round(bull_fvg, digits)
+
                         self.active_buy_levels.append(bl_lim_px)
                         bl_lim_tp = round(bl_lim_px + dir_tp_dist, digits)
                         bl_lim_sl = round(bl_lim_px - min_sl_dist, digits)
@@ -1506,6 +1537,12 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
                 else:
                     # ── Standard dual-entry BUY (LIMIT + STOP) ──
                     buy_limit_px = round(bid_ref - base_start_offset - cumulative_gap, digits)
+                    if i == 0:
+                        if bull_ob > 0 and bull_ob < (bid_ref - b_min_stop) and (bid_ref - bull_ob) <= (base_start_offset * 1.6):
+                            buy_limit_px = round(bull_ob, digits)
+                        elif bull_fvg > 0 and bull_fvg < (bid_ref - b_min_stop) and (bid_ref - bull_fvg) <= (base_start_offset * 1.6):
+                            buy_limit_px = round(bull_fvg, digits)
+
                     self.active_buy_levels.append(buy_limit_px)
                     buy_limit_tp = round(buy_limit_px + dir_tp_dist, digits)
                     buy_limit_sl = round(buy_limit_px - min_sl_dist, digits)
