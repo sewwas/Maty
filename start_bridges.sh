@@ -19,16 +19,43 @@ LOG_DIR="$SCRIPT_DIR/logs"
 mkdir -p "$LOG_DIR"
 
 # ── Wine Prefix Configuration ─────────────────────────────────────────────────
-WINE_PREFIX_1="${WINE_PREFIX_1:-$HOME/.wine_mt5_1}"
-WINE_PREFIX_2="${WINE_PREFIX_2:-$HOME/.wine_mt5_2}"
+# Auto-detect existing Wine prefix and Python
+_DEFAULT_PREFIX="$HOME/.wine"
+if [ -d "$HOME/.wine_mt5_1" ]; then
+    WINE_PREFIX_1="$HOME/.wine_mt5_1"
+else
+    WINE_PREFIX_1="$_DEFAULT_PREFIX"
+fi
 
-# Wine Python path inside each prefix (Wine Python 3.x in the prefix)
-WINE_PYTHON_1="${WINE_PYTHON_1:-$WINE_PREFIX_1/drive_c/Python311/python.exe}"
-WINE_PYTHON_2="${WINE_PYTHON_2:-$WINE_PREFIX_2/drive_c/Python311/python.exe}"
+if [ -d "$HOME/.wine_mt5_2" ]; then
+    WINE_PREFIX_2="$HOME/.wine_mt5_2"
+else
+    WINE_PREFIX_2="$_DEFAULT_PREFIX"
+fi
 
-# MT5 terminal paths inside each Wine prefix
-MT5_PATH_1="${MT5_PATH_1:-C:\\\\Program Files\\\\MetaTrader 5\\\\terminal64.exe}"
-MT5_PATH_2="${MT5_PATH_2:-C:\\\\Program Files\\\\MetaTrader 5\\\\terminal64.exe}"
+# Find Wine Python (checks Program Files/Python311 and Python311 in prefix)
+_find_wine_py() {
+    local p="$1"
+    for py in \
+        "$p/drive_c/Program Files/Python311/python.exe" \
+        "$p/drive_c/Python311/python.exe" \
+        "$p/drive_c/Program Files/Python39/python.exe" \
+        "$p/drive_c/Python39/python.exe" \
+        "$p/drive_c/Python310/python.exe"; do
+        if [ -f "$py" ]; then
+            echo "$py"
+            return 0
+        fi
+    done
+    return 1
+}
+
+WINE_PYTHON_1=$(_find_wine_py "$WINE_PREFIX_1" || echo "$WINE_PREFIX_1/drive_c/Program Files/Python311/python.exe")
+WINE_PYTHON_2=$(_find_wine_py "$WINE_PREFIX_2" || echo "$WINE_PREFIX_2/drive_c/Program Files/Python311/python.exe")
+
+# MT5 terminal paths
+MT5_PATH_1="C:\\Program Files\\MetaTrader 5\\terminal64.exe"
+MT5_PATH_2="C:\\Program Files\\MetaTrader 5_2\\terminal64.exe"
 
 # ── Banner ────────────────────────────────────────────────────────────────────
 echo ""
@@ -38,40 +65,11 @@ echo "╚═══════════════════════�
 echo ""
 echo "  Wine Prefix 1 : $WINE_PREFIX_1"
 echo "  Wine Prefix 2 : $WINE_PREFIX_2"
+echo "  Wine Python 1 : $WINE_PYTHON_1"
+echo "  Wine Python 2 : $WINE_PYTHON_2"
+echo "  Terminal 1    : $MT5_PATH_1"
+echo "  Terminal 2    : $MT5_PATH_2"
 echo ""
-
-# ── Sanity Checks ─────────────────────────────────────────────────────────────
-if ! command -v wine &>/dev/null; then
-    echo "[ERROR] wine not found. Run ./vps_setup.sh first."
-    exit 1
-fi
-
-if [ ! -f "$BRIDGE_SCRIPT" ]; then
-    echo "[ERROR] wine_mt5_bridge.py not found at: $BRIDGE_SCRIPT"
-    exit 1
-fi
-
-_check_prefix() {
-    local prefix="$1" label="$2"
-    if [ ! -d "$prefix" ]; then
-        echo "[WARN] $label Wine prefix not found: $prefix"
-        echo "       Run ./vps_setup.sh to set up Wine prefixes with MT5."
-        echo ""
-        return 1
-    fi
-    return 0
-}
-
-_check_prefix "$WINE_PREFIX_1" "Bot #1" || true
-_check_prefix "$WINE_PREFIX_2" "Bot #2" || true
-
-# Config file check
-if [ ! -f "$SCRIPT_DIR/bridge_config_8001.json" ]; then
-    echo "[WARN] bridge_config_8001.json missing — bridge will start without saved credentials."
-fi
-if [ ! -f "$SCRIPT_DIR/bridge_config_8002.json" ]; then
-    echo "[WARN] bridge_config_8002.json missing — bridge will start without saved credentials."
-fi
 
 # ── Kill existing bridge processes ────────────────────────────────────────────
 echo "Stopping any existing bridge processes..."
@@ -93,29 +91,20 @@ _start_bridge() {
     local bridge_env=(
         "WINEPREFIX=$prefix"
         "WINEDEBUG=-all"
-        "DISPLAY=${DISPLAY:-:0}"
+        "DISPLAY=${DISPLAY:-:1}"
         "PORT=$port"
         "WINE_BRIDGE_PORT=$port"
         "MT5_PATH=$mt5_path"
     )
 
-    # Determine how to run the bridge:
-    # Option A: Wine Python exists in prefix → use it (MetaTrader5 works natively)
-    # Option B: Fallback to system Python3 (bridge uses REST-only mode via port)
-    if [ -f "$prefix/drive_c/Python311/python.exe" ]; then
+    if [ -f "$wine_py" ]; then
         env "${bridge_env[@]}" nohup wine "$wine_py" \
             "$(winepath -w "$BRIDGE_SCRIPT" 2>/dev/null || echo "Z:$BRIDGE_SCRIPT")" \
             "$port" > "$log_file" 2>&1 &
-    elif [ -f "$prefix/drive_c/Python39/python.exe" ]; then
-        local alt_py="$prefix/drive_c/Python39/python.exe"
-        env "${bridge_env[@]}" nohup wine "$alt_py" \
-            "$(winepath -w "$BRIDGE_SCRIPT" 2>/dev/null || echo "Z:$BRIDGE_SCRIPT")" \
-            "$port" > "$log_file" 2>&1 &
     else
-        # Fallback: try system python3 (works if running on same machine without Wine)
-        echo "  [WARN] No Wine Python found in $prefix — using system python3 (simulation mode)"
-        env "${bridge_env[@]}" nohup python3 "$BRIDGE_SCRIPT" \
-            "$port" > "$log_file" 2>&1 &
+        # Fallback: try direct wine python command
+        echo "  [WARN] Wine Python not at $wine_py — attempting wine python execution"
+        env "${bridge_env[@]}" nohup wine python "$BRIDGE_SCRIPT" "$port" > "$log_file" 2>&1 &
     fi
 
     local pid=$!
