@@ -1309,23 +1309,41 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
             if directional_sell:
                 if _is_100pct_grid:
                     # ═══════════════════════════════════════════════════════
-                    # 🔥 100% CONFIRMED SELL — LIMIT-ONLY STACKED GRID
-                    # Only SELL_LIMIT above price. No SELL_STOP below price.
-                    # Reason: trend is fully confirmed DOWN → price will pull
-                    # back UP to our limit, giving the best possible entry.
-                    # Counter-trend SELL_STOP is removed — no hunting risk.
+                    # 🔥 100% CONFIRMED SELL — 3 LIMIT + 3 STOP HYBRID GRID
+                    # SELL_LIMIT above price  → sells the bounce (pullback entry)
+                    # SELL_STOP  below price  → sells the breakdown (continuation)
+                    # Covers BOTH: price pulls back up OR just keeps dropping.
                     # ═══════════════════════════════════════════════════════
-                    sell_limit_px = round(ask_ref + base_start_offset + cumulative_gap, digits)
-                    self.active_sell_levels.append(sell_limit_px)
-                    sell_limit_tp = round(sell_limit_px - dir_tp_dist, digits)
-                    sell_limit_sl = round(sell_limit_px + min_sl_dist, digits)
-                    try:
-                        r = self.broker.place_order("SELL_LIMIT", sell_limit_px, sell_size, timestamp, tp=sell_limit_tp, sl=sell_limit_sl)
-                        if r:
-                            placed_count += 1
-                            print(f"[{sym_name}] 🔥 [CONFIRMED SELL_LIMIT] L{i} @ ${sell_limit_px:,.3f} TP:${sell_limit_tp:,.3f} SL:${sell_limit_sl:,.3f} (100% confirmed)")
-                    except Exception as e:
-                        print(f"[{sym_name}] SELL_LIMIT L{i} error: {e}")
+                    _c_levels = 3   # Fixed 3 per side in confirmed mode
+                    _c_gap    = 0.0
+                    for ci in range(_c_levels):
+                        c_size = self.calculate_level_size(self.order_size, self.order_size_multiplier, ci)
+                        # ── SELL_LIMIT above: wait for bounce, best entry ──
+                        sl_lim_px = round(ask_ref + base_start_offset + _c_gap, digits)
+                        self.active_sell_levels.append(sl_lim_px)
+                        sl_lim_tp = round(sl_lim_px - dir_tp_dist, digits)
+                        sl_lim_sl = round(sl_lim_px + min_sl_dist, digits)
+                        try:
+                            r = self.broker.place_order("SELL_LIMIT", sl_lim_px, c_size, timestamp, tp=sl_lim_tp, sl=sl_lim_sl)
+                            if r:
+                                placed_count += 1
+                                print(f"[{sym_name}] 🔥 [CONF SELL_LIMIT] L{ci} @ ${sl_lim_px:,.3f} TP:${sl_lim_tp:,.3f} (bounce catcher)")
+                        except Exception as e:
+                            print(f"[{sym_name}] SELL_LIMIT L{ci} error: {e}")
+                        # ── SELL_STOP below: catch continuation if no pullback ──
+                        sl_stp_px = round(bid_ref - base_start_offset - _c_gap, digits)
+                        self.active_sell_levels.append(sl_stp_px)
+                        sl_stp_tp = round(sl_stp_px - dir_tp_dist, digits)
+                        sl_stp_sl = round(sl_stp_px + min_sl_dist, digits)
+                        try:
+                            r = self.broker.place_order("SELL_STOP", sl_stp_px, c_size, timestamp, tp=sl_stp_tp, sl=sl_stp_sl)
+                            if r:
+                                placed_count += 1
+                                print(f"[{sym_name}] 🔥 [CONF SELL_STOP]  L{ci} @ ${sl_stp_px:,.3f} TP:${sl_stp_tp:,.3f} (continuation catcher)")
+                        except Exception as e:
+                            print(f"[{sym_name}] SELL_STOP L{ci} error: {e}")
+                        _c_gap += gap_val * (expansion_factor ** ci)
+
                 else:
                     # ── Standard dual-entry SELL (LIMIT + STOP) ──
                     sell_limit_px = round(ask_ref + base_start_offset + cumulative_gap, digits)
@@ -1355,23 +1373,41 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
             elif directional_buy:
                 if _is_100pct_grid:
                     # ═══════════════════════════════════════════════════════
-                    # 🔥 100% CONFIRMED BUY — LIMIT-ONLY STACKED GRID
-                    # Only BUY_LIMIT below price. No BUY_STOP above price.
-                    # Reason: trend is fully confirmed UP → price will dip
-                    # DOWN to our limit, giving the best possible entry.
-                    # Counter-trend BUY_STOP is removed — no hunting risk.
+                    # 🔥 100% CONFIRMED BUY — 3 LIMIT + 3 STOP HYBRID GRID
+                    # BUY_LIMIT below price  → buys the dip (pullback entry)
+                    # BUY_STOP  above price  → buys the breakout (continuation)
+                    # Covers BOTH: price pulls back down OR just keeps rising.
                     # ═══════════════════════════════════════════════════════
-                    buy_limit_px = round(bid_ref - base_start_offset - cumulative_gap, digits)
-                    self.active_buy_levels.append(buy_limit_px)
-                    buy_limit_tp = round(buy_limit_px + dir_tp_dist, digits)
-                    buy_limit_sl = round(buy_limit_px - min_sl_dist, digits)
-                    try:
-                        r = self.broker.place_order("BUY_LIMIT", buy_limit_px, buy_size, timestamp, tp=buy_limit_tp, sl=buy_limit_sl)
-                        if r:
-                            placed_count += 1
-                            print(f"[{sym_name}] 🔥 [CONFIRMED BUY_LIMIT] L{i} @ ${buy_limit_px:,.3f} TP:${buy_limit_tp:,.3f} SL:${buy_limit_sl:,.3f} (100% confirmed)")
-                    except Exception as e:
-                        print(f"[{sym_name}] BUY_LIMIT L{i} error: {e}")
+                    _c_levels = 3   # Fixed 3 per side in confirmed mode
+                    _c_gap    = 0.0
+                    for ci in range(_c_levels):
+                        c_size = self.calculate_level_size(self.order_size, self.order_size_multiplier, ci)
+                        # ── BUY_LIMIT below: wait for dip, best entry ──
+                        bl_lim_px = round(bid_ref - base_start_offset - _c_gap, digits)
+                        self.active_buy_levels.append(bl_lim_px)
+                        bl_lim_tp = round(bl_lim_px + dir_tp_dist, digits)
+                        bl_lim_sl = round(bl_lim_px - min_sl_dist, digits)
+                        try:
+                            r = self.broker.place_order("BUY_LIMIT", bl_lim_px, c_size, timestamp, tp=bl_lim_tp, sl=bl_lim_sl)
+                            if r:
+                                placed_count += 1
+                                print(f"[{sym_name}] 🔥 [CONF BUY_LIMIT] L{ci} @ ${bl_lim_px:,.3f} TP:${bl_lim_tp:,.3f} (dip catcher)")
+                        except Exception as e:
+                            print(f"[{sym_name}] BUY_LIMIT L{ci} error: {e}")
+                        # ── BUY_STOP above: catch continuation if no pullback ──
+                        bl_stp_px = round(ask_ref + base_start_offset + _c_gap, digits)
+                        self.active_buy_levels.append(bl_stp_px)
+                        bl_stp_tp = round(bl_stp_px + dir_tp_dist, digits)
+                        bl_stp_sl = round(bl_stp_px - min_sl_dist, digits)
+                        try:
+                            r = self.broker.place_order("BUY_STOP", bl_stp_px, c_size, timestamp, tp=bl_stp_tp, sl=bl_stp_sl)
+                            if r:
+                                placed_count += 1
+                                print(f"[{sym_name}] 🔥 [CONF BUY_STOP]  L{ci} @ ${bl_stp_px:,.3f} TP:${bl_stp_tp:,.3f} (continuation catcher)")
+                        except Exception as e:
+                            print(f"[{sym_name}] BUY_STOP L{ci} error: {e}")
+                        _c_gap += gap_val * (expansion_factor ** ci)
+
                 else:
                     # ── Standard dual-entry BUY (LIMIT + STOP) ──
                     buy_limit_px = round(bid_ref - base_start_offset - cumulative_gap, digits)
