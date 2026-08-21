@@ -510,6 +510,24 @@ os.environ["WINE_BRIDGE_PORT"] = wine_bridge_port
 # ── Query BOTH bridges for account info ───────────────────────────────────
 def _query_bridge(port_str: str) -> Optional[dict]:
     try:
+        from core.mt5_broker import MT5_AVAILABLE, mt5
+        if MT5_AVAILABLE and mt5 is not None and port_str == os.environ.get("WINE_BRIDGE_PORT", "8001"):
+            acc = mt5.account_info()
+            if acc:
+                return {
+                    "connected": True,
+                    "login": acc.login,
+                    "server": acc.server,
+                    "balance": acc.balance,
+                    "equity": acc.equity,
+                    "leverage": acc.leverage,
+                    "currency": acc.currency
+                }
+    except Exception:
+        pass
+
+    try:
+        import requests
         r = requests.get(f"http://127.0.0.1:{port_str}/account", timeout=2.0)
         if r.status_code == 200:
             d = r.json()

@@ -1075,6 +1075,8 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
                     self.broker.cancel_all_orders()
                 except Exception as e:
                     import logging; logging.warning(f"Exception: {e}")
+                    self._is_deploying = False
+                    return
 
         digits = 4 if any(x in sym_name for x in ["DOGE", "GBP", "EUR"]) else (3 if any(x in sym_name for x in ["XAU", "GOLD", "PAXG"]) else 2)
         ask_ref = getattr(self.broker, "last_ask", current_price) or current_price

@@ -808,15 +808,20 @@ class MT5Broker:
 
             for t, sym_name_tk in all_tks:
                 req = {"action": mt5.TRADE_ACTION_REMOVE, "order": t, "symbol": sym_name_tk}
-                mt5.order_send(req)
+                res = mt5.order_send(req)
+                if res and res.retcode not in (0, 10009, 10008, 10004):
+                    raise Exception(f"MT5 cancel failed for {t} retcode {res.retcode}")
         else:
             try:
                 import requests
                 bridge_port = os.getenv("WINE_BRIDGE_PORT", "8001")
                 sym_param = f"?symbol={exness_symbol}" if exness_symbol else ""
-                requests.get(f"http://127.0.0.1:{bridge_port}/cancel_all{sym_param}", timeout=3.0)
+                r = requests.get(f"http://127.0.0.1:{bridge_port}/cancel_all{sym_param}", timeout=15.0)
+                if r.status_code != 200:
+                    raise Exception(f"REST Bridge cancel_all returned status {r.status_code}")
             except Exception as e:
                 print(f"[MT5Broker] REST Bridge cancel_all exception: {e}")
+                raise e
 
         self.pending_orders.clear()
         self.ticket_to_order_id.clear()
