@@ -712,11 +712,14 @@ def check_target_profit(self, current_price: float, timestamp: float) -> Optiona
             has_sells = any("SELL" in str(getattr(p, "type", "")).upper() for p in self.broker.open_positions.values())
             has_buys  = any("BUY"  in str(getattr(p, "type", "")).upper() for p in self.broker.open_positions.values())
             
-            if has_sells and not has_buys and not ("SELL" in auto_uni and "ONLY" in auto_uni):
+            is_bullish = any(x in auto_uni for x in ["BUY", "BULLISH"])
+            is_bearish = any(x in auto_uni for x in ["SELL", "BEARISH"])
+            
+            if has_sells and not has_buys and is_bullish and not is_bearish:
                 exit_triggered = True
                 exit_reason = "TARGET_PROFIT"
                 print(f"[{sym_u}] 🔄 [TREND REVERSAL] Mode changed from SELL to {auto_uni}. Securing +${total_pnl:.2f} early!")
-            elif has_buys and not has_sells and not ("BUY" in auto_uni and "ONLY" in auto_uni):
+            elif has_buys and not has_sells and is_bearish and not is_bullish:
                 exit_triggered = True
                 exit_reason = "TARGET_PROFIT"
                 print(f"[{sym_u}] 🔄 [TREND REVERSAL] Mode changed from BUY to {auto_uni}. Securing +${total_pnl:.2f} early!")
@@ -726,10 +729,13 @@ def check_target_profit(self, current_price: float, timestamp: float) -> Optiona
             has_sells = any("SELL" in str(getattr(p, "type", "")).upper() for p in self.broker.open_positions.values())
             has_buys  = any("BUY"  in str(getattr(p, "type", "")).upper() for p in self.broker.open_positions.values())
             
+            is_bullish = any(x in auto_uni for x in ["BUY", "BULLISH"])
+            is_bearish = any(x in auto_uni for x in ["SELL", "BEARISH"])
+            
             trend_agrees = False
-            if has_buys and not has_sells and "BUY" in auto_uni:
+            if has_buys and not has_sells and is_bullish:
                 trend_agrees = True
-            elif has_sells and not has_buys and "SELL" in auto_uni:
+            elif has_sells and not has_buys and is_bearish:
                 trend_agrees = True
                 
             if trend_agrees:
