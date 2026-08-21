@@ -1356,7 +1356,7 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
             _confirmed_gap_mult    = 1.00
         else:
             dir_tp_dist     = min_tp_dist
-            _confirmed_offset_mult = 0.65
+            _confirmed_offset_mult = 0.70  # Ranging Mode: 0.70x ATR breathing room
             _confirmed_gap_mult    = 1.00
 
         placed_count = 0
