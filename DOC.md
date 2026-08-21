@@ -405,8 +405,10 @@ To start the Streamlit trading dashboard locally:
 Run this single command on a fresh Linux VPS to automatically update packages, install dependencies, set up the virtual environment, install requirements, and run the bot in the background:
 
 ```bash
-sudo apt update -y && sudo apt install -y python3-pip python3-venv git tmux && git clone https://github.com/sewwas/Maty.git maty_bot && cd maty_bot && python3 -m venv .venv && source .venv/bin/activate && pip install --upgrade pip && pip install -r requirements.txt && nohup streamlit run app.py --server.port 8501 --server.address 0.0.0.0 > bot.log 2>&1 &
+sudo apt update -y && sudo apt install -y git && git clone https://github.com/sewwas/Maty.git maty_bot && cd maty_bot && chmod +x vps_setup.sh && ./vps_setup.sh
 ```
+
+> **Note on Linux VPS:** MT5 is a Windows application. The `vps_setup.sh` script automatically installs Wine (Windows emulator), sets up isolated prefixes, installs the Windows version of Python inside them, and configures the MT5 bridge automatically. After running this script, follow the on-screen instructions to start the bridges and the web dashboard.
 
 #### 🔄 Systemd 24/7 Auto-Restart Service Setup (One-Command)
 To ensure the bot runs 24/7 and automatically restarts if the VPS reboots:
