@@ -143,8 +143,17 @@ class MT5Broker:
                     if matching:
                         matching.sort(key=lambda name: (len(name), name))
                         selected = matching[0]
-                        if (mt5.symbol_select if mt5 is not None else (lambda *a, **k: False))(selected, True):
-                            res = selected
+        else:
+            try:
+                import requests
+                bridge_port = os.getenv("WINE_BRIDGE_PORT", "8001")
+                r_sym = requests.get(f"http://127.0.0.1:{bridge_port}/symbol_info?symbol={base_sym}", timeout=0.8)
+                if r_sym.status_code == 200:
+                    d_sym = r_sym.json()
+                    if d_sym.get("symbol") and not d_sym.get("error"):
+                        res = str(d_sym.get("symbol"))
+            except Exception:
+                res = base_sym
 
         self._exness_symbol_cache[ui_symbol] = res
         return res

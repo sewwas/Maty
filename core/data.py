@@ -38,7 +38,7 @@ def get_live_price(symbol: str = "PAXGUSDT") -> Optional[float]:
 
     now = time.time()
 
-    # 0. Try MT5 Live Tick FIRST (Instant 0.0001s in-memory MT5 lookup)
+    # 0. Try MT5 Live Tick FIRST (Native Windows MT5 or Wine REST Bridge on VPS)
     try:
         import MetaTrader5 as mt5
         if mt5 is not None and hasattr(mt5, "terminal_info") and mt5.terminal_info() is not None:
@@ -51,6 +51,22 @@ def get_live_price(symbol: str = "PAXGUSDT") -> Optional[float]:
                         break
             if tick and tick.ask and tick.bid and tick.ask > 0:
                 p = float((tick.ask + tick.bid) / 2.0)
+                _LIVE_PRICE_CACHE[sym] = (p, now)
+                return p
+    except Exception:
+        pass
+
+    # 0b. Try Wine MT5 REST Bridge on Linux VPS
+    try:
+        bridge_port = os.getenv("WINE_BRIDGE_PORT", "8001")
+        b_sym = "XAUUSD" if sym in ("PAXGUSDT", "XAUUSD", "GOLD") else sym.replace("USDT", "USD")
+        r_b = requests.get(f"http://127.0.0.1:{bridge_port}/symbol_info?symbol={b_sym}", timeout=0.8)
+        if r_b.status_code == 200:
+            d_b = r_b.json()
+            ask_b = float(d_b.get("ask", 0.0) or 0.0)
+            bid_b = float(d_b.get("bid", 0.0) or 0.0)
+            if ask_b > 0 and bid_b > 0:
+                p = float((ask_b + bid_b) / 2.0)
                 _LIVE_PRICE_CACHE[sym] = (p, now)
                 return p
     except Exception:
