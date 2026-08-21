@@ -616,11 +616,14 @@ def enforce_position_tp(self, current_price: float, timestamp: float) -> int:
                 auto_uni = str(getattr(self, "auto_universe_bias", "") or "").upper()
                 trend_still_aligned = False
                 if auto_uni and not getattr(self, "_is_manual_mode", False):
-                    if "BUY" in pos_type and "BUY" in auto_uni and "ONLY" in auto_uni:
+                    is_bullish = any(x in auto_uni for x in ["BUY", "BULLISH"])
+                    is_bearish = any(x in auto_uni for x in ["SELL", "BEARISH"])
+                    
+                    if "BUY" in pos_type and is_bullish:
                         trend_still_aligned = True
-                    elif "SELL" in pos_type and "SELL" in auto_uni and "ONLY" in auto_uni:
+                    elif "SELL" in pos_type and is_bearish:
                         trend_still_aligned = True
-
+                
                 if trend_still_aligned:
                     print(f"[{sym_name}] 📈 [TP HOLD — TREND ALIGNED] {pos_type} #{pos_id} | TP ${pos_tp:.{digits}f} reached but trend is {auto_uni} — riding for MORE profit!")
                     continue
