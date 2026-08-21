@@ -1278,13 +1278,13 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
         _is_100pct_grid = is_auto_100pct_confirmed(self)
 
         if (directional_sell or directional_buy) and _is_100pct_grid:
-            dir_tp_dist     = min_tp_dist * 2.5   # 🔥 Max-profit TP (was 1.5×)
+            dir_tp_dist     = min_tp_dist * 1.77  # Backtest optimal (was 2.5x)
             effective_levels = min(effective_levels + 1, 8)  # One extra level, cap at 8
-            _confirmed_offset_mult = 0.35          # Tighter entry — ride the trend open
+            _confirmed_offset_mult = 0.20          # Backtest optimal entry — tighter (was 0.35x)
             _confirmed_gap_mult    = 0.70          # Compressed gap → denser stack
         elif directional_sell or directional_buy:
-            dir_tp_dist     = min_tp_dist * 1.5   # Standard directional TP
-            _confirmed_offset_mult = 0.65
+            dir_tp_dist     = min_tp_dist * 1.15  # Backtest optimal (was 1.5x)
+            _confirmed_offset_mult = 0.45          # Backtest optimal (was 0.65x)
             _confirmed_gap_mult    = 1.00
         else:
             dir_tp_dist     = min_tp_dist
