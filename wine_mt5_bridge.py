@@ -380,13 +380,18 @@ class MT5BridgeHandler(BaseHTTPRequestHandler):
                 params = dict(p.split("=") for p in query.split("&") if "=" in p)
                 ticket = int(params.get("ticket", 0))
                 req_vol = float(params.get("volume", 0.0))
-                poss = mt5.positions_get(ticket=ticket)
+                poss = mt5.positions_get(ticket=ticket) if ticket else ()
+                if not poss:
+                    all_p = mt5.positions_get()
+                    if all_p:
+                        poss = [p for p in all_p if p.ticket == ticket]
                 if poss:
                     pos = poss[0]
                     vol_to_close = req_vol if (req_vol > 0 and req_vol <= pos.volume) else pos.volume
-                    close_type = mt5.ORDER_TYPE_SELL if pos.type == mt5.ORDER_TYPE_BUY else mt5.ORDER_TYPE_BUY
+                    is_buy = (pos.type == 0 or pos.type == getattr(mt5, "POSITION_TYPE_BUY", 0))
+                    close_type = mt5.ORDER_TYPE_SELL if is_buy else mt5.ORDER_TYPE_BUY
                     tick = mt5.symbol_info_tick(pos.symbol)
-                    price = tick.bid if pos.type == mt5.ORDER_TYPE_BUY else tick.ask
+                    price = (tick.bid if is_buy else tick.ask) if tick else getattr(pos, "price_current", 0.0)
                     
                     symbol_info = mt5.symbol_info(pos.symbol)
                     filling_mode = getattr(symbol_info, "filling_mode", 0) if symbol_info else 0
@@ -428,9 +433,15 @@ class MT5BridgeHandler(BaseHTTPRequestHandler):
                 query = self.path.split("?")[1] if "?" in self.path else ""
                 params = dict(p.split("=") for p in query.split("&") if "=" in p)
                 ticket = int(params.get("ticket", 0))
-                sl_val = float(params.get("sl", 0.0))
-                tp_val = float(params.get("tp", 0.0))
-                poss = mt5.positions_get(ticket=ticket)
+                sl_val = float(params.get("sl", 0.0) or 0.0)
+                tp_val = float(params.get("tp", 0.0) or 0.0)
+                if sl_val < 0: sl_val = 0.0
+                if tp_val < 0: tp_val = 0.0
+                poss = mt5.positions_get(ticket=ticket) if ticket else ()
+                if not poss:
+                    all_p = mt5.positions_get()
+                    if all_p:
+                        poss = [p for p in all_p if p.ticket == ticket]
                 if poss:
                     pos = poss[0]
                     req = {
@@ -441,7 +452,7 @@ class MT5BridgeHandler(BaseHTTPRequestHandler):
                         "tp": float(tp_val),
                     }
                     res_m = mt5.order_send(req)
-                    res = {"success": bool(res_m and res_m.retcode in (0, 10009, 10008, 10004)), "retcode": getattr(res_m, "retcode", -1)}
+                    res = {"success": bool(res_m and res_m.retcode in (0, 10009, 10008, 10004)), "retcode": getattr(res_m, "retcode", -1), "comment": getattr(res_m, "comment", "")}
                 else:
                     res = {"success": False, "error": "Position not found"}
             except Exception as e:
