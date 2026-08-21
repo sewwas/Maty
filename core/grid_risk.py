@@ -1275,7 +1275,7 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
         #   • Level gap compressed → denser stacking → more fills at better prices
         #   • +1 extra level → more coverage on the confirmed move
         #   • STOP orders REMOVED → never get filled against the trend direction
-        _is_100pct_grid = is_auto_100pct_confirmed(self)
+        _is_100pct_grid = is_auto_100pct_confirmed(self) and not is_manual  # AUTO only — never fires in manual mode
 
         if (directional_sell or directional_buy) and _is_100pct_grid:
             dir_tp_dist     = min_tp_dist * 1.77  # Backtest optimal (was 2.5x)
