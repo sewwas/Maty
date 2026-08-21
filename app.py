@@ -170,12 +170,11 @@ def get_global_vps_trading_engine_v4():
                 brk.closed_trades = list(m_info_saved["trade_history"])
 
         has_active_orders = bool(brk and (len(getattr(brk, "open_positions", {})) > 0 or len(getattr(brk, "pending_orders", {})) > 0))
-        is_running = bool(m_info_saved.get("running", False)) if isinstance(m_info_saved, dict) else has_active_orders
+        is_running = bool(m_info_saved.get("running", True)) if isinstance(m_info_saved, dict) else True
         
         if is_running:
             bot.auto_restart = True
-            if has_active_orders:
-                bot.deployed = True
+            bot.deployed = has_active_orders
 
         shared_markets[sym] = {
             "broker": brk,
