@@ -600,28 +600,6 @@ def enforce_position_tp(self, current_price: float, timestamp: float) -> int:
                 tp_hit = True
 
             if tp_hit:
-                # Skip if runner mode is active — let check_target_profit handle the basket exit
-                if getattr(self, "in_runner_mode", False):
-                    continue
-
-                # ── TREND-ALIGNED HOLD: Don't take profit early if trend is still confirmed ──
-                # If the trend is strongly confirmed in the same direction as this position,
-                # skip the TP and let trail_stop / enforce_profit_lock ride for max gain.
-                auto_uni = str(getattr(self, "auto_universe_bias", "") or "").upper()
-                trend_still_aligned = False
-                if auto_uni and not getattr(self, "_is_manual_mode", False):
-                    is_bullish = any(x in auto_uni for x in ["BUY", "BULLISH"])
-                    is_bearish = any(x in auto_uni for x in ["SELL", "BEARISH"])
-                    
-                    if "BUY" in pos_type and is_bullish:
-                        trend_still_aligned = True
-                    elif "SELL" in pos_type and is_bearish:
-                        trend_still_aligned = True
-                
-                if trend_still_aligned:
-                    print(f"[{sym_name}] 📈 [TP HOLD — TREND ALIGNED] {pos_type} #{pos_id} | TP ${pos_tp:.{digits}f} reached but trend is {auto_uni} — riding for MORE profit!")
-                    continue
-
                 print(f"[{sym_name}] ✅ [SOFTWARE TP HIT] {pos_type} #{pos_id} | Price: {current_price:.{digits}f} | TP: {pos_tp:.{digits}f} — Force closing!")
                 try:
                     self.broker.close_position(pos_id, current_price, timestamp)
@@ -721,34 +699,24 @@ def check_target_profit(self, current_price: float, timestamp: float) -> Optiona
                 exit_reason = "TARGET_PROFIT"
                 print(f"[{sym_u}] 🔄 [TREND REVERSAL] Mode changed from BUY to {auto_uni}. Securing +${total_pnl:.2f} early!")
 
-        if not exit_triggered and not is_runner_active and total_pnl >= effective_cycle_target:
-            # Smart Trend Hold: Don't close the basket if the trend is strongly in our favor!
-            has_sells = any("SELL" in str(getattr(p, "type", "")).upper() for p in self.broker.open_positions.values())
-            has_buys  = any("BUY"  in str(getattr(p, "type", "")).upper() for p in self.broker.open_positions.values())
-            
-            is_bullish = any(x in auto_uni for x in ["BUY", "BULLISH"])
-            is_bearish = any(x in auto_uni for x in ["SELL", "BEARISH"])
-            
-            trend_agrees = False
-            if has_buys and not has_sells and is_bullish:
-                trend_agrees = True
-            elif has_sells and not has_buys and is_bearish:
-                trend_agrees = True
-                
-            if trend_agrees:
-                print(f"[{sym_u}] 📈 [TREND HOLD] Target ${effective_cycle_target:.2f} met, but trend is {auto_uni}! Letting Profit Engine trail.")
-            else:
-                exit_triggered = True
-                exit_reason = "TARGET_PROFIT"
-                print(f"[{sym_u}] 💰 [CYCLE TP HIT] Basket reached peak target of ${effective_cycle_target:.2f} (Total PnL: ${total_pnl:.2f})!")
+        if not exit_triggered and total_pnl >= effective_cycle_target:
+            exit_triggered = True
+            exit_reason = "TARGET_PROFIT"
+            print(f"[{sym_u}] 💰 [CYCLE TP HIT] Basket reached target of ${effective_cycle_target:.2f} (Total PnL: ${total_pnl:.2f})! Instant Close All.")
 
     if exit_triggered:
         print(f"[{self.symbol}] 🎯 [PROFIT TAKING EXIT] {exit_reason} met! Net PnL: ${total_pnl:+.2f} USD")
         if hasattr(self.broker, "cancel_all_orders"):
-            self.broker.cancel_all_orders()
+            try: self.broker.cancel_all_orders()
+            except Exception as e: import logging; logging.warning(f"Cancel error: {e}")
             
         if hasattr(self.broker, "close_all_positions"):
-            self.broker.close_all_positions()
+            try: self.broker.close_all_positions()
+            except Exception as e: import logging; logging.warning(f"Close error: {e}")
+
+        self.in_runner_mode = False
+        self.max_floating_pnl = -float("inf")
+        self._max_open_in_cycle = 0
 
         summary = {
             "cycle_id": getattr(self, "current_cycle_id", 1),
@@ -758,6 +726,15 @@ def check_target_profit(self, current_price: float, timestamp: float) -> Optiona
             "timestamp": timestamp,
             "exit_price": current_price
         }
+
+        if hasattr(self, "record_trade_outcome"):
+            self.record_trade_outcome(total_pnl, exit_reason, duration)
+
+        if getattr(self, "auto_restart", True):
+            print(f"[{self.symbol}] 🚀 [AUTO RESTART] Redeploying fresh grid at market price {current_price}...")
+            try: self.deploy_traps(current_price, timestamp, force=True)
+            except Exception as dep_err: print(f"Redeploy err: {dep_err}")
+
         return summary
 
     return None
