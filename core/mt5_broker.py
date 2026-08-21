@@ -506,44 +506,18 @@ class MT5Broker:
             mt5_type = mt5.ORDER_TYPE_BUY_STOP if mt5 is not None else 4
             trigger_price = price if price > (ask + min_stop_dist) else (ask + min_stop_dist)
 
-        if mt5 is None:
-            try:
-                import requests
-                import os
-                bridge_port = os.getenv("WINE_BRIDGE_PORT", "8001")
-                sl_val = max(0.0, float(sl or 0.0))
-                tp_val = max(0.0, float(tp or 0.0))
-                # Pass the dynamically adjusted trigger_price instead of the raw requested price
-                url = f"http://127.0.0.1:{bridge_port}/order_send?symbol={exness_symbol}&type={order_type}&price={round(trigger_price, symbol_info.digits)}&volume={size}&sl={sl_val}&tp={tp_val}&magic={self.magic_number}"
-                r_resp = requests.get(url, timeout=3.0)
-                if r_resp.status_code == 200:
-                    data = r_resp.json()
-                    if data.get("success"):
-                        import time
-                        ticket = data.get("ticket", int(time.time()))
-                        loc_ord = Order(order_type, trigger_price, size, timestamp)
-                        loc_ord.order_id = f"mt5_{ticket}"
-                        loc_ord.broker_ticket = ticket
-                        self.pending_orders[loc_ord.order_id] = loc_ord
-                        self.ticket_to_order_id[ticket] = loc_ord.order_id
-                        return loc_ord
-                    else:
-                        print(f"[{exness_symbol}] REST Bridge order_send returned: {data}")
-            except Exception as e:
-                print(f"[{self.symbol}] REST Bridge order_send exception: {e}")
-            return None
-
         digits = symbol_info.digits
         trigger_price = round(trigger_price, digits)
 
-        size = round(min(float(size), 0.02), 2)
-        if size < 0.01:
-            size = 0.01
+        vol_min = getattr(symbol_info, "volume_min", 0.01) or 0.01
+        vol_max = getattr(symbol_info, "volume_max", 100.0) or 100.0
+        vol_step = getattr(symbol_info, "volume_step", 0.01) or 0.01
+        order_size = max(vol_min, min(vol_max, round(round(size / vol_step) * vol_step, 4) if vol_step > 0 else round(size, 4)))
 
-        existing_positions = (mt5.positions_get if mt5 is not None else (lambda *a, **k: ()))(symbol=exness_symbol) if (MT5_AVAILABLE and exness_symbol) else ()
+        existing_positions = self._fetch_live_positions(exness_symbol)
         if existing_positions:
             total_open_vol = sum(float(getattr(p, "volume", 0.0) or 0.0) for p in existing_positions)
-            if len(existing_positions) >= 2 or (total_open_vol + size) > 0.05:
+            if len(existing_positions) >= 2 or (total_open_vol + order_size) > 0.05:
                 return None   # Position cap hit — return None so caller knows nothing was placed
 
         sym_u_name = str(exness_symbol).upper()
@@ -604,6 +578,30 @@ class MT5Broker:
         else:
             tp_val = round(tp, digits) if tp > 0 else (0.0 if tp == -1.0 else (round(trigger_price - min_tp_dist, digits) if min_tp_dist > 0 else 0.0))
             sl_val = round(sl, digits) if sl > 0 else (0.0 if sl == -1.0 else 0.0)
+
+        if mt5 is None:
+            try:
+                import requests
+                import os
+                bridge_port = os.getenv("WINE_BRIDGE_PORT", "8001")
+                url = f"http://127.0.0.1:{bridge_port}/order_send?symbol={exness_symbol}&type={order_type}&price={trigger_price}&volume={order_size}&sl={sl_val}&tp={tp_val}&magic={self.magic_number}"
+                r_resp = requests.get(url, timeout=3.0)
+                if r_resp.status_code == 200:
+                    data = r_resp.json()
+                    if data.get("success"):
+                        import time
+                        ticket = data.get("ticket", int(time.time()))
+                        loc_ord = Order(order_type, trigger_price, order_size, timestamp)
+                        loc_ord.order_id = f"mt5_{ticket}"
+                        loc_ord.broker_ticket = ticket
+                        self.pending_orders[loc_ord.order_id] = loc_ord
+                        self.ticket_to_order_id[ticket] = loc_ord.order_id
+                        return loc_ord
+                    else:
+                        print(f"[{exness_symbol}] REST Bridge order_send returned: {data}")
+            except Exception as e:
+                print(f"[{self.symbol}] REST Bridge order_send exception: {e}")
+            return None
 
         filling_flags = getattr(symbol_info, "filling_mode", 0) or 0
         if filling_flags & 4:
@@ -870,8 +868,13 @@ class MT5Broker:
             try:
                 import requests
                 bridge_port = os.getenv("WINE_BRIDGE_PORT", "8001")
-                sym_param = f"?symbol={exness_symbol}" if exness_symbol else ""
-                r = requests.get(f"http://127.0.0.1:{bridge_port}/cancel_all{sym_param}", timeout=15.0)
+                params = []
+                if exness_symbol:
+                    params.append(f"symbol={exness_symbol}")
+                if getattr(self, "magic_number", None) is not None:
+                    params.append(f"magic={self.magic_number}")
+                query_str = ("?" + "&".join(params)) if params else ""
+                r = requests.get(f"http://127.0.0.1:{bridge_port}/cancel_all{query_str}", timeout=15.0)
                 if r.status_code != 200:
                     raise Exception(f"REST Bridge cancel_all returned status {r.status_code}")
             except Exception as e:
@@ -1212,15 +1215,31 @@ class MT5Broker:
             try:
                 import requests
                 bridge_port = os.getenv("WINE_BRIDGE_PORT", "8001")
-                side_param = f"&side={side}" if side else ""
-                sym_param = f"?symbol={exness_symbol}" if exness_symbol else "?"
-                url = f"http://127.0.0.1:{bridge_port}/close_all{sym_param}{side_param}"
+                params = []
+                if exness_symbol:
+                    params.append(f"symbol={exness_symbol}")
+                if side:
+                    params.append(f"side={side}")
+                if getattr(self, "magic_number", None) is not None:
+                    params.append(f"magic={self.magic_number}")
+                query_str = ("?" + "&".join(params)) if params else ""
+                url = f"http://127.0.0.1:{bridge_port}/close_all{query_str}"
                 r_c = requests.get(url, timeout=4.0)
                 if r_c.status_code == 200:
                     data = r_c.json()
                     if data.get("success"):
-                        self.open_positions.clear()
-                        self.ticket_to_position_id.clear()
+                        if side:
+                            target_side = str(side).upper()
+                            for pid, pos in list(self.open_positions.items()):
+                                if str(getattr(pos, "type", "")).upper() == target_side:
+                                    self.open_positions.pop(pid, None)
+                            self.ticket_to_position_id = {
+                                tk: pid for tk, pid in self.ticket_to_position_id.items()
+                                if pid in self.open_positions
+                            }
+                        else:
+                            self.open_positions.clear()
+                            self.ticket_to_position_id.clear()
                         return [{"position_id": "all", "pnl": 0.0, "side": side or "ALL"}]
             except Exception as e:
                 print(f"[MT5Broker] REST Bridge close_all exception: {e}")

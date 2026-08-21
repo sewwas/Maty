@@ -482,12 +482,28 @@ class MT5BridgeHandler(BaseHTTPRequestHandler):
                 params = dict(p.split("=") for p in query.split("&") if "=" in p)
                 sym = params.get("symbol", "")
                 side_filter = params.get("side", "").upper()
+                magic_filter = params.get("magic")
                 
-                poss = mt5.positions_get(symbol=sym) if sym else mt5.positions_get()
+                poss = []
+                if sym:
+                    cands = resolve_bridge_candidates(sym)
+                    for c_sym in cands:
+                        p_list = mt5.positions_get(symbol=c_sym)
+                        if p_list:
+                            poss.extend(list(p_list))
+                if not poss:
+                    all_p = mt5.positions_get()
+                    if all_p:
+                        poss = list(all_p)
+                        if sym:
+                            c_base = sym.replace("USDT", "").replace("USDC", "").replace("USD", "").upper()
+                            poss = [p for p in poss if c_base in str(p.symbol).upper() or any(k in str(p.symbol).upper() for k in ["XAU", "GOLD"] if any(x in sym.upper() for x in ["XAU", "GOLD", "PAXG"]))]
                 closed_count = 0
                 if poss:
                     for pos in list(poss):
-                        pos_side = "BUY" if pos.type == mt5.POSITION_TYPE_BUY else "SELL"
+                        if magic_filter and str(getattr(pos, "magic", "")) != str(magic_filter):
+                            continue
+                        pos_side = "BUY" if (pos.type == 0 or pos.type == getattr(mt5, "POSITION_TYPE_BUY", 0)) else "SELL"
                         if side_filter and side_filter != pos_side:
                             continue
                         close_type = mt5.ORDER_TYPE_SELL if pos.type == mt5.POSITION_TYPE_BUY else mt5.ORDER_TYPE_BUY
@@ -535,10 +551,27 @@ class MT5BridgeHandler(BaseHTTPRequestHandler):
                 query = self.path.split("?")[1] if "?" in self.path else ""
                 params = dict(p.split("=") for p in query.split("&") if "=" in p)
                 sym = params.get("symbol", "")
-                orders = mt5.orders_get(symbol=sym) if sym else mt5.orders_get()
+                magic_filter = params.get("magic")
+                
+                orders = []
+                if sym:
+                    cands = resolve_bridge_candidates(sym)
+                    for c_sym in cands:
+                        o_list = mt5.orders_get(symbol=c_sym)
+                        if o_list:
+                            orders.extend(list(o_list))
+                if not orders:
+                    all_o = mt5.orders_get()
+                    if all_o:
+                        orders = list(all_o)
+                        if sym:
+                            c_base = sym.replace("USDT", "").replace("USDC", "").replace("USD", "").upper()
+                            orders = [o for o in orders if c_base in str(o.symbol).upper() or any(k in str(o.symbol).upper() for k in ["XAU", "GOLD"] if any(x in sym.upper() for x in ["XAU", "GOLD", "PAXG"]))]
                 cancelled_count = 0
                 if orders:
                     for o in list(orders):
+                        if magic_filter and str(getattr(o, "magic", "")) != str(magic_filter):
+                            continue
                         req = {"action": mt5.TRADE_ACTION_REMOVE, "order": o.ticket}
                         res_c = mt5.order_send(req)
                         if res_c and res_c.retcode in (0, 10009, 10008, 10004):
