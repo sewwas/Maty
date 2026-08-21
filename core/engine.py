@@ -145,11 +145,9 @@ class BreakoutGridBot:
         self.use_smart_trailing = use_smart_trailing
         self.profit_lock_pct = profit_lock_pct
         self.use_adaptive_gap = use_adaptive_gap
-        self.base_bb_width = base_bb_width
-        self.adaptive_gap_min_mult = adaptive_gap_min_mult
-        self.adaptive_gap_max_mult = adaptive_gap_max_mult
-        self.use_auto_reading = True
-        self.auto_reading_engine = AutoReadingEngine()
+        self.use_auto_reading = bool(use_auto_reading)
+        if self.use_auto_reading:
+            self.auto_reading_engine = AutoReadingEngine()
 
 
         sym_str = getattr(self.broker, "symbol", getattr(self, "symbol", ""))
@@ -416,15 +414,13 @@ class BreakoutGridBot:
             self.daily_circuit_breaker_tripped = False
         if not hasattr(self, "max_cycle_duration"):
             self.max_cycle_duration = float("inf")
-        if not hasattr(self, "auto_restart"):
-            self.auto_restart = False
         if not hasattr(self, "use_auto_reading"):
-            self.use_auto_reading = True
+            self.use_auto_reading = False
         if not hasattr(self, "auto_profile"):
             self.auto_profile = "BALANCED"
         if not hasattr(self, "pending_order_side_mode"):
             self.pending_order_side_mode = "AUTO_ADAPTIVE"
-        if not hasattr(self, "auto_reading_engine"):
+        if getattr(self, "use_auto_reading", False) and not hasattr(self, "auto_reading_engine"):
             self.auto_reading_engine = AutoReadingEngine()
         if not hasattr(self, "_fakeout_guard_enabled"):
             self._fakeout_guard_enabled = True

@@ -74,11 +74,11 @@ class ManualGridBot(BreakoutGridBot):
             min_tp_dist = 0.0
             min_sl_dist = 0.0
 
-            side_cfg = str(getattr(self, "pending_order_side_mode", "BOTH_SIDES")).upper()
+            side_cfg = str(getattr(self, "pending_order_side_mode", getattr(self, "unidirectional_mode", "BOTH_SIDES"))).upper()
             place_buy, place_sell = True, True
-            if (("BUY" in side_cfg and "ONLY" in side_cfg) or side_cfg == "BUY"):
+            if ("BUY" in side_cfg and "ONLY" in side_cfg) or side_cfg == "BUY":
                 place_buy, place_sell = True, False
-            elif (("SELL" in side_cfg and "ONLY" in side_cfg) or side_cfg == "SELL"):
+            elif ("SELL" in side_cfg and "ONLY" in side_cfg) or side_cfg == "SELL":
                 place_buy, place_sell = False, True
 
             directional_sell = place_sell and not place_buy

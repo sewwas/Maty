@@ -60,16 +60,10 @@ def calculate_ratchet_breakeven(entry_price: float, position_type: str, current_
 def is_auto_100pct_confirmed(self) -> bool:
     """
     🟢 AUTO MODE TREND CONFIRMATION GATE.
-
-    Returns True ONLY when ALL of the following conditions are met:
-      1. Auto Reading Engine has decided a clear unidirectional side (BUY_ONLY or SELL_ONLY).
-         DUAL / BOTH / ranging signals return False immediately.
-      2. ADX >= 25 — confirms that a genuine trending move is underway (not ranging noise).
-      3. Choppiness Index < 50 — market is trending, not consolidating.
-
-    When True → unlock aggressive SL-to-positive & tight TP snap logic.
-    When False → fall back to standard conservative defaults.
     """
+    if not getattr(self, "use_auto_reading", True):
+        return False  # Strict manual mode — never auto-confirm
+
     # Gate 1: Must be in auto mode with a clear directional bias
     auto_uni = str(getattr(self, "unidirectional_mode",
                            getattr(self, "auto_universe_bias", "DUAL"))).upper()
