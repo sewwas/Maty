@@ -42,7 +42,7 @@ def get_live_price(symbol: str = "PAXGUSDT") -> Optional[float]:
     try:
         import MetaTrader5 as mt5
         if mt5 is not None and hasattr(mt5, "terminal_info") and mt5.terminal_info() is not None:
-            base_exness = "XAUUSD" if sym in ("PAXGUSDT", "XAUUSD", "GOLD") else sym.replace("USDT", "USD")
+            base_exness = "XAUUSD" if any(x in sym for x in ["PAXG", "XAU", "GOLD"]) else sym.replace("USDT", "USD").replace("USDC", "USD")
             tick = None
             for s_name in [base_exness, f"{base_exness}m", f"{base_exness}c", f"{base_exness}.a"]:
                 if mt5.symbol_select(s_name, True):
@@ -59,7 +59,7 @@ def get_live_price(symbol: str = "PAXGUSDT") -> Optional[float]:
     # 0b. Try Wine MT5 REST Bridge on Linux VPS
     try:
         bridge_port = os.getenv("WINE_BRIDGE_PORT", "8001")
-        b_sym = "XAUUSD" if sym in ("PAXGUSDT", "XAUUSD", "GOLD") else sym.replace("USDT", "USD")
+        b_sym = "XAUUSD" if any(x in sym for x in ["PAXG", "XAU", "GOLD"]) else sym.replace("USDT", "USD").replace("USDC", "USD")
         r_b = requests.get(f"http://127.0.0.1:{bridge_port}/symbol_info?symbol={b_sym}", timeout=0.8)
         if r_b.status_code == 200:
             d_b = r_b.json()
@@ -90,7 +90,7 @@ def get_live_price(symbol: str = "PAXGUSDT") -> Optional[float]:
         pass
 
     # 2. Fallback to Coinbase API (1.5s resilient timeout)
-    base = "PAXG" if sym == "PAXGUSDT" else sym.replace("USDT", "").replace("USD", "")
+    base = "PAXG" if any(x in sym for x in ["PAXG", "XAU", "GOLD"]) else sym.replace("USDT", "").replace("USDC", "").replace("USD", "")
     try:
         cb_url = f"https://api.coinbase.com/v2/prices/{base}-USD/spot"
         res = requests.get(cb_url, timeout=1.5)
@@ -154,7 +154,7 @@ def get_historical_klines(symbol: str = "PAXGUSDT", interval: str = "1m", limit:
         import logging; logging.warning(f"Exception: {e}")
 
     # 2. Fallback to Coinbase API (0.4s timeout)
-    base = "PAXG" if sym == "PAXGUSDT" else sym.replace("USDT", "").replace("USD", "")
+    base = "PAXG" if any(x in sym for x in ["PAXG", "XAU", "GOLD"]) else sym.replace("USDT", "").replace("USDC", "").replace("USD", "")
     try:
         cb_url = f"https://api.exchange.coinbase.com/products/{base}-USD/candles"
         response = requests.get(cb_url, params={"granularity": 60}, timeout=0.4)
@@ -295,7 +295,7 @@ def get_24h_market_stats(symbol: str = "PAXGUSDT") -> dict:
 
     # Fallback OKX Ticker
     try:
-        base = "PAXG" if sym == "PAXGUSDT" else sym.replace("USDT", "").replace("USD", "")
+        base = "PAXG" if any(x in sym for x in ["PAXG", "XAU", "GOLD"]) else sym.replace("USDT", "").replace("USDC", "").replace("USD", "")
         okx_symbol = f"{base}-USDT"
         url = f"https://www.okx.com/api/v5/market/ticker?instId={okx_symbol}"
         res = requests.get(url, timeout=2.0)
@@ -1195,7 +1195,7 @@ def get_order_book_depth(symbol: str = "PAXGUSDT", limit: int = 20) -> dict:
     sym = symbol.upper()
     if sym in ("XAUUSD", "GOLD"):
         sym = "PAXGUSDT"
-    base = "PAXG" if sym == "PAXGUSDT" else sym.replace("USDT", "").replace("USD", "")
+    base = "PAXG" if any(x in sym for x in ["PAXG", "XAU", "GOLD"]) else sym.replace("USDT", "").replace("USDC", "").replace("USD", "")
 
     now = time.time()
     if sym in _ORDERBOOK_CACHE:

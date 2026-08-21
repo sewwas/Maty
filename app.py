@@ -1079,7 +1079,7 @@ with tab_desk:
             st.rerun()
     for idx_f, s_code in enumerate(_symbols):
         with f_cols[idx_f + 1]:
-            s_short = "GOLD" if s_code in ("PAXGUSDT", "XAUUSD", "GOLD") else s_code.replace("USDT", "").replace("USD", "")
+            s_short = "GOLD" if any(k in s_code.upper() for k in ["PAXG", "XAU", "GOLD"]) else s_code.replace("USDT", "").replace("USDC", "").replace("USD", "")
             if st.button(s_short, type="primary" if st.session_state.pair_filter == s_code else "secondary", use_container_width=True):
                 st.session_state.pair_filter = s_code
                 st.rerun()

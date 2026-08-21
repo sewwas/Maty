@@ -40,7 +40,7 @@ def get_symbol_magic_number(symbol: str, is_manual: bool = False) -> int:
         if sym_upper in SYMBOL_MAGIC_NUMBERS:
             base = SYMBOL_MAGIC_NUMBERS[sym_upper]
         else:
-            clean_sym = sym_upper.replace("USDT", "").replace("USD", "")
+            clean_sym = sym_upper.replace("USDT", "").replace("USDC", "").replace("USD", "")
             if clean_sym in ("PAXG", "XAU", "GOLD"):
                 base = 998876
             else:
@@ -116,20 +116,44 @@ class MT5Broker:
         if ui_symbol in self._exness_symbol_cache:
             return self._exness_symbol_cache[ui_symbol]
 
+        u_sym = (ui_symbol or "").upper().strip()
         symbol_map = {
             "PAXGUSDT": "XAUUSD",
+            "PAXGUSD": "XAUUSD",
+            "PAXGUSDC": "XAUUSD",
             "GOLD": "XAUUSD"
         }
-        base_sym = symbol_map.get(ui_symbol, ui_symbol)
+        base_sym = symbol_map.get(u_sym, u_sym)
+
+        clean_base = base_sym
+        for q in ["USDT", "USDC", "USD"]:
+            if clean_base.endswith(q):
+                clean_base = clean_base[:-len(q)]
+                break
+
+        probes = []
+        if self.symbol_suffix:
+            probes.append(f"{base_sym}{self.symbol_suffix}")
+
+        if clean_base and clean_base != base_sym:
+            probes.extend([
+                f"{clean_base}USD", f"{clean_base}USDm", f"{clean_base}USDc", f"{clean_base}USD.a",
+                f"{clean_base}USDT", f"{clean_base}USDTm", f"{clean_base}USDTc",
+                f"{clean_base}USDC", f"{clean_base}USDCm",
+                clean_base, f"{clean_base}m", f"{clean_base}c"
+            ])
+        probes.extend([f"{base_sym}m", base_sym, f"{base_sym}c", f"{base_sym}.a", f"{base_sym}_i"])
+
+        seen_p = set()
+        dedup_probes = []
+        for p in probes:
+            if p and p not in seen_p:
+                seen_p.add(p)
+                dedup_probes.append(p)
 
         res = ui_symbol
         if MT5_AVAILABLE and mt5 is not None:
-            probes = []
-            if self.symbol_suffix:
-                probes.append(f"{base_sym}{self.symbol_suffix}")
-            probes.extend([f"{base_sym}m", base_sym, f"{base_sym}c", f"{base_sym}.a", f"{base_sym}_i"])
-
-            for candidate in probes:
+            for candidate in dedup_probes:
                 if (mt5.symbol_select if mt5 is not None else (lambda *a, **k: False))(candidate, True):
                     info = (mt5.symbol_info if mt5 is not None else (lambda *a, **k: None))(candidate)
                     if info is not None:
@@ -137,12 +161,12 @@ class MT5Broker:
                         break
 
             if res == ui_symbol:
-                group_symbols = (mt5.symbols_get if mt5 is not None else (lambda *a, **k: ()))(group=f"*{base_sym}*")
+                group_symbols = (mt5.symbols_get if mt5 is not None else (lambda *a, **k: ()))(group=f"*{clean_base}*")
                 if group_symbols:
-                    matching = [s.name for s in group_symbols if s.name.upper().startswith(base_sym.upper())]
+                    matching = [s.name for s in group_symbols if s.name.upper().startswith(clean_base.upper())]
                     if matching:
                         matching.sort(key=lambda name: (len(name), name))
-                        selected = matching[0]
+                        res = matching[0]
         else:
             try:
                 import requests
@@ -302,6 +326,9 @@ class MT5Broker:
                                 self.volume_max = float(data.get("volume_max", 100.0))
                                 self.volume_step = float(data.get("volume_step", 0.01))
                                 self.filling_mode = int(data.get("filling_mode", 4))
+                                self.contract_size = float(data.get("contract_size", 100.0 if "XAU" in str(exness_symbol).upper() else 1.0))
+                                self.currency_profit = str(data.get("currency_profit", "USD"))
+                                self.currency_margin = str(data.get("currency_margin", "USD"))
                                 self.ask = float(data.get("ask", 0.0))
                                 self.bid = float(data.get("bid", 0.0))
                         info = MockSymbolInfo(d)
@@ -542,7 +569,7 @@ class MT5Broker:
             if not existing_orders:
                 all_o = (mt5.orders_get if mt5 is not None else (lambda *a, **k: ()))()
                 if all_o:
-                    clean_target = "XAU" if any(x in self.symbol.upper() for x in ["XAU", "GOLD"]) else ("PAXG" if "PAXG" in self.symbol.upper() else self.symbol.replace("USDT", "").replace("USD", "").upper())
+                    clean_target = "XAU" if any(x in self.symbol.upper() for x in ["XAU", "GOLD"]) else ("PAXG" if "PAXG" in self.symbol.upper() else self.symbol.replace("USDT", "").replace("USDC", "").replace("USD", "").upper())
                     existing_orders = [o for o in all_o if clean_target in str(o.symbol).upper()]
 
         if existing_orders:
@@ -673,7 +700,7 @@ class MT5Broker:
         if not orders and MT5_AVAILABLE:
             all_o = (mt5.orders_get if mt5 is not None else (lambda *a, **k: ()))()
             if all_o:
-                clean_target = "XAU" if any(x in self.symbol.upper() for x in ["XAU", "GOLD"]) else ("PAXG" if "PAXG" in self.symbol.upper() else self.symbol.replace("USDT", "").replace("USD", ""))
+                clean_target = "XAU" if any(x in self.symbol.upper() for x in ["XAU", "GOLD"]) else ("PAXG" if "PAXG" in self.symbol.upper() else self.symbol.replace("USDT", "").replace("USDC", "").replace("USD", ""))
                 orders = [o for o in all_o if clean_target in str(o.symbol).upper()]
 
         if not orders:
@@ -716,7 +743,7 @@ class MT5Broker:
         if not poss and MT5_AVAILABLE:
             all_poss = (mt5.positions_get if mt5 is not None else (lambda *a, **k: ()))()
             if all_poss:
-                clean_target = "XAU" if any(x in self.symbol.upper() for x in ["XAU", "GOLD"]) else ("PAXG" if "PAXG" in self.symbol.upper() else self.symbol.replace("USDT", "").replace("USD", "").upper())
+                clean_target = "XAU" if any(x in self.symbol.upper() for x in ["XAU", "GOLD"]) else ("PAXG" if "PAXG" in self.symbol.upper() else self.symbol.replace("USDT", "").replace("USDC", "").replace("USD", "").upper())
                 poss = [p for p in all_poss if clean_target in str(p.symbol).upper()]
 
         if not poss:
@@ -825,7 +852,7 @@ class MT5Broker:
             if not orders_list and MT5_AVAILABLE:
                 all_o = mt5.orders_get()
                 if all_o:
-                    clean_target = "XAU" if any(x in str(sym).upper() for x in ["XAU", "GOLD"]) else ("PAXG" if "PAXG" in str(sym).upper() else str(sym).replace("USDT", "").replace("USD", "").upper())
+                    clean_target = "XAU" if any(x in str(sym).upper() for x in ["XAU", "GOLD"]) else ("PAXG" if "PAXG" in str(sym).upper() else str(sym).replace("USDT", "").replace("USDC", "").replace("USD", "").upper())
                     orders_list = [o for o in all_o if clean_target in str(o.symbol).upper()]
 
             all_tks = set()
@@ -1291,7 +1318,7 @@ class MT5Broker:
         if not mt5_positions:
             all_poss = self._fetch_live_positions()
             if all_poss:
-                clean_target = "XAU" if any(x in self.symbol.upper() for x in ["XAU", "GOLD"]) else ("PAXG" if "PAXG" in self.symbol.upper() else self.symbol.replace("USDT", "").replace("USD", "").upper())
+                clean_target = "XAU" if any(x in self.symbol.upper() for x in ["XAU", "GOLD"]) else ("PAXG" if "PAXG" in self.symbol.upper() else self.symbol.replace("USDT", "").replace("USDC", "").replace("USD", "").upper())
                 mt5_positions = [p for p in all_poss if clean_target in str(p.symbol).upper()]
 
         active_pos_tickets = set()
@@ -1373,7 +1400,24 @@ class MT5Broker:
             from_date = datetime.datetime.now() - datetime.timedelta(days=days)
             to_date = datetime.datetime.now() + datetime.timedelta(days=1)
             exness_symbol = self.get_exness_symbol(self.symbol)
-            deals = mt5.history_deals_get(from_date, to_date)
+            deals = None
+            if MT5_AVAILABLE and mt5 is not None:
+                deals = mt5.history_deals_get(from_date, to_date)
+            else:
+                try:
+                    import requests
+                    bridge_port = os.getenv("WINE_BRIDGE_PORT", "8001")
+                    r_h = requests.get(f"http://127.0.0.1:{bridge_port}/history?days={days}&magic={self.magic_number}", timeout=2.0)
+                    if r_h.status_code == 200:
+                        d_data = r_h.json()
+                        raw_deals = d_data.get("deals", [])
+                        class BridgeDeal:
+                            def __init__(self, item):
+                                for k, v in item.items():
+                                    setattr(self, k, v)
+                        deals = [BridgeDeal(d_item) for d_item in raw_deals]
+                except Exception as b_err:
+                    print(f"Notice: Wine bridge history fetch: {b_err}")
             if deals:
                 pos_entry_times = {d.position_id: float(d.time) for d in deals if getattr(d, "entry", 0) == 0}
                 pos_entry_prices = {d.position_id: float(d.price) for d in deals if getattr(d, "entry", 0) == 0}

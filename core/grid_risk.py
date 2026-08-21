@@ -4,10 +4,10 @@ from typing import Optional, Dict, Any, Tuple
 
 def get_pip_size(symbol: str, current_price: float = 0.0) -> float:
     sym = (symbol or "").upper()
+    sym_lookup = "XAUUSD" if any(x in sym for x in ["PAXG", "XAU", "GOLD"]) else sym.replace("USDT", "USD").replace("USDC", "USD")
     try:
         import MetaTrader5 as mt5_ref
         if mt5_ref is not None and hasattr(mt5_ref, "symbol_info"):
-            sym_lookup = "XAUUSD" if any(x in sym for x in ["PAXG", "XAU", "GOLD"]) else (sym.replace("USDT", "USD") if "USDT" in sym else sym)
             info = mt5_ref.symbol_info(sym_lookup) or mt5_ref.symbol_info(f"{sym_lookup}m") or mt5_ref.symbol_info(f"{sym_lookup}c")
             if info is not None and info.point > 0:
                 if info.digits in (3, 5):
@@ -16,8 +16,26 @@ def get_pip_size(symbol: str, current_price: float = 0.0) -> float:
                     return info.point
                 else:
                     return info.point * 10.0 if info.point < 0.1 else info.point
-    except Exception as e:
-        import logging; logging.warning(f"Exception: {e}")
+    except Exception:
+        pass
+
+    try:
+        import requests, os
+        bridge_port = os.getenv("WINE_BRIDGE_PORT", "8001")
+        r_si = requests.get(f"http://127.0.0.1:{bridge_port}/symbol_info?symbol={sym_lookup}", timeout=0.6)
+        if r_si.status_code == 200:
+            d_si = r_si.json()
+            pt = float(d_si.get("point", 0.0) or 0.0)
+            dg = int(d_si.get("digits", 0) or 0)
+            if pt > 0:
+                if dg in (3, 5):
+                    return pt * 10.0
+                elif dg in (2, 4):
+                    return pt
+                else:
+                    return pt * 10.0 if pt < 0.1 else pt
+    except Exception:
+        pass
 
     if "PAXG" in sym or "XAU" in sym or "GOLD" in sym:
         return 0.10
@@ -31,10 +49,10 @@ def get_pip_size(symbol: str, current_price: float = 0.0) -> float:
 
 def sanitize_order_size(symbol: str, raw_size: float) -> float:
     sym = (symbol or "").upper()
+    sym_lookup = "XAUUSD" if any(x in sym for x in ["PAXG", "XAU", "GOLD"]) else sym.replace("USDT", "USD").replace("USDC", "USD")
     try:
         import MetaTrader5 as mt5_ref
         if mt5_ref is not None and hasattr(mt5_ref, "symbol_info"):
-            sym_lookup = "XAUUSD" if any(x in sym for x in ["PAXG", "XAU", "GOLD"]) else (sym.replace("USDT", "USD") if "USDT" in sym else sym)
             info = mt5_ref.symbol_info(sym_lookup) or mt5_ref.symbol_info(f"{sym_lookup}m") or mt5_ref.symbol_info(f"{sym_lookup}c")
             if info is not None:
                 v_min = getattr(info, "volume_min", 0.01) or 0.01
@@ -42,8 +60,22 @@ def sanitize_order_size(symbol: str, raw_size: float) -> float:
                 v_step = getattr(info, "volume_step", 0.01) or 0.01
                 size = round(round(raw_size / v_step) * v_step, 4) if v_step > 0 else round(raw_size, 4)
                 return max(v_min, min(v_max, size))
-    except Exception as e:
-        import logging; logging.warning(f"Exception: {e}")
+    except Exception:
+        pass
+
+    try:
+        import requests, os
+        bridge_port = os.getenv("WINE_BRIDGE_PORT", "8001")
+        r_si = requests.get(f"http://127.0.0.1:{bridge_port}/symbol_info?symbol={sym_lookup}", timeout=0.6)
+        if r_si.status_code == 200:
+            d_si = r_si.json()
+            v_min = float(d_si.get("volume_min", 0.01) or 0.01)
+            v_max = float(d_si.get("volume_max", 100.0) or 100.0)
+            v_step = float(d_si.get("volume_step", 0.01) or 0.01)
+            size = round(round(raw_size / v_step) * v_step, 4) if v_step > 0 else round(raw_size, 4)
+            return max(v_min, min(v_max, size))
+    except Exception:
+        pass
 
     if "PAXG" in sym or "XAU" in sym or "GOLD" in sym:
         return min(0.03, max(0.01, round(raw_size, 2)))
@@ -826,7 +858,7 @@ def process_engine_tick(self, previous_price: float, current_price: float, times
                             if all_p:
                                 clean_tgt = "XAU" if any(x in (ex_s or "").upper() for x in ["XAU", "GOLD"]) else (
                                     "PAXG" if "PAXG" in (ex_s or "").upper() else
-                                    (ex_s or "").replace("USDT", "").replace("USD", "").upper()
+                                    (ex_s or "").replace("USDT", "").replace("USDC", "").replace("USD", "").upper()
                                 )
                                 mt5_p = [p for p in all_p if clean_tgt in str(p.symbol).upper()]
                 except Exception:
@@ -1021,7 +1053,7 @@ def process_engine_tick(self, previous_price: float, current_price: float, times
                     if all_p2:
                         clean_tgt2 = "XAU" if any(x in (ex_s2 or "").upper() for x in ["XAU", "GOLD"]) else (
                             "PAXG" if "PAXG" in (ex_s2 or "").upper() else
-                            (ex_s2 or "").replace("USDT", "").replace("USD", "").upper()
+                            (ex_s2 or "").replace("USDT", "").replace("USDC", "").replace("USD", "").upper()
                         )
                         mt5_pos = [p for p in all_p2 if clean_tgt2 in str(p.symbol).upper()]
                 if mt5_pos and len(mt5_pos) > 0:

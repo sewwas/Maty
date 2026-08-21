@@ -54,6 +54,33 @@ def check_other_bridge_conflict(current_port: int, target_login: int) -> tuple[b
     return False, other_port
 
 
+
+def resolve_bridge_candidates(sym: str) -> list:
+    clean_sym = sym.upper().strip()
+    candidates = []
+    if any(k in clean_sym for k in ["XAU", "GOLD", "PAXG"]):
+        candidates.extend(["XAUUSD", "XAUUSDm", "XAUUSDc", "XAUUSD.a", "GOLD", "GOLDm", "XAUUSDT", "PAXGUSDT", "PAXGUSD", "PAXGUSDC"])
+    base = clean_sym
+    for q in ["USDT", "USDC", "USD"]:
+        if base.endswith(q):
+            base = base[:-len(q)]
+            break
+    if base and base != clean_sym:
+        candidates.extend([
+            f"{base}USD", f"{base}USDm", f"{base}USDc", f"{base}USD.a",
+            f"{base}USDT", f"{base}USDTm", f"{base}USDTc",
+            f"{base}USDC", f"{base}USDCm",
+            base, f"{base}m", f"{base}c"
+        ])
+    candidates.extend([clean_sym, f"{clean_sym}m", f"{clean_sym}c", f"{clean_sym}.a"])
+    seen = set()
+    res = []
+    for c in candidates:
+        if c and c not in seen:
+            seen.add(c)
+            res.append(c)
+    return res
+
 class MT5BridgeHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         pass  # Quiet logging
@@ -109,14 +136,7 @@ class MT5BridgeHandler(BaseHTTPRequestHandler):
             if "symbol=" in self.path:
                 sym = self.path.split("symbol=")[1].split("&")[0]
             
-            candidates = [
-                sym, f"{sym}m", f"{sym}c", f"{sym}.a",
-                sym.replace("USDT", "USD"),
-                f"{sym.replace('USDT', 'USD')}m",
-                f"{sym.replace('USDT', 'USD')}c"
-            ]
-            if any(k in sym.upper() for k in ["XAU", "GOLD", "PAXG"]):
-                candidates.extend(["XAUUSD", "XAUUSDm", "XAUUSDc", "XAUUSD.a", "GOLD", "GOLDm"])
+            candidates = resolve_bridge_candidates(sym)
 
             found_sym = None
             ask_val, bid_val = 0.0, 0.0
@@ -190,9 +210,7 @@ class MT5BridgeHandler(BaseHTTPRequestHandler):
                 sym = self.path.split("symbol=")[1].split("&")[0]
             info = None
             tick = None
-            candidates = [sym, f"{sym}c", f"{sym}m", f"{sym}.a"]
-            if any(x in sym.upper() for x in ["XAU", "GOLD", "PAXG"]):
-                candidates.extend(["XAUUSDc", "XAUUSDm", "XAUUSD", "GOLD", "GOLDm"])
+            candidates = resolve_bridge_candidates(sym)
             for s in candidates:
                 try:
                     if mt5.symbol_select(s, True):
@@ -213,6 +231,9 @@ class MT5BridgeHandler(BaseHTTPRequestHandler):
                     "volume_max": getattr(info, "volume_max", 100.0),
                     "volume_step": getattr(info, "volume_step", 0.01),
                     "filling_mode": getattr(info, "filling_mode", 4),
+                    "contract_size": getattr(info, "trade_contract_size", 100.0 if "XAU" in info.name else 1.0),
+                    "currency_profit": getattr(info, "currency_profit", "USD"),
+                    "currency_margin": getattr(info, "currency_margin", "USD"),
                     "ask": tick.ask if tick else getattr(info, "ask", 0.0),
                     "bid": tick.bid if tick else getattr(info, "bid", 0.0)
                 }
@@ -302,14 +323,7 @@ class MT5BridgeHandler(BaseHTTPRequestHandler):
                 is_market = order_type_str in ("BUY", "SELL")
                 action = mt5.TRADE_ACTION_DEAL if is_market else mt5.TRADE_ACTION_PENDING
 
-                candidates = [
-                    sym, f"{sym}m", f"{sym}c", f"{sym}.a",
-                    sym.replace("USDT", "USD"),
-                    f"{sym.replace('USDT', 'USD')}m",
-                    f"{sym.replace('USDT', 'USD')}c"
-                ]
-                if any(k in sym.upper() for k in ["XAU", "GOLD", "PAXG"]):
-                    candidates.extend(["XAUUSD", "XAUUSDm", "XAUUSDc", "XAUUSD.a", "GOLD", "GOLDm"])
+                candidates = resolve_bridge_candidates(sym)
 
                 s_info = None
                 for s_try in candidates:
@@ -532,6 +546,48 @@ class MT5BridgeHandler(BaseHTTPRequestHandler):
                 res = {"success": True, "cancelled_count": cancelled_count}
             except Exception as e:
                 res = {"success": False, "error": str(e)}
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(res).encode())
+            return
+
+        if self.path.startswith("/history"):
+            try:
+                import datetime
+                query = self.path.split("?")[1] if "?" in self.path else ""
+                params = dict(p.split("=") for p in query.split("&") if "=" in p)
+                days = int(params.get("days", 180))
+                magic_filter = params.get("magic")
+                from_date = datetime.datetime.now() - datetime.timedelta(days=days)
+                to_date = datetime.datetime.now() + datetime.timedelta(days=1)
+                deals = mt5.history_deals_get(from_date, to_date)
+                res_deals = []
+                if deals:
+                    for d in deals:
+                        if magic_filter and str(getattr(d, "magic", "")) != str(magic_filter):
+                            continue
+                        res_deals.append({
+                            "ticket": int(d.ticket),
+                            "order": int(d.order),
+                            "time": int(d.time),
+                            "time_msc": int(getattr(d, "time_msc", d.time * 1000)),
+                            "type": int(d.type),
+                            "entry": int(d.entry),
+                            "magic": int(d.magic),
+                            "position_id": int(d.position_id),
+                            "reason": int(d.reason),
+                            "volume": float(d.volume),
+                            "price": float(d.price),
+                            "commission": float(d.commission),
+                            "swap": float(d.swap),
+                            "profit": float(d.profit),
+                            "symbol": str(d.symbol),
+                            "comment": str(getattr(d, "comment", ""))
+                        })
+                res = {"success": True, "deals": res_deals}
+            except Exception as e:
+                res = {"success": False, "error": str(e), "deals": []}
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
