@@ -497,16 +497,18 @@ class MT5Broker:
             ask = price
             bid = price
 
-        if order_type in ("BUY_STOP", "BUY_LIMIT"):
+        if order_type == "BUY_LIMIT":
+            mt5_type = mt5.ORDER_TYPE_BUY_LIMIT if mt5 is not None else 2
+            trigger_price = price if price < (ask - min_stop_dist) else (ask - min_stop_dist)
+        elif order_type == "BUY_STOP":
             mt5_type = mt5.ORDER_TYPE_BUY_STOP if mt5 is not None else 4
-            # BUY_STOP must be ABOVE current ask
             trigger_price = price if price > (ask + min_stop_dist) else (ask + min_stop_dist)
-            order_type = "BUY_STOP"
-        elif order_type in ("SELL_STOP", "SELL_LIMIT"):
+        elif order_type == "SELL_LIMIT":
+            mt5_type = mt5.ORDER_TYPE_SELL_LIMIT if mt5 is not None else 3
+            trigger_price = price if price > (bid + min_stop_dist) else (bid + min_stop_dist)
+        elif order_type == "SELL_STOP":
             mt5_type = mt5.ORDER_TYPE_SELL_STOP if mt5 is not None else 5
-            # SELL_STOP must be BELOW current bid
             trigger_price = price if price < (bid - min_stop_dist) else (bid - min_stop_dist)
-            order_type = "SELL_STOP"
         else:
             mt5_type = mt5.ORDER_TYPE_BUY_STOP if mt5 is not None else 4
             trigger_price = price if price > (ask + min_stop_dist) else (ask + min_stop_dist)

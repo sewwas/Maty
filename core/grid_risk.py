@@ -1555,25 +1555,63 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
             except Exception as e:
                 print(f"[{sym_name}] SELL_STOP error @ {px}: {e}")
 
+        def _place_buy_limit(px: float, label: str, level_idx: int):
+            nonlocal placed_count
+            sz  = self.calculate_level_size(self.order_size, self.order_size_multiplier, level_idx)
+            smart_tp = round(px + dir_tp_dist, digits)
+            smart_sl = round(px - min_sl_dist, digits)
+            try:
+                r = self.broker.place_order("BUY_LIMIT", px, sz, timestamp, tp=smart_tp, sl=smart_sl)
+                if r:
+                    placed_count += 1
+                    self.active_buy_levels.append(px)
+                    print(f"[{sym_name}] 🧺 [BUY_LIMIT_DIP|{label}] @ ${px:,.{digits}f}  TP:${smart_tp:,.{digits}f}  SL:${smart_sl:,.{digits}f}  sz:{sz}")
+            except Exception as e:
+                print(f"[{sym_name}] BUY_LIMIT error @ {px}: {e}")
+
+        def _place_sell_limit(px: float, label: str, level_idx: int):
+            nonlocal placed_count
+            sz  = self.calculate_level_size(self.order_size, self.order_size_multiplier, level_idx)
+            smart_tp = round(px - dir_tp_dist, digits)
+            smart_sl = round(px + min_sl_dist, digits)
+            try:
+                r = self.broker.place_order("SELL_LIMIT", px, sz, timestamp, tp=smart_tp, sl=smart_sl)
+                if r:
+                    placed_count += 1
+                    self.active_sell_levels.append(px)
+                    print(f"[{sym_name}] 🧱 [SELL_LIMIT_SPIKE|{label}] @ ${px:,.{digits}f}  TP:${smart_tp:,.{digits}f}  SL:${smart_sl:,.{digits}f}  sz:{sz}")
+            except Exception as e:
+                print(f"[{sym_name}] SELL_LIMIT error @ {px}: {e}")
+
         self.active_buy_levels  = []
         self.active_sell_levels = []
 
         if directional_buy:
-            for i, (score, px, label) in enumerate(merged_buy[:effective_levels]):
-                _place_buy_stop(px, label, i)
+            # 1 Breakout scout, then Limit DCA ladder below
+            if merged_buy:
+                _place_buy_stop(merged_buy[0][1], merged_buy[0][2], 0)
+            if effective_levels > 1:
+                limit_slots = min(effective_levels - 1, len(merged_sell))
+                for i in range(limit_slots):
+                    _place_buy_limit(merged_sell[i][1], merged_sell[i][2], i + 1)
 
         elif directional_sell:
-            for i, (score, px, label) in enumerate(merged_sell[:effective_levels]):
-                _place_sell_stop(px, label, i)
+            # 1 Breakout scout, then Limit DCA ladder above
+            if merged_sell:
+                _place_sell_stop(merged_sell[0][1], merged_sell[0][2], 0)
+            if effective_levels > 1:
+                limit_slots = min(effective_levels - 1, len(merged_buy))
+                for i in range(limit_slots):
+                    _place_sell_limit(merged_buy[i][1], merged_buy[i][2], i + 1)
 
         else:
-            # Ranging — interleave best buy + sell candidates up to effective_levels each
-            buy_slots  = min(effective_levels, len(merged_buy))
-            sell_slots = min(effective_levels, len(merged_sell))
-            for i, (score, px, label) in enumerate(merged_buy[:buy_slots]):
-                _place_buy_stop(px, label, i)
-            for i, (score, px, label) in enumerate(merged_sell[:sell_slots]):
-                _place_sell_stop(px, label, i)
+            # Ranging — pure Limit DCA grids to fade the chop
+            buy_slots  = min(effective_levels, len(merged_sell))
+            sell_slots = min(effective_levels, len(merged_buy))
+            for i in range(buy_slots):
+                _place_buy_limit(merged_sell[i][1], merged_sell[i][2], i)
+            for i in range(sell_slots):
+                _place_sell_limit(merged_buy[i][1], merged_buy[i][2], i)
 
 
         if hasattr(self.broker, "purge_duplicate_mt5_orders"):
