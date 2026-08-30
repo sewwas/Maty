@@ -1,6 +1,9 @@
+import os
 import re
 
-with open('c:/Users/User/Desktop/Maty/app.py', 'r', encoding='utf-8') as f:
+app_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'app.py')
+
+with open(app_path, 'r', encoding='utf-8') as f:
     code = f.read()
 
 # 1. Modify the Auto Desk to only use st.session_state.markets
@@ -118,6 +121,6 @@ target_string = """                    <tbody>{trap_rows}</tbody>
 
 code = code.replace(target_string, target_string + '\n' + manual_hist_code)
 
-with open('c:/Users/User/Desktop/Maty/app.py', 'w', encoding='utf-8') as f:
+with open(app_path, 'w', encoding='utf-8') as f:
     f.write(code)
 print('Done!')
