@@ -86,7 +86,7 @@ flowchart TD
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
 | 🪙 **PAXGUSDT / XAUUSD** | ⚡ `0.07%` | ⚡ `0.07%` | **1.25x** | `0.01` | `$3.00` | `$25.0` | 🛡️ **15% Max Float Loss** | 🏆 **91.5%** | `2.85` | 5.2 min |
 | 💱 **GBPUSD / EURUSD / USDJPY** | ⚡ `0.05%` | ⚡ `0.05%` | **1.25x** | `0.01` | `$2.50` | `$25.0` | 🛡️ **15% Max Float Loss** | 🏆 **93.2%** | `3.10` | 4.1 min |
-| 🟠 **BTCUSDT / BTCUSD** | 🚀 `0.10%` | 🚀 `0.08%` | **1.25x** | `0.004` | `$3.50` | `$50.0` | 🛡️ **15% Max Float Loss** | 🏆 **88.4%** | `2.45` | 8.3 min |
+| 🟠 **BTCUSDT / BTCUSD** | ⚡ `0.07%` | ⚡ `0.05%` | **1.25x** | `0.004` | `$3.50` | `$50.0` | 🛡️ **15% Max Float Loss** | 🏆 **88.4%** | `2.45` | 8.3 min |
 | 🔷 **ETHUSDT / ETHUSD** | ⚡ `0.10%` | ⚡ `0.08%` | **1.25x** | `0.15` | `$3.50` | `$50.0` | 🛡️ **15% Max Float Loss** | 🏆 **89.0%** | `2.50` | 11.2 min |
 | 🟣 **SOLUSDT / SOLUSD** | ⚡ `0.09%` | ⚡ `0.08%` | **1.25x** | `1.50` | `$3.00` | `$40.0` | 🛡️ **15% Max Float Loss** | 🏆 **90.1%** | `2.65` | 8.5 min |
 | 🟡 **BNBUSDT / BNBUSD** | ⚡ `0.09%` | ⚡ `0.08%` | **1.25x** | `0.20` | `$3.00` | `$40.0` | 🛡️ **15% Max Float Loss** | 🏆 **91.0%** | `2.70` | 9.4 min |
@@ -393,14 +393,14 @@ is_strong_trend = (trend_score >= 2)  # Requires 2+ confirming factors
 
 ## 💻 7. Running the Bot & VPS Setup
 
-### 🖥️ 5.1 Local Execution
+### 🖥️ 7.1 Local Execution
 To start the Streamlit trading dashboard locally:
 
 ```bash
 .venv\Scripts\python.exe -m streamlit run app.py
 ```
 
-### 🚀 5.2 One-Command VPS Deployment (Linux / Ubuntu 24/7)
+### 🚀 7.2 One-Command VPS Deployment (Linux / Ubuntu 24/7)
 
 Run this single command on a fresh Linux VPS to automatically update packages, install dependencies, set up the virtual environment, install requirements, and run the bot in the background:
 
@@ -410,7 +410,7 @@ sudo apt update -y && sudo apt install -y git && git clone https://github.com/se
 
 > **Note on Linux VPS:** MT5 is a Windows application. The `vps_setup.sh` script automatically installs Wine (Windows emulator), sets up isolated prefixes, installs the Windows version of Python inside them, and configures the MT5 bridge automatically. After running this script, follow the on-screen instructions to start the bridges and the web dashboard.
 
-#### 🔄 Systemd 24/7 Auto-Restart Service Setup (One-Command)
+#### 🔄 7.2.1 Systemd 24/7 Auto-Restart Service Setup (One-Command)
 To ensure the bot runs 24/7 and automatically restarts if the VPS reboots:
 
 ```bash
@@ -432,7 +432,7 @@ EOF
 systemctl daemon-reload && systemctl enable matybot && systemctl start matybot'
 ```
 
-### 🪟 5.3 One-Command Windows VPS Setup (PowerShell)
+### 🪟 7.3 One-Command Windows VPS Setup (PowerShell)
 
 Run this single command in PowerShell on a Windows VPS to set up environment and start the bot:
 
@@ -524,7 +524,7 @@ This section details how Profity AI protects real trading capital against the 3 
 
 ## ⚡ 10. Lag-Free VPS Execution & Trend-Side Order Placement Engine
 
-### 🌊 2. Trend Change Confirmation & Winning-Side Placement (`core/engine.py`)
+### 🌊 10.1 Trend Change Confirmation & Winning-Side Placement (`core/engine.py`)
 - **Winning-Side Trap Placement**: When `unidirectional_mode` is set to `BUY_ONLY` or `SELL_ONLY`, grid traps are placed **strictly on the winning trend side**.
 - **15% Acceleration Offset**: Tightens trend-side offset by 15% for instant breakout fills on high momentum.
 - **Wave 3 Impulse Booster**: Applies **+35% lot size boost** on Elliott Wave 3 impulse breakouts for maximum trend expansion profit.

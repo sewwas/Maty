@@ -48,13 +48,14 @@ import threading
 from core.mt5_broker import MT5Broker, SimulatedBroker, MT5_AVAILABLE, get_symbol_magic_number, mt5
 from core.engine import BreakoutGridBot, Order, Position, get_pip_size, sanitize_order_size
 from core.manual_bot import ManualGridBot
-from core.auto_reading import PAIR_SWEET_SPOTS
+from core.auto_reading import PAIR_SAFETY_BOUNDS
 from core.services import PAMMMasterPool, send_telegram_alert, dispatch_trade_exit_signal
 from core.data import get_live_price, get_default_price, get_historical_klines, get_24h_market_stats
 
-_symbols = ["PAXGUSDT"]
+_symbols = ["PAXGUSDT", "ETHUSDT"]
 _symbol_labels = {
-    "PAXGUSDT": "XAUUSD (Gold — 🛡️ Mon-Fri Shield)"
+    "PAXGUSDT": "XAUUSD (Gold — 🛡️ Mon-Fri Shield)",
+    "ETHUSDT": "ETHUSD (Ethereum)"
 }
 
 def get_bot_state_filename() -> str:
@@ -145,7 +146,7 @@ def get_global_vps_trading_engine_v4():
         _env_pass = os.environ.get("EXNESS_PASSWORD", "")
         _env_srv = os.environ.get("EXNESS_SERVER", "")
         brk = MT5Broker(symbol=sym, login=_env_login, password=_env_pass, server=_env_srv, magic_number=magic)
-        pair_cfg = PAIR_SWEET_SPOTS.get(sym, {"std_gap": 0.07, "std_offset": 0.07, "base_lot": 0.01, "min_tp": 6.0, "lot_mult": 1.0})
+        pair_cfg = PAIR_SAFETY_BOUNDS.get(sym, {"max_gap": 0.07, "max_offset": 0.07, "base_lot": 0.01, "min_tp": 6.0})
         bot = BreakoutGridBot(
             broker=brk,
             symbol=sym,

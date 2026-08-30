@@ -8,11 +8,15 @@ PAIR_PRIORITY_REGISTRY = [
 
 _ORDERS_PER_SLOT = {"GOLD": 5, "MAJOR": 5, "MINOR": 3, "ALT": 2}
 
-PAIR_SWEET_SPOTS = {
-    "XAUUSD":   {"quiet_gap": 0.05, "std_gap": 0.07, "quiet_offset": 0.05, "std_offset": 0.09, "base_lot": 0.01,   "min_tp": 6.00, "lot_mult": 1.0},
-    "PAXGUSDT": {"quiet_gap": 0.05, "std_gap": 0.07, "quiet_offset": 0.05, "std_offset": 0.09, "base_lot": 0.01,   "min_tp": 6.00, "lot_mult": 1.0},
-    "GOLD":     {"quiet_gap": 0.05, "std_gap": 0.07, "quiet_offset": 0.05, "std_offset": 0.09, "base_lot": 0.01,   "min_tp": 6.00, "lot_mult": 1.0},
+# Hybrid safety bounds: live ATR drives the actual values; these are hard floor/ceiling guards.
+# To add a new symbol just add a row here — no gap/offset tuning needed, ATR handles it.
+PAIR_SAFETY_BOUNDS = {
+    "XAUUSD":   {"min_gap": 0.03, "max_gap": 0.80,  "min_offset": 0.03, "max_offset": 0.60,  "min_tp": 3.00, "max_tp":  40.0, "base_lot": 0.01, "std_gap": 0.07, "std_offset": 0.07, "lot_mult": 1.25},
+    "PAXGUSDT": {"min_gap": 0.03, "max_gap": 0.80,  "min_offset": 0.03, "max_offset": 0.60,  "min_tp": 3.00, "max_tp":  40.0, "base_lot": 0.01, "std_gap": 0.07, "std_offset": 0.07, "lot_mult": 1.25},
+    "GOLD":     {"min_gap": 0.03, "max_gap": 0.80,  "min_offset": 0.03, "max_offset": 0.60,  "min_tp": 3.00, "max_tp":  40.0, "base_lot": 0.01, "std_gap": 0.07, "std_offset": 0.07, "lot_mult": 1.25},
+    "ETHUSDT":  {"min_gap": 0.5,  "max_gap": 3.0,  "min_offset": 0.5,  "max_offset": 25.0,  "min_tp": 2.00, "max_tp":  60.0, "base_lot": 0.15,  "std_gap": 0.10, "std_offset": 0.08, "lot_mult": 1.25},
 }
+_DEFAULT_SAFETY_BOUNDS = {"min_gap": 0.03, "max_gap": 2.0, "min_offset": 0.03, "max_offset": 1.50, "min_tp": 2.00, "max_tp": 80.0, "base_lot": 0.01}
 
 
 def clamp_symbol_lot_size(symbol: str, raw_size: float) -> float:
@@ -85,6 +89,39 @@ def get_pair_gold_params(symbol: str) -> dict:
     return {"tier": "ALT", "is_gold": False, "max_levels": 2,
             "base_gap_pct": 0.50, "base_offset_pct": 0.30,
             "min_lot": 0.01, "max_lot": 0.10, "slot_cost": 2}
+
+
+def _compute_atr_derived_params(symbol: str, current_price: float, atr_pct: float, is_quiet: bool) -> dict:
+    """Hybrid core: derive gap/offset/tp from live ATR, then clamp to per-symbol safety bounds.
+
+    Quiet market  (RANGING / low ATR) → tighter values → faster entries & exits.
+    Active market (TRENDING / high ATR) → wider values → protection from noise.
+    """
+    sym_u = symbol.upper()
+    bounds = _DEFAULT_SAFETY_BOUNDS
+    for token, b in PAIR_SAFETY_BOUNDS.items():
+        if token in sym_u:
+            bounds = b
+            break
+
+    # Convert ATR % to price units (e.g. 0.30% of $2700 gold = $8.10)
+    atr_price = (atr_pct / 100.0) * max(current_price, 0.0001)
+
+    # Quiet: tighter for fast execution. Active: wider for noise protection.
+    gap_factor    = 0.12 if is_quiet else 0.20
+    offset_factor = 0.10 if is_quiet else 0.16
+    tp_factor     = 0.60 if is_quiet else 0.90
+
+    raw_gap    = round(atr_price * gap_factor,    3)
+    raw_offset = round(atr_price * offset_factor, 3)
+    raw_tp     = round(atr_price * tp_factor,     2)
+
+    return {
+        "dynamic_gap":    max(bounds["min_gap"],    min(bounds["max_gap"],    raw_gap)),
+        "dynamic_offset": max(bounds["min_offset"], min(bounds["max_offset"], raw_offset)),
+        "dynamic_tp":     max(bounds["min_tp"],     min(bounds["max_tp"],     raw_tp)),
+        "base_lot":       bounds["base_lot"],
+    }
 
 
 class AutoReadingEngine:
@@ -172,7 +209,7 @@ class AutoReadingEngine:
         if not tech:
             try:
                 from core.data import get_historical_klines, calculate_technical_indicators, detect_fvg, detect_liquidity_sweep, detect_order_blocks
-                df_klines = get_historical_klines(symbol, interval="15m", limit=100)
+                df_klines = get_historical_klines(symbol, interval="5m", limit=100)
                 if df_klines is not None and not df_klines.empty:
                     tech = calculate_technical_indicators(symbol) or {}
                     tech['fvg'] = detect_fvg(df_klines)
@@ -371,17 +408,18 @@ class AutoReadingEngine:
 
         sym_u = (symbol or "").upper()
         clean_sym = sym_u
-        for s_token in PAIR_SWEET_SPOTS.keys():
+        for s_token in PAIR_SAFETY_BOUNDS.keys():
             if s_token in sym_u:
                 clean_sym = s_token
                 break
 
-        pair_config = PAIR_SWEET_SPOTS.get(clean_sym, {"quiet_gap": 0.05, "std_gap": 0.08, "quiet_offset": 0.05, "std_offset": 0.08, "base_lot": 0.01, "min_tp": 3.00, "lot_mult": 1.25})
+        # Resolve safety bounds for this symbol (used for base_lot + ATR clamping later)
+        sym_bounds = PAIR_SAFETY_BOUNDS.get(clean_sym, _DEFAULT_SAFETY_BOUNDS)
 
         equity_ratio = max(0.10, account_equity / 1000.0)
         capital_tier = f"${account_equity:,.0f} Dynamic Tier"
-        raw_base_size = pair_config["base_lot"] * equity_ratio
-        
+        raw_base_size = sym_bounds["base_lot"] * equity_ratio
+
         base_size = clamp_symbol_lot_size(clean_sym, raw_base_size)
 
         base_target_profit = max(3.00, round(6.00 * equity_ratio, 2))
@@ -428,14 +466,14 @@ class AutoReadingEngine:
         )))
 
         is_quiet_market = (regime == "RANGING" or atr_pct < 0.25)
-        min_gap_val = pair_config["quiet_gap"] if is_quiet_market else pair_config["std_gap"]
-        min_offset_val = pair_config["quiet_offset"] if is_quiet_market else pair_config["std_offset"]
+        # Hybrid: ATR-derived values, clamped to per-symbol safety bounds
+        atr_params = _compute_atr_derived_params(clean_sym, current_price, atr_pct, is_quiet_market)
 
-        dynamic_gap = max(min_gap_val * profile_gap_mult, dynamic_gap)
-        buy_offset = max(min_offset_val * profile_offset_mult, buy_offset)
-        sell_offset = buy_offset
-        lot_multiplier = pair_config.get("lot_mult", 1.25)
-        base_target_profit = pair_config.get("min_tp", 3.00)
+        dynamic_gap        = max(atr_params["dynamic_gap"]    * profile_gap_mult,    dynamic_gap)
+        buy_offset         = max(atr_params["dynamic_offset"] * profile_offset_mult, buy_offset)
+        sell_offset        = buy_offset
+        lot_multiplier     = 1.0
+        base_target_profit = atr_params["dynamic_tp"]
 
         live_spread = tech.get("live_spread", 0.0)
         if live_spread > 0 and current_price > 0:
@@ -512,7 +550,7 @@ class AutoReadingEngine:
             "dynamic_gap_pct": dynamic_gap,
             "recommended_size": round(adj_size, 6),
             "recommended_multiplier": lot_multiplier,
-            "recommended_levels": max_levels,
+            "recommended_levels": min(max_levels, 10),  # Hard safety cap — never exceed 10 levels regardless of market signals
             "recommended_stop_loss": round(stop_loss, 2),
             "recommended_target_profit": dynamic_target_profit,
             "smc_bias":          smc_result.get("smc_bias", "NEUTRAL"),

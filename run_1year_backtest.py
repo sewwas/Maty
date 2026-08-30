@@ -40,7 +40,29 @@ def mock_get_historical_klines(symbol, interval="1m", limit=30):
 
 cd.get_historical_klines = mock_get_historical_klines
 
+def mock_get_order_book_depth(symbol):
+    return {"asks": [[2000.5, 1.0]], "bids": [[1999.5, 1.0]], "buy_pressure_pct": 50.0}
+cd.get_order_book_depth = mock_get_order_book_depth
 
+def mock_get_economic_calendar():
+    return []
+cd.get_economic_calendar = mock_get_economic_calendar
+
+def mock_calculate_technical_indicators(symbol):
+    return {"ema_trend_bias": 0.0, "rsi": 50.0, "atr_pct": 0.30, "bb_width_pct": 2.0}
+cd.calculate_technical_indicators = mock_calculate_technical_indicators
+
+def mock_detect_fvg(df): return {}
+cd.detect_fvg = mock_detect_fvg
+
+def mock_detect_liquidity_sweep(df): return {}
+cd.detect_liquidity_sweep = mock_detect_liquidity_sweep
+
+def mock_detect_order_blocks(df): return {}
+cd.detect_order_blocks = mock_detect_order_blocks
+
+def mock_calculate_smc_elliott(df): return {}
+cd.calculate_smc_elliott = mock_calculate_smc_elliott
 class BacktestBroker:
     def __init__(self, initial_balance=5000.0, symbol="PAXGUSDT"):
         self.symbol = symbol
@@ -254,7 +276,7 @@ def generate_high_precision_candles(symbol: str, num_bars: int = 50000):
     return rates
 
 
-def run_high_precision_backtest(sym_name: str, num_bars: int = 5000):
+def run_high_precision_backtest(sym_name: str, num_bars: int = 43200):
     rates = generate_high_precision_candles(sym_name, num_bars)
     
     total_bars = len(rates)
@@ -288,7 +310,7 @@ def run_high_precision_backtest(sym_name: str, num_bars: int = 5000):
         order_size_multiplier=1.25,
         target_profit=t_prof,
         auto_restart=True,
-        use_auto_reading=False  # Disable auto reading so it uses our hardcoded parameters
+        use_auto_reading=True  # Enable auto reading to use hybrid logic
     )
     bot.spacing_mode = "Percentage (%)"
 

@@ -64,4 +64,9 @@ bandit_report.json
 bridge_config_*.json
 portal_config.json
 
+# Local development patches — do NOT deploy to production VPS
+hacks.patch
+*.patch
+
+
 

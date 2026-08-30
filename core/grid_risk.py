@@ -757,6 +757,7 @@ def check_target_profit(self, current_price: float, timestamp: float) -> Optiona
         # ── 2. Smart Trend Reversal Exit (Only in Substantial Profit) ──
         # Only exit on trend reversal if we already have substantial profit (>= 70% of target)
         # to prevent cutting promising trends on 1-minute noise.
+        _is_gold_tr = any(x in sym_u for x in ["XAU", "GOLD", "PAXG"])
         trend_reversal_threshold = max(effective_cycle_target * 0.70, 5.0 if _is_gold_tr else 2.50)
 
         if not exit_triggered and total_pnl >= trend_reversal_threshold and auto_uni:
@@ -934,15 +935,15 @@ def process_engine_tick(self, previous_price: float, current_price: float, times
             filled_types = [self.broker.open_positions[pid].type for pid in newly_filled_pos_ids if pid in self.broker.open_positions]
             if "BUY" in filled_types:
                 for oid, ord_obj in list(self.broker.pending_orders.items()):
-                    if ord_obj.type == "SELL_STOP":
+                    if getattr(ord_obj, "symbol", sym_name) == sym_name and ord_obj.type == "SELL_STOP":
                         self.broker.cancel_order(oid)
             if "SELL" in filled_types:
                 for oid, ord_obj in list(self.broker.pending_orders.items()):
-                    if ord_obj.type == "BUY_STOP":
+                    if getattr(ord_obj, "symbol", sym_name) == sym_name and ord_obj.type == "BUY_STOP":
                         self.broker.cancel_order(oid)
 
-    current_pending = len(getattr(self.broker, "pending_orders", {}))
-    current_open = len(getattr(self.broker, "open_positions", {}))
+    current_pending = sum(1 for o in getattr(self.broker, "pending_orders", {}).values() if getattr(o, "symbol", sym_name) == sym_name)
+    current_open = sum(1 for p in getattr(self.broker, "open_positions", {}).values() if getattr(p, "symbol", sym_name) == sym_name)
 
     if current_open > getattr(self, "_max_open_in_cycle", 0):
         self._max_open_in_cycle = current_open
@@ -973,7 +974,7 @@ def process_engine_tick(self, previous_price: float, current_price: float, times
     if needs_refresh:
         print(f"[{self.symbol}] 🔄 [GRID REFRESH] {refresh_reason}. Canceling {current_pending} pending orders to deploy fresh grid.")
         if hasattr(self.broker, "cancel_all_orders"):
-            self.broker.cancel_all_orders()
+            self.broker.cancel_all_orders(symbol=self.symbol)
         self.deployed = False
         self._max_open_in_cycle = 0
         self._last_pending_count = 0
@@ -1138,6 +1139,11 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
     if getattr(self, "_is_deploying", False):
         return
 
+    # ── Deploy debounce: max 1 redeploy per 2 s from UI (tick-engine force=True bypasses) ──
+    _last_deploy_ts = getattr(self, "_last_deploy_ts", 0.0)
+    if not force and (timestamp - _last_deploy_ts) < 2.0:
+        return
+
     max_capacity = (getattr(self, "grid_levels", 5) or 5) * 2
     if not force and len(getattr(self.broker, "pending_orders", {})) >= max_capacity:
         return
@@ -1235,6 +1241,9 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
         if any(x in sym_name for x in ["XAU", "PAXG", "GOLD"]):
             gap_ratio = min(0.0015, max(0.0005, gap_ratio))
             off_ratio = min(0.0015, max(0.0005, off_ratio))
+        elif "ETH" in sym_name:
+            gap_ratio = min(0.0020, max(0.0005, gap_ratio))
+            off_ratio = min(0.0025, max(0.0010, off_ratio))
 
         buy_offset_val = current_price * off_ratio if off_ratio > 0 else current_price * 0.001
         gap_val = current_price * gap_ratio if gap_ratio > 0 else current_price * 0.001
@@ -1249,25 +1258,25 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
             except Exception as e:
                 import logging; logging.warning(f"Exception: {e}")
 
-        base_min_off = 5.0 if any(x in sym_name for x in ["XAU", "PAXG", "GOLD"]) else 0.0015
+        base_min_off = 5.0 if any(x in sym_name for x in ["XAU", "PAXG", "GOLD"]) else (4.0 if "ETH" in sym_name else 0.0015)
         min_offset_dist = max(b_min_stop + (gap_val * 0.5), base_min_off)
         buy_offset_val = max(float(buy_offset_val), min_offset_dist)
         sell_offset_val = buy_offset_val
         
-        min_gap_dist = 2.0 if any(x in sym_name for x in ["XAU", "PAXG", "GOLD"]) else 0.0010
+        min_gap_dist = 2.0 if any(x in sym_name for x in ["XAU", "PAXG", "GOLD"]) else (2.0 if "ETH" in sym_name else 0.0010)
         gap_val = max(float(gap_val), min_gap_dist)
         buy_offset_val = round(buy_offset_val, digits)
         sell_offset_val = round(sell_offset_val, digits)
         gap_val = round(gap_val, digits)
 
-        t_5m, t_15m, rsi_1m = "NEUTRAL", "NEUTRAL", 50.0
+        t_5m, t_htf, rsi_1m = "NEUTRAL", "NEUTRAL", 50.0
         atr_5m = None
         try:
             from core.data import get_historical_klines, calculate_technical_indicators
             import numpy as np
-            df_1m = get_historical_klines(sym_name, interval="1m", limit=30)
-            df_5m = get_historical_klines(sym_name, interval="5m", limit=30)
-            df_15m = get_historical_klines(sym_name, interval="15m", limit=30)
+            df_1m  = get_historical_klines(sym_name, interval="1m", limit=30)
+            df_5m  = get_historical_klines(sym_name, interval="5m", limit=30)
+            df_htf = get_historical_klines(sym_name, interval="5m", limit=60)  # 5m with wider window as HTF
             
             # Manually calculate ATR 5m directly from df_5m to ensure reliability
             if df_5m is not None and not df_5m.empty and len(df_5m) > 5:
@@ -1281,12 +1290,12 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
                 if tr_list:
                     atr_5m = float(np.mean(tr_list[-14:])) if len(tr_list) >= 14 else float(np.mean(tr_list))
 
-            tech_1m = calculate_technical_indicators(df_1m) if (df_1m is not None and not df_1m.empty) else {}
-            tech_5m = calculate_technical_indicators(df_5m) if (df_5m is not None and not df_5m.empty) else {}
-            tech_15m = calculate_technical_indicators(df_15m) if (df_15m is not None and not df_15m.empty) else {}
+            tech_1m  = calculate_technical_indicators(df_1m)  if (df_1m  is not None and not df_1m.empty)  else {}
+            tech_5m  = calculate_technical_indicators(df_5m)  if (df_5m  is not None and not df_5m.empty)  else {}
+            tech_htf = calculate_technical_indicators(df_htf) if (df_htf is not None and not df_htf.empty) else {}
             
-            t_5m = tech_5m.get("trend", "NEUTRAL") or "NEUTRAL"
-            t_15m = tech_15m.get("trend", "NEUTRAL") or "NEUTRAL"
+            t_5m  = tech_5m.get("trend",  "NEUTRAL") or "NEUTRAL"
+            t_htf = tech_htf.get("trend", "NEUTRAL") or "NEUTRAL"  # 5m wide-window HTF (replaces 15m)
             rsi_1m = float(tech_1m.get("rsi", 50.0) or 50.0)
         except Exception as e:
             import logging; logging.warning(f"Exception: {e}")
@@ -1296,6 +1305,8 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
 
         if any(x in sym_name for x in ["XAU", "PAXG", "GOLD"]):
             min_sl_dist = max(4.00, min(8.00, atr_5m * 1.5))
+        elif "ETH" in sym_name:
+            min_sl_dist = max(4.00, min(12.00, atr_5m * 1.5))
         else:
             # Derive `point` safely for alt coins (DOGE, XRP, etc.) that don't match named branches
             _sym_info_alt = None
@@ -1309,16 +1320,19 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
             min_sl_dist = max(b_min_stop * 2.5, _point_alt * 50.0)
 
         acc_eq = self.broker.get_equity() if hasattr(self.broker, "get_equity") else 1000.0
+        _cfg_levels = getattr(self, "grid_levels", 5) or 5  # Hard ceiling from bot config
         if not is_manual and hasattr(self, "last_auto_eval") and isinstance(self.last_auto_eval, dict) and "recommended_levels" in self.last_auto_eval:
-            effective_levels = int(self.last_auto_eval["recommended_levels"])
+            # AutoReadingEngine may reduce levels for low-confidence markets but NEVER exceeds the configured cap
+            effective_levels = min(int(self.last_auto_eval["recommended_levels"]), _cfg_levels)
         else:
-            base_cfg_levels = getattr(self, "grid_levels", 3) or 3  # 📊 Mode 2: 3 levels × 2 = 6 pending (medium confidence)
-            effective_levels = base_cfg_levels
+            effective_levels = _cfg_levels
 
         dyn_tp_factor = max(3.0, float(effective_levels * 1.0))
         calculated_dynamic_tp = gap_val * dyn_tp_factor
 
         if any(x in sym_name for x in ["XAU", "GOLD", "PAXG"]):
+            min_tp_dist = max(6.00, min(18.00, calculated_dynamic_tp, atr_5m * 2.5))
+        elif "ETH" in sym_name:
             min_tp_dist = max(6.00, min(18.00, calculated_dynamic_tp, atr_5m * 2.5))
         else:
             min_tp_dist = max(calculated_dynamic_tp, b_min_stop * 5.0)
@@ -1346,23 +1360,22 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
         elif _auto_eval_decided:
             # AutoReadingEngine already evaluated — trust its decision, don't override
             place_buy, place_sell = True, True
+        elif is_manual:
+            # In manual mode, if no side is explicitly selected, default to DUAL (no secret trend filtering)
+            place_buy, place_sell = True, True
         else:
-            if is_manual:
-                # In manual mode, if no side is explicitly selected, default to DUAL (no secret trend filtering)
-                place_buy, place_sell = True, True
+            # FALLBACK ONLY when AutoReadingEngine did NOT run (auto_reading disabled).
+            # Uses 5m fast / 5m wide-window (HTF) trend as standalone direction filter.
+            if t_5m == "BULLISH" or (t_5m == "NEUTRAL" and t_htf == "BULLISH"):
+                place_buy, place_sell = True, False
+            elif t_5m == "BEARISH" or (t_5m == "NEUTRAL" and t_htf == "BEARISH"):
+                place_buy, place_sell = False, True
+            elif rsi_1m <= 38.0 and t_5m == "NEUTRAL" and t_htf == "NEUTRAL":
+                place_buy, place_sell = True, False
+            elif rsi_1m >= 62.0 and t_5m == "NEUTRAL" and t_htf == "NEUTRAL":
+                place_buy, place_sell = False, True
             else:
-                # FALLBACK ONLY when AutoReadingEngine did NOT run (auto_reading disabled).
-                # Uses 5m/15m trend as a standalone direction filter.
-                if t_5m == "BULLISH" or (t_5m == "NEUTRAL" and t_15m == "BULLISH"):
-                    place_buy, place_sell = True, False
-                elif t_5m == "BEARISH" or (t_5m == "NEUTRAL" and t_15m == "BEARISH"):
-                    place_buy, place_sell = False, True
-                elif rsi_1m <= 38.0 and t_5m == "NEUTRAL" and t_15m == "NEUTRAL":
-                    place_buy, place_sell = True, False
-                elif rsi_1m >= 62.0 and t_5m == "NEUTRAL" and t_15m == "NEUTRAL":
-                    place_buy, place_sell = False, True
-                else:
-                    place_buy, place_sell = True, True
+                place_buy, place_sell = True, True
 
         # ─────────────────────────────────────────────────────────────
         # DIRECTIONAL MODE: Limit orders from optimal price levels
@@ -1391,7 +1404,8 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
 
         if (directional_sell or directional_buy) and _is_100pct_grid:
             dir_tp_dist     = min_tp_dist * 1.77  # Backtest optimal (was 2.5x)
-            effective_levels = min(effective_levels + 1, 8)  # One extra level, cap at 8
+            # +1 bonus level on 100% confirmed trend, but never exceed configured grid_levels+1 (or 8 hard cap)
+            effective_levels = min(effective_levels + 1, min(8, _cfg_levels + 1))
             _confirmed_offset_mult = 0.20          # Backtest optimal entry — tighter (was 0.35x)
             _confirmed_gap_mult    = 0.70          # Compressed gap → denser stack
         elif directional_sell or directional_buy:
@@ -1409,81 +1423,194 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
         spread_anti_hunt_buffer = max(live_spread * 1.5, 0.0)
 
         # 2. Dynamic ATR-Based Trap Placement — scaled by confirmation state & live spread
-        dynamic_atr_offset  = (atr_5m * _confirmed_offset_mult) if (atr_5m is not None and atr_5m > 0) else 0.0
+        # Cap ATR offset to 1.5× configured value — prevents large-ATR symbols (BTC/ETH)
+        # from pushing traps far beyond the user-configured distance.
+        _max_atr_offset     = buy_offset_val * 1.5
+        dynamic_atr_offset  = min((atr_5m * _confirmed_offset_mult) if (atr_5m is not None and atr_5m > 0) else 0.0, _max_atr_offset)
         base_start_offset   = max(b_min_stop + 1.0, dynamic_atr_offset, buy_offset_val) + spread_anti_hunt_buffer
 
-        # 3. Institutional Smart Money Concepts (SMC) & FVG Key Level Snapping
-        bull_ob  = 0.0
-        bear_ob  = 0.0
-        bull_fvg = 0.0
-        bear_fvg = 0.0
-        if hasattr(self, "last_auto_eval") and isinstance(self.last_auto_eval, dict):
-            bull_ob  = float(self.last_auto_eval.get("bullish_ob", 0.0) or 0.0)
-            bear_ob  = float(self.last_auto_eval.get("bearish_ob", 0.0) or 0.0)
-            bull_fvg = float(self.last_auto_eval.get("bullish_fvg_high", 0.0) or 0.0)
-            bear_fvg = float(self.last_auto_eval.get("bearish_fvg_low", 0.0) or 0.0)
+        # ═══════════════════════════════════════════════════════════════════════
+        # SMART CONFLUENCE PLACEMENT ENGINE
+        # Only place stop orders where institutional levels exist nearby.
+        # No blind fixed-interval placement — every trap has a structural reason.
+        # ═══════════════════════════════════════════════════════════════════════
 
-        cumulative_gap   = 0.0
-        expansion_factor = 1.30 * _confirmed_gap_mult   # Compressed gaps when confirmed
+        # ── Collect all known institutional reference levels ──────────────────
+        smc_eval = self.last_auto_eval if (hasattr(self, "last_auto_eval") and isinstance(self.last_auto_eval, dict)) else {}
 
-        self.active_buy_levels = []
+        # Order Blocks
+        bull_ob   = float(smc_eval.get("bullish_ob",       0.0) or 0.0)
+        bear_ob   = float(smc_eval.get("bearish_ob",       0.0) or 0.0)
+        # Fair Value Gap edges
+        bull_fvg_lo = float(smc_eval.get("bullish_fvg_low",  0.0) or 0.0)
+        bull_fvg_hi = float(smc_eval.get("bullish_fvg_high", 0.0) or 0.0)
+        bear_fvg_lo = float(smc_eval.get("bearish_fvg_low",  0.0) or 0.0)
+        bear_fvg_hi = float(smc_eval.get("bearish_fvg_high", 0.0) or 0.0)
+        # Liquidity pools
+        buy_liq   = float(smc_eval.get("buy_liquidity",    0.0) or 0.0)
+        sell_liq  = float(smc_eval.get("sell_liquidity",   0.0) or 0.0)
+        # VWAP
+        vwap_dev  = float(smc_eval.get("vwap_dev_pct",     0.0) or 0.0)
+        vwap_px   = current_price / (1.0 + vwap_dev / 100.0) if abs(vwap_dev) > 0.01 else 0.0
+
+        # Swing high/low from 5m cache
+        swing_hi = float(getattr(self, "_5m_klines_cache", None) is not None and
+                         hasattr(self, "_5m_klines_cache") and
+                         self._5m_klines_cache is not None and
+                         not self._5m_klines_cache.empty and
+                         self._5m_klines_cache["high"].max() or 0.0) if hasattr(self, "_5m_klines_cache") else 0.0
+        swing_lo = 0.0
+        try:
+            if hasattr(self, "_5m_klines_cache") and self._5m_klines_cache is not None and not self._5m_klines_cache.empty:
+                swing_hi = float(self._5m_klines_cache["high"].values[-8:].max())
+                swing_lo = float(self._5m_klines_cache["low"].values[-8:].min())
+        except Exception:
+            swing_hi = swing_lo = 0.0
+
+        # ── Build candidate level pools (BUY side above price, SELL side below) ─
+        snap_tol = gap_val * 1.5   # Snap tolerance: 1.5× gap — levels within this are "nearby"
+
+        # Each entry: (price, label, score_contribution)
+        buy_candidates:  list = []   # levels above ask (BUY_STOP targets)
+        sell_candidates: list = []   # levels below bid (SELL_STOP targets)
+
+        def _add_buy(px: float, label: str, score: int):
+            # Must be valid for MT5: at least b_min_stop away from ask
+            if px >= ask_ref + b_min_stop:
+                buy_candidates.append((round(px, digits), label, score))
+
+        def _add_sell(px: float, label: str, score: int):
+            # Must be valid for MT5: at least b_min_stop away from bid
+            if px <= bid_ref - b_min_stop:
+                sell_candidates.append((round(px, digits), label, score))
+
+        # BUY-side institutional levels (above current price)
+        if bull_ob > 0:   _add_buy(bull_ob,    "BullOB",    3)
+        if buy_liq > 0:   _add_buy(buy_liq,    "BuyLP",     3)
+        if bull_fvg_hi>0: _add_buy(bull_fvg_hi,"FVG_hi",   2)
+        if bull_fvg_lo>0: _add_buy(bull_fvg_lo,"FVG_lo",   2)
+        if swing_hi > 0:  _add_buy(swing_hi,   "SwingHi",   2)
+        if vwap_px > ask_ref: _add_buy(vwap_px,"VWAP",     1)
+
+        # SELL-side institutional levels (below current price)
+        if bear_ob > 0:   _add_sell(bear_ob,   "BearOB",    3)
+        if sell_liq > 0:  _add_sell(sell_liq,  "SellLP",    3)
+        if bear_fvg_lo>0: _add_sell(bear_fvg_lo,"FVG_lo",  2)
+        if bear_fvg_hi>0: _add_sell(bear_fvg_hi,"FVG_hi",  2)
+        if swing_lo > 0:  _add_sell(swing_lo,  "SwingLo",   2)
+        if vwap_px > 0 and vwap_px < bid_ref: _add_sell(vwap_px, "VWAP", 1)
+
+        # ── Merge nearby candidates (within snap_tol of each other) & score ──
+        def _merge_and_score(candidates: list, is_buy: bool) -> list:
+            """Cluster nearby levels, sum scores, return sorted by proximity to price."""
+            merged: list = []
+            used = set()
+            for idx, (px, lbl, sc) in enumerate(candidates):
+                if idx in used:
+                    continue
+                cluster_px  = [px]
+                cluster_lbl = [lbl]
+                cluster_sc  = sc
+                for jdx, (px2, lbl2, sc2) in enumerate(candidates):
+                    if jdx != idx and jdx not in used and abs(px2 - px) <= snap_tol:
+                        cluster_px.append(px2)
+                        cluster_lbl.append(lbl2)
+                        cluster_sc += sc2
+                        used.add(jdx)
+                used.add(idx)
+                best_px = round(sum(cluster_px) / len(cluster_px), digits)  # centroid
+                merged.append((cluster_sc, best_px, "+".join(set(cluster_lbl))))
+            
+            # Sort by proximity to current price:
+            # For BUY (above price), we want the lowest valid resistance (closest).
+            # For SELL (below price), we want the highest valid support (closest).
+            if is_buy:
+                return sorted(merged, key=lambda x: x[1])
+            else:
+                return sorted(merged, key=lambda x: x[1], reverse=True)
+
+        merged_buy  = _merge_and_score(buy_candidates, is_buy=True)
+        merged_sell = _merge_and_score(sell_candidates, is_buy=False)
+
+        # ── Fallback: if no SMC levels found, use base_start_offset anchor ──
+        # Guarantees at least 1 order even in data-sparse conditions.
+        ranging_mode = not (directional_buy or directional_sell)
+        if not merged_buy and (directional_buy or ranging_mode):
+            merged_buy = [(1, round(ask_ref + base_start_offset, digits), "Anchor")]
+        if not merged_sell and (directional_sell or ranging_mode):
+            merged_sell = [(1, round(bid_ref - base_start_offset, digits), "Anchor")]
+
+        # ── Place orders — top N candidates by score, up to effective_levels ──
+        placed_count = 0
+
+        def _place_buy_stop(px: float, label: str, level_idx: int):
+            nonlocal placed_count
+            sz  = self.calculate_level_size(self.order_size, self.order_size_multiplier, level_idx)
+            # Smart TP: Find nearest structural level above the entry that is at least min_tp_dist away
+            smart_tp = round(px + dir_tp_dist, digits) # Fallback
+            valid_tps = [c_px for (_, c_px, _) in merged_buy if c_px >= px + min_tp_dist and c_px <= px + (dir_tp_dist * 2.0)]
+            if valid_tps:
+                smart_tp = min(valid_tps) # lowest valid resistance above entry
+            
+            # Smart SL: Find nearest structural level below the entry that is at least min_sl_dist away
+            smart_sl = round(px - min_sl_dist, digits) # Fallback
+            valid_sls = [c_px for (_, c_px, _) in merged_sell if c_px <= px - min_sl_dist and c_px >= px - (min_sl_dist * 2.5)]
+            if valid_sls:
+                smart_sl = max(valid_sls) # highest valid level below entry
+                
+            try:
+                r = self.broker.place_order("BUY_STOP", px, sz, timestamp, tp=smart_tp, sl=smart_sl)
+                if r:
+                    placed_count += 1
+                    self.active_buy_levels.append(px)
+                    print(f"[{sym_name}] 📈 [BUY_STOP|{label}] @ ${px:,.{digits}f}  TP:${smart_tp:,.{digits}f}  SL:${smart_sl:,.{digits}f}  sz:{sz}")
+            except Exception as e:
+                print(f"[{sym_name}] BUY_STOP error @ {px}: {e}")
+
+        def _place_sell_stop(px: float, label: str, level_idx: int):
+            nonlocal placed_count
+            sz  = self.calculate_level_size(self.order_size, self.order_size_multiplier, level_idx)
+            # Smart TP: Find nearest structural level below the entry that is at least min_tp_dist away
+            smart_tp = round(px - dir_tp_dist, digits) # Fallback
+            valid_tps = [c_px for (_, c_px, _) in merged_sell if c_px <= px - min_tp_dist and c_px >= px - (dir_tp_dist * 2.0)]
+            if valid_tps:
+                smart_tp = max(valid_tps) # highest valid support below entry
+            
+            # Smart SL: Find nearest structural level above the entry that is at least min_sl_dist away
+            smart_sl = round(px + min_sl_dist, digits) # Fallback
+            valid_sls = [c_px for (_, c_px, _) in merged_buy if c_px >= px + min_sl_dist and c_px <= px + (min_sl_dist * 2.5)]
+            if valid_sls:
+                smart_sl = min(valid_sls) # lowest valid level above entry
+
+            try:
+                r = self.broker.place_order("SELL_STOP", px, sz, timestamp, tp=smart_tp, sl=smart_sl)
+                if r:
+                    placed_count += 1
+                    self.active_sell_levels.append(px)
+                    print(f"[{sym_name}] 📉 [SELL_STOP|{label}] @ ${px:,.{digits}f}  TP:${smart_tp:,.{digits}f}  SL:${smart_sl:,.{digits}f}  sz:{sz}")
+            except Exception as e:
+                print(f"[{sym_name}] SELL_STOP error @ {px}: {e}")
+
+        self.active_buy_levels  = []
         self.active_sell_levels = []
 
-        for i in range(effective_levels):
-            buy_size  = self.calculate_level_size(self.order_size, self.order_size_multiplier, i)
-            sell_size = self.calculate_level_size(self.order_size, self.order_size_multiplier, i)
+        if directional_buy:
+            for i, (score, px, label) in enumerate(merged_buy[:effective_levels]):
+                _place_buy_stop(px, label, i)
 
-            if directional_sell:
-                # ── Pure SELL_STOP continuation/breakdown traps only (NO LIMITS) ──
-                sell_stop_px = round(bid_ref - base_start_offset - cumulative_gap, digits)
-                self.active_sell_levels.append(sell_stop_px)
-                sell_stop_tp = round(sell_stop_px - dir_tp_dist, digits)
-                sell_stop_sl = round(sell_stop_px + min_sl_dist, digits)
-                try:
-                    r = self.broker.place_order("SELL_STOP", sell_stop_px, sell_size, timestamp, tp=sell_stop_tp, sl=sell_stop_sl)
-                    if r:
-                        placed_count += 1
-                        print(f"[{sym_name}] 📉 [SELL_STOP] L{i} @ ${sell_stop_px:,.3f} TP:${sell_stop_tp:,.3f} SL:${sell_stop_sl:,.3f}")
-                except Exception as e:
-                    print(f"[{sym_name}] SELL_STOP L{i} error: {e}")
+        elif directional_sell:
+            for i, (score, px, label) in enumerate(merged_sell[:effective_levels]):
+                _place_sell_stop(px, label, i)
 
-            elif directional_buy:
-                # ── Pure BUY_STOP breakout traps only (NO LIMITS) ──
-                buy_stop_px = round(ask_ref + base_start_offset + cumulative_gap, digits)
-                self.active_buy_levels.append(buy_stop_px)
-                buy_stop_tp = round(buy_stop_px + dir_tp_dist, digits)
-                buy_stop_sl = round(buy_stop_px - min_sl_dist, digits)
-                try:
-                    r = self.broker.place_order("BUY_STOP", buy_stop_px, buy_size, timestamp, tp=buy_stop_tp, sl=buy_stop_sl)
-                    if r:
-                        placed_count += 1
-                        print(f"[{sym_name}] 📈 [BUY_STOP] L{i} @ ${buy_stop_px:,.3f} TP:${buy_stop_tp:,.3f} SL:${buy_stop_sl:,.3f}")
-                except Exception as e:
-                    print(f"[{sym_name}] BUY_STOP L{i} error: {e}")
+        else:
+            # Ranging — interleave best buy + sell candidates up to effective_levels each
+            buy_slots  = min(effective_levels, len(merged_buy))
+            sell_slots = min(effective_levels, len(merged_sell))
+            for i, (score, px, label) in enumerate(merged_buy[:buy_slots]):
+                _place_buy_stop(px, label, i)
+            for i, (score, px, label) in enumerate(merged_sell[:sell_slots]):
+                _place_sell_stop(px, label, i)
 
-            else:
-                # ── RANGING mode — Dual BUY_STOP + SELL_STOP breakout grid (NO LIMITS) ──
-                buy_px  = round(ask_ref + base_start_offset + cumulative_gap, digits)
-                self.active_buy_levels.append(buy_px)
-                buy_tp  = round(buy_px + min_tp_dist, digits)
-                buy_sl  = round(buy_px - min_sl_dist, digits)
-                try:
-                    r = self.broker.place_order("BUY_STOP", buy_px, buy_size, timestamp, tp=buy_tp, sl=buy_sl)
-                    if r: placed_count += 1
-                except Exception as e:
-                    print(f"[{sym_name}] BUY_STOP L{i} error: {e}")
-
-                sell_px = round(bid_ref - base_start_offset - cumulative_gap, digits)
-                self.active_sell_levels.append(sell_px)
-                sell_tp = round(sell_px - min_tp_dist, digits)
-                sell_sl = round(sell_px + min_sl_dist, digits)
-                try:
-                    r = self.broker.place_order("SELL_STOP", sell_px, sell_size, timestamp, tp=sell_tp, sl=sell_sl)
-                    if r: placed_count += 1
-                except Exception as e:
-                    print(f"[{sym_name}] SELL_STOP L{i} error: {e}")
-
-            cumulative_gap += gap_val * (expansion_factor ** i)
 
         if hasattr(self.broker, "purge_duplicate_mt5_orders"):
             try:
@@ -1497,6 +1624,7 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
             self.deploy_grid_gap = gap_val
             self.deploy_trap_offset = buy_offset_val
             self.last_deploy_time = timestamp
+            self._last_deploy_ts = timestamp  # Debounce timestamp — prevents rapid UI redeploys
             print(f"[{sym_name}] ⚡ [GRID DEPLOYED] {placed_count} Traps @ ${current_price:,.2f} | Gap: ${gap_val:.2f} | Offset: ${buy_offset_val:.2f} | Lot: {self.order_size}")
         else:
             self.deployed = False
@@ -2006,9 +2134,8 @@ def trail_stop_loss_5m_structure(self, current_price: float, timestamp: float) -
                             import logging; logging.warning(f"Exception: {e}")
                         continue
 
-            # Phase 2: Structure Trail — only when trend is CONFIRMED BULLISH
-            if not trend_confirmed_bull:
-                continue  # Don't trail SL if trend is not confirmed — avoid being hunted
+            # Phase 2: Structure Trail — Actively trail behind 5m swing structure
+            # (Trend confirmation gate removed to allow smarter dynamic profit locking)
 
             # Calculate structure-based SL: swing low minus anti-hunt buffer
             structure_sl = round(recent_swing_low - (atr_5m * 0.5), digits)
@@ -2193,22 +2320,27 @@ def align_basket_take_profits(self, current_price: float, timestamp: float) -> i
         # If 5m swing high (resistance) is above current price and within reach, snap to it
         if swing_high_5m > current_price + min_tp_dist:
             structure_tp = round(swing_high_5m - (atr_5m * 0.2), digits)  # Place TP just before resistance
-            best_tp = min(atr_tp, structure_tp)  # Use whichever is closer = fills easier
+            if _is_100pct_tp:
+                best_tp = max(atr_tp, structure_tp)  # EXPAND: Use furthest target to ride the breakout!
+            else:
+                best_tp = min(atr_tp, structure_tp)  # TIGHTEN: Use closer target to secure fill
         else:
             best_tp = atr_tp
 
         # Ensure minimum TP distance
         best_tp = round(max(best_tp, current_price + min_tp_dist), digits)
 
-        # Collect existing TPs to check if we should tighten.
-        # BUG FIX: always take the MINIMUM of cur_tp and best_tp — TP can only move
-        # CLOSER to price (tighten), never further away.
+        # Collect existing TPs to check if we should expand or tighten.
         for pos_id, pos_obj in buy_positions:
             cur_tp = round(float(getattr(pos_obj, "tp", 0.0) or 0.0), digits)
 
             if cur_tp > current_price:
-                # Both are valid: pick the closer one (smaller value = nearer to price from above)
-                target_tp = min(cur_tp, best_tp)
+                if _is_100pct_tp:
+                    # DYNAMIC EXPANSION: Push TP further out dynamically to ride strong momentum!
+                    target_tp = max(cur_tp, best_tp)
+                else:
+                    # STANDARD TIGHTEN: TP can only move closer to price
+                    target_tp = min(cur_tp, best_tp)
             else:
                 target_tp = best_tp
 
@@ -2235,21 +2367,26 @@ def align_basket_take_profits(self, current_price: float, timestamp: float) -> i
         # If 5m swing low (support) is below current price and within reach, snap to it
         if swing_low_5m < current_price - min_tp_dist:
             structure_tp = round(swing_low_5m + (atr_5m * 0.2), digits)  # Place TP just before support
-            best_tp = max(atr_tp, structure_tp)  # Use whichever is closer = fills easier
+            if _is_100pct_tp:
+                best_tp = min(atr_tp, structure_tp)  # EXPAND: Use furthest target (lowest price)
+            else:
+                best_tp = max(atr_tp, structure_tp)  # TIGHTEN: Use closest target
         else:
             best_tp = atr_tp
 
         # Ensure minimum TP distance
         best_tp = round(min(best_tp, current_price - min_tp_dist), digits)
 
-        # BUG FIX: always take the MAXIMUM of cur_tp and best_tp for SELL — TP can only
-        # move CLOSER to price (higher value = nearer to price from below), never further away.
         for pos_id, pos_obj in sell_positions:
             cur_tp = round(float(getattr(pos_obj, "tp", 0.0) or 0.0), digits)
 
             if 0.0 < cur_tp < current_price:
-                # Both are valid: pick the closer one (larger value = nearer to price from below)
-                target_tp = max(cur_tp, best_tp)
+                if _is_100pct_tp:
+                    # DYNAMIC EXPANSION: Push TP further down!
+                    target_tp = min(cur_tp, best_tp)
+                else:
+                    # STANDARD TIGHTEN
+                    target_tp = max(cur_tp, best_tp)
             else:
                 target_tp = best_tp
 

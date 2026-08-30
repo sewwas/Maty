@@ -70,7 +70,7 @@ from core.auto_reading import (
     _ORDERS_PER_SLOT,
     select_active_pairs,
     get_pair_gold_params,
-    PAIR_SWEET_SPOTS,
+    PAIR_SAFETY_BOUNDS,
     clamp_symbol_lot_size
 )
 from core.grid_risk import (
@@ -96,7 +96,7 @@ class BreakoutGridBot:
         spacing_mode: Optional[str] = None,
         stop_loss: float = 0.0,
         max_cycle_duration: float = float("inf"),
-        cancel_opposite_on_trigger: bool = False,
+        cancel_opposite_on_trigger: bool = True,
         use_trailing_stop: bool = False,
         trailing_stop_distance: float = 15.0,
         use_bb_filter: bool = False,
@@ -375,7 +375,7 @@ class BreakoutGridBot:
         if not hasattr(self, "_early_profit_ticks"):
             self._early_profit_ticks = 0
         if not hasattr(self, "cancel_opposite_on_trigger"):
-            self.cancel_opposite_on_trigger = False
+            self.cancel_opposite_on_trigger = True
         if not hasattr(self, "use_trailing_stop"):
             self.use_trailing_stop = False
         if not hasattr(self, "trailing_stop_distance"):
