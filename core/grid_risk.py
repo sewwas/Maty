@@ -175,7 +175,7 @@ def enforce_profit_lock(self, current_price: float, timestamp: float) -> int:
 
     # Dynamic profit locking thresholds
     # Crucial: min_pos_profit set to $1.50 so any winning trade ratchets SL to breakeven immediately
-    min_pos_profit = max(1.50, atr_5m * 0.40) if is_gold else max(0.50, atr_5m * 0.40)
+    min_pos_profit = max(current_price * 0.0002, atr_5m * 0.50)
 
     if ai_target > 0:
         if _is_100pct:
@@ -432,22 +432,9 @@ def evaluate_partial_tp(self, current_price: float, timestamp: float) -> int:
     fib_dist  = swing_range * 1.618
 
     # ── Per-symbol minimum distances to prevent noise triggers ──
-    if is_gold:
-        min_tp1_dist = max(1.00,  atr * 0.3)   # Gold: Scalp TP1 quickly at +$1.00
-        min_tp2_dist = max(2.50,  atr * 0.8)   # TP2 at +$2.50
-        breakeven_buf = 0.5
-    elif "BTC" in sym_name:
-        min_tp1_dist = max(80.0,  atr * 1.0)
-        min_tp2_dist = max(200.0, fib_dist)
-        breakeven_buf = 30.0
-    elif "ETH" in sym_name:
-        min_tp1_dist = max(5.0,  atr * 1.0)
-        min_tp2_dist = max(15.0, fib_dist)
-        breakeven_buf = 2.0
-    else:
-        min_tp1_dist = max(0.0003, atr * 1.0)
-        min_tp2_dist = max(0.0008, fib_dist)
-        breakeven_buf = 0.0001
+    min_tp1_dist = max(current_price * 0.0005, atr * 0.5)
+    min_tp2_dist = max(current_price * 0.001, fib_dist)
+    breakeven_buf = current_price * 0.0001
 
     actions = 0
 
@@ -1005,16 +992,7 @@ def process_engine_tick(self, previous_price: float, current_price: float, times
         # Per-symbol minimum distance before declaring a fakeout.
         # Requires substantial structural move against entry ($6+ on Gold) + at least 30s duration.
         sym_u = str(getattr(self.broker, "symbol", getattr(self, "symbol_code", ""))).upper()
-        if any(x in sym_u for x in ["XAU", "GOLD", "PAXG"]):
-            fakeout_min_dist = 6.0    # Gold: need $6 move past entry to count as fakeout
-        elif "BTC" in sym_u:
-            fakeout_min_dist = 150.0  # BTC: need $150 move past entry
-        elif "ETH" in sym_u:
-            fakeout_min_dist = 10.0   # ETH: need $10 move
-        elif any(x in sym_u for x in ["SOL", "BNB"]):
-            fakeout_min_dist = 2.5
-        else:
-            fakeout_min_dist = 0.0008  # Forex
+        fakeout_min_dist = max(current_price * 0.002, 1.0)
 
         expired_f_pids = []
         for f_pid, (entry_px, p_type, fill_tick) in list(self._fakeout_recent_fills.items()):
@@ -1258,12 +1236,12 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
             except Exception as e:
                 import logging; logging.warning(f"Exception: {e}")
 
-        base_min_off = 5.0 if any(x in sym_name for x in ["XAU", "PAXG", "GOLD"]) else (4.0 if "ETH" in sym_name else 0.0015)
+        base_min_off = max(current_price * 0.0005, 0.0001)
         min_offset_dist = max(b_min_stop + (gap_val * 0.5), base_min_off)
         buy_offset_val = max(float(buy_offset_val), min_offset_dist)
         sell_offset_val = buy_offset_val
         
-        min_gap_dist = 2.0 if any(x in sym_name for x in ["XAU", "PAXG", "GOLD"]) else (2.0 if "ETH" in sym_name else 0.0010)
+        min_gap_dist = max(current_price * 0.0003, 0.0001)
         gap_val = max(float(gap_val), min_gap_dist)
         buy_offset_val = round(buy_offset_val, digits)
         sell_offset_val = round(sell_offset_val, digits)
@@ -1303,21 +1281,7 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
         if atr_5m is None or atr_5m <= 0:
             atr_5m = current_price * 0.002
 
-        if any(x in sym_name for x in ["XAU", "PAXG", "GOLD"]):
-            min_sl_dist = max(4.00, min(8.00, atr_5m * 1.5))
-        elif "ETH" in sym_name:
-            min_sl_dist = max(4.00, min(12.00, atr_5m * 1.5))
-        else:
-            # Derive `point` safely for alt coins (DOGE, XRP, etc.) that don't match named branches
-            _sym_info_alt = None
-            try:
-                if hasattr(self.broker, "get_cached_symbol_info") and hasattr(self.broker, "get_exness_symbol"):
-                    _ex_s_alt = self.broker.get_exness_symbol(sym_name)
-                    _sym_info_alt = self.broker.get_cached_symbol_info(_ex_s_alt)
-            except Exception as e:
-                import logging; logging.warning(f"Exception: {e}")
-            _point_alt = getattr(_sym_info_alt, "point", 0.0001) if _sym_info_alt else 0.0001
-            min_sl_dist = max(b_min_stop * 2.5, _point_alt * 50.0)
+        min_sl_dist = max(current_price * 0.001, atr_5m * 1.5)
 
         acc_eq = self.broker.get_equity() if hasattr(self.broker, "get_equity") else 1000.0
         _cfg_levels = getattr(self, "grid_levels", 5) or 5  # Hard ceiling from bot config
@@ -2119,8 +2083,8 @@ def trail_stop_loss_5m_structure(self, current_price: float, timestamp: float) -
             floating_profit = current_price - entry_px
 
             # Phase 1: Breakeven Lock — once profit > $1.50, move SL to entry + $0.30
-            be_threshold = 1.50 if is_gold else breakeven_buffer * 2.0
-            be_gain = 0.30 if is_gold else breakeven_buffer
+            be_threshold = max(current_price * 0.0005, breakeven_buffer * 2.0)
+            be_gain = max(current_price * 0.0001, breakeven_buffer)
             if floating_profit >= be_threshold:
                 breakeven_sl = round(entry_px + be_gain, digits)
                 if breakeven_sl > cur_sl and breakeven_sl < current_price:
@@ -2161,8 +2125,8 @@ def trail_stop_loss_5m_structure(self, current_price: float, timestamp: float) -
             floating_profit = entry_px - current_price
 
             # Phase 1: Breakeven Lock — once profit > $1.50, move SL to entry - $0.30
-            be_threshold = 1.50 if is_gold else breakeven_buffer * 2.0
-            be_gain = 0.30 if is_gold else breakeven_buffer
+            be_threshold = max(current_price * 0.0005, breakeven_buffer * 2.0)
+            be_gain = max(current_price * 0.0001, breakeven_buffer)
             if floating_profit >= be_threshold:
                 breakeven_sl = round(entry_px - be_gain, digits)
                 if (cur_sl == 0.0 or breakeven_sl < cur_sl) and breakeven_sl > current_price:
@@ -2275,30 +2239,8 @@ def align_basket_take_profits(self, current_price: float, timestamp: float) -> i
     _is_100pct_tp = is_auto_100pct_confirmed(self)
     _tp_atr_mult  = 3.5 if _is_100pct_tp else 2.0
 
-    if is_gold:
-        if _is_100pct_tp:
-            optimal_tp_dist = max(10.00, min(40.00, atr_5m * _tp_atr_mult))  # Confirmed: reach further
-        else:
-            optimal_tp_dist = max(6.00, min(15.00, atr_5m * _tp_atr_mult))
-        min_tp_dist = 4.00   # Gold: at least $4 TP to cover spread + commission
-    elif "BTC" in sym_name:
-        if _is_100pct_tp:
-            optimal_tp_dist = max(200.0, min(1200.0, atr_5m * _tp_atr_mult))
-        else:
-            optimal_tp_dist = max(100.0, min(500.0, atr_5m * _tp_atr_mult))
-        min_tp_dist = 60.0
-    elif "ETH" in sym_name:
-        if _is_100pct_tp:
-            optimal_tp_dist = max(10.0, min(80.0, atr_5m * _tp_atr_mult))
-        else:
-            optimal_tp_dist = max(5.0, min(30.0, atr_5m * _tp_atr_mult))
-        min_tp_dist = 3.0
-    else:
-        if _is_100pct_tp:
-            optimal_tp_dist = max(0.0006, min(0.0080, atr_5m * _tp_atr_mult))
-        else:
-            optimal_tp_dist = max(0.0003, min(0.0030, atr_5m * _tp_atr_mult))
-        min_tp_dist = 0.0002
+    optimal_tp_dist = atr_5m * _tp_atr_mult
+    min_tp_dist = max(current_price * 0.001, atr_5m * 0.8)
 
     buy_positions = []
     sell_positions = []
