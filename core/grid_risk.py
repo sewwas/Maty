@@ -558,10 +558,15 @@ def check_target_profit(self, current_price: float, timestamp: float) -> Optiona
         # Base target per 0.01 lot (e.g. $10 for Gold, $3 for others)
         base_target = 10.0 if any(x in sym_u for x in ["XAU", "GOLD", "PAXG"]) else 3.0
         
-        # Use user-configured target profit, otherwise use dynamic default
+        # Scale all targets by the volume multiplier (micro_lots)
         default_target = (base_target * micro_lots) * cent_multiplier
-        ai_target = float(getattr(self, "deploy_target_profit", 0.0) or 0.0)
-        user_target = float(getattr(self, "target_profit", 0.0) or 0.0) * cent_multiplier
+        
+        raw_ai_target = float(getattr(self, "deploy_target_profit", 0.0) or 0.0)
+        ai_target = (raw_ai_target * micro_lots) if raw_ai_target > 0 else 0.0
+        
+        raw_user_target = float(getattr(self, "target_profit", 0.0) or 0.0)
+        user_target = (raw_user_target * micro_lots) * cent_multiplier if raw_user_target > 0 else 0.0
+        
         cycle_target = ai_target if ai_target > 0 else (user_target if user_target > 0 else default_target)
         
         # Enforce minimum profit threshold
