@@ -1055,8 +1055,9 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
         gap_ratio = (gap_pct / 100.0) if gap_pct >= 0.50 else (gap_pct if gap_pct < 0.01 else gap_pct / 100.0)
 
         if any(x in sym_name for x in ["XAU", "PAXG", "GOLD"]):
-            gap_ratio = min(0.0015, max(0.0005, gap_ratio))
-            off_ratio = min(0.0015, max(0.0005, off_ratio))
+            # Give Gold more "noise room" so traps aren't placed too close together
+            gap_ratio = min(0.0035, max(0.0015, gap_ratio))
+            off_ratio = min(0.0035, max(0.0015, off_ratio))
         elif "ETH" in sym_name:
             gap_ratio = min(0.0020, max(0.0005, gap_ratio))
             off_ratio = min(0.0025, max(0.0010, off_ratio))
