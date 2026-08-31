@@ -798,10 +798,27 @@ def process_engine_tick(self, previous_price: float, current_price: float, times
 
     if not has_orders:
         self.deployed = False
+        
+        # ── GRID SELF-HEALING / AUTO-START GUARD ──
+        if not hasattr(self, "_last_empty_grid_time"):
+            self._last_empty_grid_time = timestamp
+            
+        if timestamp - self._last_empty_grid_time >= 300.0:  # 5 minutes stuck empty
+            print(f"[{self.symbol}] 🚑 [SELF HEALING] Grid empty for 5 minutes. Forcing auto-start...")
+            self._post_loss_cooldown = 0.0
+            self._is_deploying = False
+            self._last_empty_grid_time = timestamp
+            try:
+                if hasattr(self.broker, "cancel_all_orders"):
+                    self.broker.cancel_all_orders()
+            except: pass
+
         if timestamp >= getattr(self, "_last_deploy_attempt_time", 0.0) + 3.0:
             self._last_deploy_attempt_time = timestamp   # Prevent runaway deploy loop on every tick
             self.deploy_traps(current_price, timestamp, force=True)
         return None
+    else:
+        self._last_empty_grid_time = timestamp
 
     self._tick_counter += 1
 
