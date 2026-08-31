@@ -552,7 +552,7 @@ def check_target_profit(self, current_price: float, timestamp: float) -> Optiona
     min_profit_threshold = 0.50 * cent_multiplier  # Minimum gross profit to close a cycle, mitigating fee attrition
     if not exit_triggered:
         # Use user-configured target profit, otherwise use default
-        default_target = (10.0 if any(x in sym_u for x in ["XAU", "GOLD", "PAXG"]) else 3.0) * cent_multiplier
+        default_target = 10.0 * cent_multiplier
         ai_target = float(getattr(self, "deploy_target_profit", 0.0) or 0.0)
         user_target = float(getattr(self, "target_profit", 0.0) or 0.0) * cent_multiplier
         cycle_target = ai_target if ai_target > 0 else (user_target if user_target > 0 else default_target)
