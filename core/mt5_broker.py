@@ -1556,15 +1556,14 @@ class MT5Broker:
                             # reason=0/1/2/3 → manual/bot/expert close
                             deal_reason = getattr(d, "reason", -1)
                             if deal_reason == 4:
-                                exit_r = "BREAKEVEN_SL" if pnl > 0 else "STOP_LOSS"
+                                exit_r = "TRAILING_SL" if pnl > 0 else "STOP_LOSS"
                             elif deal_reason == 5:
                                 exit_r = "TARGET_PROFIT"
-                            elif pnl > 0:
-                                exit_r = "TARGET_PROFIT"
                             elif deal_reason in (0, 1, 2, 3):
-                                exit_r = "BOT_CLOSE"
+                                # If the bot closed it, don't falsely label it TARGET_PROFIT just because pnl > 0
+                                exit_r = "PARTIAL_TP" if pnl > 0 else "BOT_CLOSE"
                             else:
-                                exit_r = "STOP_LOSS"
+                                exit_r = "STOP_LOSS" if pnl < 0 else "CLOSED"
                             
                             t_record = {
                                 "position_id": f"deal_{d.ticket}",

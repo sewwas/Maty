@@ -287,8 +287,9 @@ def evaluate_partial_tp(self, current_price: float, timestamp: float) -> int:
     fib_dist  = swing_range * 1.618
 
     # ── Per-symbol minimum distances to prevent noise triggers ──
-    min_tp1_dist = max(current_price * 0.0005, atr * 0.5)
-    min_tp2_dist = max(current_price * 0.001, fib_dist)
+    # Increased minimum distances to prevent closing on 1-minute noise (e.g., $0.03 profit).
+    min_tp1_dist = max(current_price * 0.0015, atr * 1.5)
+    min_tp2_dist = max(current_price * 0.0025, fib_dist)
     breakeven_buf = current_price * 0.0001
 
     actions = 0
@@ -1089,9 +1090,9 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
         try:
             from core.data import get_historical_klines, calculate_technical_indicators
             import numpy as np
-            df_1m  = get_historical_klines(sym_name, interval="1m", limit=30)
-            df_5m  = get_historical_klines(sym_name, interval="5m", limit=30)
-            df_htf = get_historical_klines(sym_name, interval="5m", limit=60)  # 5m with wider window as HTF
+            df_1m  = get_historical_klines(sym_name, interval="1m", limit=250)
+            df_5m  = get_historical_klines(sym_name, interval="5m", limit=250)
+            df_htf = get_historical_klines(sym_name, interval="15m", limit=250)  # Real 15m as HTF
             
             # Manually calculate ATR 5m directly from df_5m to ensure reliability
             if df_5m is not None and not df_5m.empty and len(df_5m) > 5:
