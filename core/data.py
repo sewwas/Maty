@@ -1217,10 +1217,27 @@ def get_order_book_depth(symbol: str = "PAXGUSDT", limit: int = 20) -> dict:
             bids = [[float(p), float(q)] for p, q in data.get("bids", [])]
             asks = [[float(p), float(q)] for p, q in data.get("asks", [])]
             if bids and asks:
+                best_bid = bids[0][0]
+                best_ask = asks[0][0]
+                
+                # Proximity Weighting (filters out deep spoof walls)
+                weighted_bid_vol = 0.0
+                for p, q in bids:
+                    dist_pct = abs(best_bid - p) / best_bid
+                    decay = max(0.0, 1.0 - (dist_pct * 100.0)) # decays to 0 at 1% away
+                    weighted_bid_vol += (q * decay)
+                    
+                weighted_ask_vol = 0.0
+                for p, q in asks:
+                    dist_pct = abs(p - best_ask) / best_ask
+                    decay = max(0.0, 1.0 - (dist_pct * 100.0))
+                    weighted_ask_vol += (q * decay)
+
+                total_weighted_vol = weighted_bid_vol + weighted_ask_vol
+                buy_ratio = (weighted_bid_vol / total_weighted_vol * 100.0) if total_weighted_vol > 0 else 50.0
+                
                 total_bid_vol = sum(q for p, q in bids)
                 total_ask_vol = sum(q for p, q in asks)
-                total_vol = total_bid_vol + total_ask_vol
-                buy_ratio = (total_bid_vol / total_vol * 100.0) if total_vol > 0 else 50.0
                 support_wall = max(bids, key=lambda x: x[1])[0]
                 resistance_wall = max(asks, key=lambda x: x[1])[0]
                 return _ret_ob({
@@ -1230,6 +1247,8 @@ def get_order_book_depth(symbol: str = "PAXGUSDT", limit: int = 20) -> dict:
                     "sell_pressure_pct": round(100.0 - buy_ratio, 1),
                     "support_wall": support_wall,
                     "resistance_wall": resistance_wall,
+                    "bids": bids,
+                    "asks": asks,
                     "source": "Binance Live Order Book"
                 })
     except Exception as e:
@@ -1244,10 +1263,26 @@ def get_order_book_depth(symbol: str = "PAXGUSDT", limit: int = 20) -> dict:
             bids = [[float(p), float(q)] for p, q in data.get("bids", [])]
             asks = [[float(p), float(q)] for p, q in data.get("asks", [])]
             if bids and asks:
+                best_bid = bids[0][0]
+                best_ask = asks[0][0]
+                
+                weighted_bid_vol = 0.0
+                for p, q in bids:
+                    dist_pct = abs(best_bid - p) / best_bid
+                    decay = max(0.0, 1.0 - (dist_pct * 100.0))
+                    weighted_bid_vol += (q * decay)
+                    
+                weighted_ask_vol = 0.0
+                for p, q in asks:
+                    dist_pct = abs(p - best_ask) / best_ask
+                    decay = max(0.0, 1.0 - (dist_pct * 100.0))
+                    weighted_ask_vol += (q * decay)
+
+                total_weighted_vol = weighted_bid_vol + weighted_ask_vol
+                buy_ratio = (weighted_bid_vol / total_weighted_vol * 100.0) if total_weighted_vol > 0 else 50.0
+                
                 total_bid_vol = sum(q for p, q in bids)
                 total_ask_vol = sum(q for p, q in asks)
-                total_vol = total_bid_vol + total_ask_vol
-                buy_ratio = (total_bid_vol / total_vol * 100.0) if total_vol > 0 else 50.0
                 support_wall = max(bids, key=lambda x: x[1])[0]
                 resistance_wall = max(asks, key=lambda x: x[1])[0]
                 return {
@@ -1257,6 +1292,8 @@ def get_order_book_depth(symbol: str = "PAXGUSDT", limit: int = 20) -> dict:
                     "sell_pressure_pct": round(100.0 - buy_ratio, 1),
                     "support_wall": support_wall,
                     "resistance_wall": resistance_wall,
+                    "bids": bids,
+                    "asks": asks,
                     "source": "Gate.io Live Order Book"
                 }
     except Exception as e:
