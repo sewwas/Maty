@@ -47,7 +47,7 @@ import core.services
 import threading
 from core.mt5_broker import MT5Broker, SimulatedBroker, MT5_AVAILABLE, get_symbol_magic_number, mt5
 from core.engine import BreakoutGridBot, Order, Position, get_pip_size, sanitize_order_size
-from core.manual_bot import ManualGridBot
+from core.engine import BreakoutGridBot, Order, Position, get_pip_size, sanitize_order_size
 from core.auto_reading import PAIR_SAFETY_BOUNDS
 from core.services import PAMMMasterPool, send_telegram_alert, dispatch_trade_exit_signal
 from core.data import get_live_price, get_default_price, get_historical_klines, get_24h_market_stats
@@ -64,11 +64,7 @@ def get_bot_state_filename() -> str:
         return "bot_state_instance_2.json"
     return "bot_state_instance_1.json"
 
-def get_manual_state_filename() -> str:
-    port = os.getenv("WINE_BRIDGE_PORT") or os.getenv("STREAMLIT_SERVER_PORT") or "8501"
-    if str(port) in ("8002", "8502"):
-        return "manual_bot_state_instance_2.json"
-    return "manual_bot_state_instance_1.json"
+
 
 def save_bot_state_dict(markets_dict: dict, force: bool = False):
     """Serializes active markets state continuously from background daemon thread."""
@@ -115,18 +111,7 @@ def load_saved_bot_full_state() -> Dict[str, dict]:
         print(f"Notice: {get_bot_state_filename()} load notice: {e}")
     return saved_state
 
-def load_saved_manual_bot_state() -> Dict[str, dict]:
-    """Loads saved manual bot state."""
-    saved_state = {}
-    try:
-        state_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), get_manual_state_filename())
-        if os.path.exists(state_path):
-            with open(state_path, "r", encoding="utf-8") as f:
-                state_data = json.load(f)
-                saved_state = state_data.get("markets", {})
-    except Exception as e:
-        pass
-    return saved_state
+
 
 @st.cache_resource
 def get_global_vps_trading_engine_v4():
@@ -135,9 +120,7 @@ def get_global_vps_trading_engine_v4():
     Runs ticks continuously in background 24/7 regardless of browser state.
     """
     shared_markets = {}
-    shared_manual_markets = {}
     saved_state_map = load_saved_bot_full_state()
-    saved_manual_state_map = load_saved_manual_bot_state()
     use_mt5 = True
 
     for sym in _symbols:
@@ -185,43 +168,7 @@ def get_global_vps_trading_engine_v4():
             "price_history": [(time.time(), init_px)]
         }
 
-        # Initialize Manual Bot for Gold
-        if sym in ("PAXGUSDT", "XAUUSD", "GOLD"):
-            manual_magic = get_symbol_magic_number(sym, is_manual=True)
-            man_brk = MT5Broker(symbol=sym, magic_number=manual_magic) if use_mt5 else SimulatedBroker(symbol=sym, magic_number=manual_magic)
-            man_bot = ManualGridBot(
-                broker=man_brk,
-                symbol=sym,
-                grid_gap=0.30,
-                trap_offset=0.15,
-                grid_levels=5,
-                order_size=0.01,
-                order_size_multiplier=1.0,
-                target_profit=10.0,
-                is_percent=True,
-                auto_restart=True,
-                use_auto_reading=False,
-                pending_order_side_mode="BOTH_SIDES"
-            )
-            man_info_saved = saved_manual_state_map.get(sym, {})
-            if isinstance(man_info_saved, dict):
-                if man_info_saved.get("cycle_history"):
-                    man_bot.cycle_history = list(man_info_saved["cycle_history"])
-                if man_info_saved.get("trade_history") and hasattr(man_brk, "closed_trades"):
-                    man_brk.closed_trades = list(man_info_saved["trade_history"])
-            
-            man_has_active = bool(man_brk and (len(getattr(man_brk, "open_positions", {})) > 0 or len(getattr(man_brk, "pending_orders", {})) > 0))
-            man_running = bool(man_info_saved.get("running", True)) if isinstance(man_info_saved, dict) else True
-            if man_has_active:
-                man_bot.deployed = True
 
-            shared_manual_markets[sym] = {
-                "broker": man_brk,
-                "bot": man_bot,
-                "running": man_running,
-                "last_price": init_px,
-                "price_history": [(time.time(), init_px)]
-            }
 
     def _vps_daemon_worker():
         print("⚡ [Profity AI Engine] Streamlit Background Monitor Active!")
@@ -237,39 +184,12 @@ def get_global_vps_trading_engine_v4():
                         except Exception as tick_err:
                             print(f"[{sym_code}] Background tick error: {tick_err}")
                 
-                # Tick Manual Bots
-                for sym_code, m_data in shared_manual_markets.items():
-                    if m_data.get("running", True):
-                        try:
-                            m_data["bot"].process_live_tick()
-                        except Exception as tick_err:
-                            print(f"[{sym_code}] Manual bot tick error: {tick_err}")
+
 
                 if now - _last_state_save >= 15.0:
                     _last_state_save = now
                     save_bot_state_dict(shared_markets)
                     
-                    # Save manual bot state
-                    try:
-                        man_state_data = {"timestamp": now, "markets": {}}
-                        for sym_code, m_data in shared_manual_markets.items():
-                            brk = m_data.get("broker")
-                            bot = m_data.get("bot")
-                            trade_hist = list(getattr(brk, "closed_trades", [])) if brk else []
-                            if not trade_hist and bot and hasattr(bot, "cycle_history"):
-                                trade_hist = list(getattr(bot, "cycle_history", []))
-                            man_state_data["markets"][sym_code] = {
-                                "running": m_data.get("running", True),
-                                "last_price": m_data.get("last_price", 0.0),
-                                "trade_history": trade_hist,
-                                "realized_pnl": getattr(brk, "realized_pnl", 0.0) if brk else 0.0,
-                                "cycle_history": getattr(bot, "cycle_history", []) if bot else []
-                            }
-                        state_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), get_manual_state_filename())
-                        with open(state_path, "w", encoding="utf-8") as f:
-                            json.dump(man_state_data, f)
-                    except Exception as e:
-                        print(f"Notice: {get_manual_state_filename()} save notice: {e}")
 
             except Exception as daemon_err:
                 print(f"[Profity AI Engine] Daemon loop notice: {daemon_err}")
@@ -279,7 +199,7 @@ def get_global_vps_trading_engine_v4():
     t = threading.Thread(target=_vps_daemon_worker, daemon=True)
 
     t.start()
-    return shared_markets, shared_manual_markets
+    return shared_markets
 
 # ==============================================================================
 #  1. IMPORTS & STREAMLIT PAGE CONFIGURATION
@@ -301,9 +221,8 @@ if "pair_filter" not in st.session_state:
     st.session_state.pair_filter = "ALL"
 
 # Initialize 24/7 VPS Engine Singleton (Runs daemon worker thread on startup)
-shared_vps_markets, shared_vps_manual_markets = get_global_vps_trading_engine_v4()
+shared_vps_markets = get_global_vps_trading_engine_v4()
 st.session_state.markets = shared_vps_markets
-st.session_state.manual_markets = shared_vps_manual_markets
 
 # ==============================================================================
 #  3. CSS DESIGN SYSTEM & MODERN DARK THEME STYLING
@@ -479,13 +398,10 @@ st.html("""
 # process_tick() calls 24/7. This section only refreshes prices for the UI display.
 for sym_code in _symbols:
     m_data = st.session_state.markets.get(sym_code)
-    man_data = st.session_state.manual_markets.get(sym_code)
     live_p = get_live_price(sym_code)
     if live_p and live_p > 0:
         if m_data:
             m_data["last_price"] = live_p
-        if man_data:
-            man_data["last_price"] = live_p
 
 # Service is always active — the daemon thread is embedded inside this process
 _is_vps_service_active = True
@@ -720,7 +636,7 @@ with st.expander("⚙️ Account & History Settings (1 MT5 Account per Bot Limit
                     if brk_obj and hasattr(brk_obj, "closed_trades"):
                         brk_obj.closed_trades = []
                         brk_obj.realized_pnl = 0.0
-                for sym_item in st.session_state.manual_markets.values():
+                for sym_item in []:
                     bot_obj = sym_item.get("bot")
                     brk_obj = sym_item.get("broker")
                     if bot_obj and hasattr(bot_obj, "cycle_history"):
@@ -729,9 +645,7 @@ with st.expander("⚙️ Account & History Settings (1 MT5 Account per Bot Limit
                         brk_obj.closed_trades = []
                         brk_obj.realized_pnl = 0.0
                 b_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), get_bot_state_filename())
-                m_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), get_manual_state_filename())
                 if os.path.exists(b_path): os.remove(b_path)
-                if os.path.exists(m_path): os.remove(m_path)
                 st.success("All trade history & cycle logs cleared successfully!")
                 st.rerun()
             except Exception as reset_err:
@@ -827,7 +741,7 @@ _pf         = (_gross_prof / _gross_loss) if _gross_loss > 0 else (99.9 if _gros
 
 _active_cnt = sum(1 for m in st.session_state.markets.values() if m.get("running", False))
 _manual_active_cnt = 0
-for m in st.session_state.manual_markets.values():
+for m in []:
     m_brk = m.get("broker")
     if m_brk and (len(getattr(m_brk, "open_positions", {})) > 0 or len(getattr(m_brk, "pending_orders", {})) > 0):
         _manual_active_cnt += 1
@@ -1180,7 +1094,7 @@ with tab_desk:
                     e_col1, e_col2 = st.columns(2, vertical_alignment="bottom")
                     with e_col1:
                         if not is_run:
-                            man_sym_data = st.session_state.manual_markets.get(sym_code)
+                            man_sym_data = None
                             is_man_active = False
                             if man_sym_data and man_sym_data.get("broker"):
                                 is_man_active = len(man_sym_data["broker"].open_positions) > 0 or len(man_sym_data["broker"].pending_orders) > 0
@@ -1482,8 +1396,8 @@ with tab_desk:
                         # Spread Spike & Profit Ratchet Floor Telemetry
                         spread_ratio = float(ev.get("spread_spike_ratio", 1.0))
                         ratchet_pnl = float(getattr(bot, "ratchet_floor", 0.0))
-                        is_cent_acc = getattr(brk, "is_cent_account", False)
-                        ratchet_disp = (ratchet_pnl / 100.0) if is_cent_acc else ratchet_pnl
+                        is_cent_acc = False
+                        ratchet_disp = ratchet_pnl
 
                         st.markdown(f"""
                         <div class="telemetry-box" style="background:#09090b;border:1px solid #27272a;border-radius:8px;padding:12px;margin-bottom:10px">
@@ -2146,7 +2060,7 @@ with tab_manual:
     st.markdown("### 🕹️ Manual Grid Desk (Gold Exclusive)")
     st.markdown("Manually deploy Buy, Sell, or Dual grids on Gold. The AI engine will automatically manage the positions (Take Profit, SL, Martingale) exactly like Auto mode.")
 
-    man_sym = "PAXGUSDT" if "PAXGUSDT" in st.session_state.manual_markets else ("XAUUSD" if "XAUUSD" in st.session_state.manual_markets else None)
+    man_sym = None
     if not man_sym:
         st.warning("Manual mode is only available for Gold pairs (PAXGUSDT or XAUUSD).")
     else:
@@ -2334,7 +2248,7 @@ with tab_manual:
             import datetime
             st.markdown("#### 📜 Manual Cycle History")
             man_raw_history = []
-            for m_sym_code, m_m_data in list(st.session_state.manual_markets.items()):
+            for m_sym_code, m_m_data in []:
                 m_bot = m_m_data["bot"]
                 m_brk = m_m_data["broker"]
                 if hasattr(m_brk, "sync_history_from_mt5"):
@@ -2450,7 +2364,7 @@ with tab_myfxbook:
 
     # Aggregate all closed trades across all market brokers
     all_myfx_trades = []
-    all_myfx_markets = list(st.session_state.markets.items()) + list(st.session_state.manual_markets.items())
+    all_myfx_markets = list(st.session_state.markets.items())
     for _m_k, _m_v in all_myfx_markets:
         _b = _m_v.get("broker")
         _bot = _m_v.get("bot")

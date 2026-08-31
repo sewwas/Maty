@@ -252,23 +252,11 @@ class MT5Broker:
 
     @property
     def is_cent_account(self) -> bool:
-        exness_sym = self.get_exness_symbol(self.symbol)
-        if exness_sym.endswith("c"):
-            return True
-        acc = self.get_account_info()
-        if acc and hasattr(acc, "currency"):
-            c_str = str(acc.currency).upper().strip()
-            # Explicit cent account currencies. Note: USDC is USD Coin (Standard $1 account), NOT a cent account!
-            if c_str in ("USC", "EUOC", "USCENT", "EURCENT") or c_str == "USC":
-                return True
         return False
 
     @property
     def balance_usd(self) -> float:
-        bal = self.balance
-        if self.is_cent_account:
-            return bal / 100.0
-        return bal
+        return self.balance
 
     @property
     def balance(self) -> float:
@@ -720,26 +708,6 @@ class MT5Broker:
             if hasattr(self, "magic_number") and self.magic_number and getattr(o, "magic", 0) != self.magic_number:
                 continue
             o_type = getattr(o, "type", 0)
-            # Remove any lingering LIMIT orders (2 = BUY_LIMIT, 3 = SELL_LIMIT)
-            if o_type in (2, 3):
-                extra_ticket = int(o.ticket)
-                if mt5 is not None:
-                    try:
-                        req = {"action": mt5.TRADE_ACTION_REMOVE, "order": extra_ticket}
-                        res = mt5.order_send(req)
-                        if res and res.retcode in (0, 10009, 10008, 10004):
-                            purged += 1
-                    except Exception: pass
-                else:
-                    try:
-                        import requests
-                        bridge_port = os.getenv("WINE_BRIDGE_PORT", "8001")
-                        r_c = requests.get(f"http://127.0.0.1:{bridge_port}/order_cancel?ticket={extra_ticket}", timeout=1.5)
-                        if r_c.status_code == 200 and r_c.json().get("success"):
-                            purged += 1
-                    except Exception: pass
-                self.pending_orders.pop(f"live_ord_{extra_ticket}", None)
-                continue
 
             px_key = (o_type, round(float(getattr(o, "price_open", 0.0)), digits))
             if px_key not in by_price:
@@ -838,6 +806,7 @@ class MT5Broker:
                     ticket = t
                     break
 
+        cancel_ok = False
         if ticket:
             if mt5 is not None:
                 req = {"action": mt5.TRADE_ACTION_REMOVE, "order": ticket}

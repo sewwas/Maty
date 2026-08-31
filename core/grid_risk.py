@@ -543,13 +543,18 @@ def check_target_profit(self, current_price: float, timestamp: float) -> Optiona
     # ─────────────────────────────────────────────────────────────
     # Basket Target Profit (Cycle Exit)
     # ─────────────────────────────────────────────────────────────
-    min_profit_threshold = 0.50  # Minimum gross profit to close a cycle, mitigating fee attrition
+    sym_u = str(getattr(self.broker, "symbol", getattr(self, "symbol_code", ""))).upper()
+    
+    # Auto-detect Cent (USC) logic disabled: treating all accounts (USC/USD) the same
+    is_cent_account = False
+    cent_multiplier = 1.0
+
+    min_profit_threshold = 0.50 * cent_multiplier  # Minimum gross profit to close a cycle, mitigating fee attrition
     if not exit_triggered:
-        sym_u = str(getattr(self.broker, "symbol", getattr(self, "symbol_code", ""))).upper()
         # Use user-configured target profit, otherwise use default
-        default_target = 10.0 if any(x in sym_u for x in ["XAU", "GOLD", "PAXG"]) else 3.0
+        default_target = (10.0 if any(x in sym_u for x in ["XAU", "GOLD", "PAXG"]) else 3.0) * cent_multiplier
         ai_target = float(getattr(self, "deploy_target_profit", 0.0) or 0.0)
-        user_target = float(getattr(self, "target_profit", 0.0) or 0.0)
+        user_target = float(getattr(self, "target_profit", 0.0) or 0.0) * cent_multiplier
         cycle_target = ai_target if ai_target > 0 else (user_target if user_target > 0 else default_target)
         
         # Enforce minimum profit threshold
@@ -562,8 +567,13 @@ def check_target_profit(self, current_price: float, timestamp: float) -> Optiona
         if total_pnl >= effective_cycle_target:
             if use_trailing:
                 self.in_runner_mode = True
-                # In runner mode: guaranteed floor is 85% of target, trailing 75% of peak gains
-                runner_floor = max(effective_cycle_target * 0.85, max_pnl * 0.75)
+                # In runner mode: Give massive breathing room to weather pullbacks and capture huge trends
+                runner_floor = max(effective_cycle_target * 0.50, max_pnl * 0.60)
+                
+                # Apply learned booster if win rate is extremely high
+                if getattr(self, "learned_runner_lock_boost", 0.0) > 0:
+                    runner_floor = runner_floor * (1.0 + self.learned_runner_lock_boost)
+
                 if total_pnl <= runner_floor:
                     exit_triggered = True
                     exit_reason = "RUNNER_EXPANSION"
@@ -600,15 +610,15 @@ def check_target_profit(self, current_price: float, timestamp: float) -> Optiona
                 print(f"[{sym_u}] 🔄 [TREND REVERSAL EXIT] Higher TF trend flipped to {auto_uni}. Securing +${total_pnl:.2f} (>= ${trend_reversal_threshold:.2f} threshold).")
 
         # ── 3. High-Water Mark Trailing Protection (Near Target Only) ──
-        # Only activates when trade has reached AT LEAST 75% of target profit (never at $2 premature noise)
-        near_target_activation = effective_cycle_target * 0.75
+        # Relaxed for more noise room! Let trades breathe before target is fully hit.
+        near_target_activation = effective_cycle_target * 0.85
         if not exit_triggered and max_pnl >= near_target_activation:
-            # Allow 30% pullback tolerance so normal trend pullbacks do not choke the trade
-            locked_floor = max(effective_cycle_target * 0.50, max_pnl * 0.70)
+            # Lock in 30% of target or 50% of max_pnl, preventing choke-outs on standard chop
+            locked_floor = max(effective_cycle_target * 0.30, max_pnl * 0.50)
             if total_pnl <= locked_floor and total_pnl > 0:
                 exit_triggered = True
                 exit_reason = "TARGET_PROFIT"
-                print(f"[{sym_u}] 🏆 [PEAK PROFIT TRAIL LOCK] Peak reached +${max_pnl:.2f} (>= 75% of ${effective_cycle_target:.2f} target). Pullback floor +${locked_floor:.2f} reached. Securing +${total_pnl:.2f}!")
+                print(f"[{sym_u}] 🏆 [PEAK PROFIT TRAIL LOCK] Peak reached +${max_pnl:.2f} (>= 85% of ${effective_cycle_target:.2f} target). Pullback floor +${locked_floor:.2f} reached. Securing +${total_pnl:.2f}!")
 
     if exit_triggered:
         print(f"[{self.symbol}] 🎯 [PROFIT TAKING EXIT] {exit_reason} met! Net PnL: ${total_pnl:+.2f} USD")
@@ -634,7 +644,7 @@ def check_target_profit(self, current_price: float, timestamp: float) -> Optiona
         }
 
         if hasattr(self, "record_trade_outcome"):
-            self.record_trade_outcome(total_pnl, exit_reason, duration)
+            self.record_trade_outcome(total_pnl, exit_reason, duration, current_price)
 
         if getattr(self, "auto_restart", True):
             print(f"[{self.symbol}] 🚀 [AUTO RESTART] Redeploying fresh grid at market price {current_price}...")
@@ -868,7 +878,7 @@ def process_engine_tick(self, previous_price: float, current_price: float, times
     summary = check_target_profit(self, current_price, timestamp)
     if summary is not None:
         exit_reason = summary.get("exit_reason", "TARGET_PROFIT")
-        self.record_trade_outcome(summary.get("total_pnl", 0.0), exit_reason, summary.get("duration", 0.0))
+        self.record_trade_outcome(summary.get("total_pnl", 0.0), exit_reason, summary.get("duration", 0.0), current_price)
         if exit_reason == "STOP_LOSS":
             self._post_loss_cooldown = timestamp + (3 * 60)  # 3 min cooldown on Stop Loss
             print(f"[{self.symbol}] ⏳ [COOLDOWN] Market highly volatile. Halting grid deployment for 3 minutes.")
@@ -1134,9 +1144,9 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
         calculated_dynamic_tp = gap_val * dyn_tp_factor
 
         if any(x in sym_name for x in ["XAU", "GOLD", "PAXG"]):
-            min_tp_dist = max(6.00, min(18.00, calculated_dynamic_tp, atr_5m * 2.5))
+            min_tp_dist = max(current_price * 0.0025, min(current_price * 0.0075, calculated_dynamic_tp, atr_5m * 2.5))
         elif "ETH" in sym_name:
-            min_tp_dist = max(6.00, min(18.00, calculated_dynamic_tp, atr_5m * 2.5))
+            min_tp_dist = max(current_price * 0.0025, min(current_price * 0.0075, calculated_dynamic_tp, atr_5m * 2.5))
         else:
             min_tp_dist = max(calculated_dynamic_tp, b_min_stop * 5.0)
 
@@ -1232,7 +1242,7 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
         # from pushing traps far beyond the user-configured distance.
         _max_atr_offset     = buy_offset_val * 1.5
         dynamic_atr_offset  = min((atr_5m * _confirmed_offset_mult) if (atr_5m is not None and atr_5m > 0) else 0.0, _max_atr_offset)
-        base_start_offset   = max(b_min_stop + 1.0, dynamic_atr_offset, buy_offset_val) + spread_anti_hunt_buffer
+        base_start_offset   = max(b_min_stop + (current_price * 0.0004), dynamic_atr_offset, buy_offset_val) + spread_anti_hunt_buffer
 
         # ═══════════════════════════════════════════════════════════════════════
         # SMART CONFLUENCE PLACEMENT ENGINE
@@ -1446,13 +1456,13 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
                     _place_sell_limit(merged_buy[i][1], merged_buy[i][2], i + 1)
 
         else:
-            # Ranging — pure Limit DCA grids to fade the chop
-            buy_slots  = min(effective_levels, len(merged_sell))
-            sell_slots = min(effective_levels, len(merged_buy))
+            # Ranging — Dual mode on stops only
+            buy_slots  = min(effective_levels, len(merged_buy))
+            sell_slots = min(effective_levels, len(merged_sell))
             for i in range(buy_slots):
-                _place_buy_limit(merged_sell[i][1], merged_sell[i][2], i)
+                _place_buy_stop(merged_buy[i][1], merged_buy[i][2], i)
             for i in range(sell_slots):
-                _place_sell_limit(merged_buy[i][1], merged_buy[i][2], i)
+                _place_sell_stop(merged_sell[i][1], merged_sell[i][2], i)
 
 
         if hasattr(self.broker, "purge_duplicate_mt5_orders"):
@@ -1592,7 +1602,7 @@ def cleanup_stale_grid_orders(self, current_price: float) -> int:
     return len(cancelled_ids)
 
 
-def record_trade_outcome(self, pnl: float, exit_reason: str, duration: float):
+def record_trade_outcome(self, pnl: float, exit_reason: str, duration: float, exit_price: float = 0.0):
     if not hasattr(self, "trade_history") or self.trade_history is None:
         self.trade_history = []
     if not hasattr(self, "cycle_history") or self.cycle_history is None:
@@ -1603,12 +1613,11 @@ def record_trade_outcome(self, pnl: float, exit_reason: str, duration: float):
     deploy_px = float(getattr(self, "deploy_price", 0.0) or 0.0)
     sym_name = str(getattr(self.broker, "symbol", getattr(self, "symbol_code", "")))
 
-    # Gather entry/exit price from closed_trades if available
-    entry_px, exit_px = 0.0, 0.0
-    if hasattr(self.broker, "closed_trades") and self.broker.closed_trades:
+    # For entry, use deploy_px as the logical start of the basket
+    entry_px = deploy_px
+    if exit_price <= 0.0 and hasattr(self.broker, "closed_trades") and self.broker.closed_trades:
         last_trade = self.broker.closed_trades[-1]
-        entry_px = float(last_trade.get("entry_price", 0.0))
-        exit_px  = float(last_trade.get("exit_price",  0.0))
+        exit_price  = float(last_trade.get("exit_price",  0.0))
 
     outcome = {
         "timestamp":    now_ts,
@@ -1622,7 +1631,7 @@ def record_trade_outcome(self, pnl: float, exit_reason: str, duration: float):
         "cycle_id":     getattr(self, "current_cycle_id", len(self.cycle_history) + 1),
         "deploy_price": deploy_px,
         "entry_price":  entry_px,
-        "exit_price":   exit_px,
+        "exit_price":   exit_price,
     }
     self.trade_history.append(outcome)
     if len(self.trade_history) > 100:
