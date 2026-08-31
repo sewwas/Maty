@@ -2378,34 +2378,34 @@ with tab_manual:
                         })
 
                 # Time-window deduplication: merge records within 15s and $0.10 PnL of each other.
-                 deduped_list_m = []
-                 for idx, item in enumerate(m_cycles_list):
-                     rec = dict(item)
-                     rec["symbol"] = rec.get("symbol", m_sym_code)
-                     pnl_val = float(rec.get("pnl", rec.get("total_pnl", 0.0)))
-                     ts_val = float(rec.get("exit_time", rec.get("timestamp", rec.get("entry_time", 0.0))))
-                     rec["pnl"] = pnl_val
-                     rec["total_pnl"] = pnl_val
-                     rec["timestamp"] = ts_val
-                     rec["exit_time"] = ts_val
-                     is_dup = False
-                     for existing in deduped_list_m:
-                         ex_ts  = float(existing.get("exit_time", 0.0))
-                         ex_pnl = float(existing.get("pnl", 0.0))
-                         ex_sym = existing.get("symbol", "")
-                         if (ex_sym == rec["symbol"]
-                                 and abs(ex_ts - ts_val) <= 15.0
-                                 and abs(ex_pnl - pnl_val) < 0.10):
-                             ex_fills = int(existing.get("fills_count", existing.get("trades_count", 1)))
-                             rc_fills = int(rec.get("fills_count", rec.get("trades_count", 1)))
-                             if rc_fills > ex_fills:
-                                 existing.update(rec)
-                             is_dup = True
-                             break
-                     if not is_dup:
-                         deduped_list_m.append(rec)
-                 for rec in deduped_list_m:
-                     man_raw_history.append(rec)
+                deduped_list_m = []
+                for idx, item in enumerate(m_cycles_list):
+                    rec = dict(item)
+                    rec["symbol"] = rec.get("symbol", m_sym_code)
+                    pnl_val = float(rec.get("pnl", rec.get("total_pnl", 0.0)))
+                    ts_val = float(rec.get("exit_time", rec.get("timestamp", rec.get("entry_time", 0.0))))
+                    rec["pnl"] = pnl_val
+                    rec["total_pnl"] = pnl_val
+                    rec["timestamp"] = ts_val
+                    rec["exit_time"] = ts_val
+                    is_dup = False
+                    for existing in deduped_list_m:
+                        ex_ts  = float(existing.get("exit_time", 0.0))
+                        ex_pnl = float(existing.get("pnl", 0.0))
+                        ex_sym = existing.get("symbol", "")
+                        if (ex_sym == rec["symbol"]
+                                and abs(ex_ts - ts_val) <= 15.0
+                                and abs(ex_pnl - pnl_val) < 0.10):
+                            ex_fills = int(existing.get("fills_count", existing.get("trades_count", 1)))
+                            rc_fills = int(rec.get("fills_count", rec.get("trades_count", 1)))
+                            if rc_fills > ex_fills:
+                                existing.update(rec)
+                            is_dup = True
+                            break
+                    if not is_dup:
+                        deduped_list_m.append(rec)
+                for rec in deduped_list_m:
+                    man_raw_history.append(rec)
 
             man_raw_history.sort(key=lambda x: x.get("exit_time", x.get("timestamp", 0.0)), reverse=True)
             
