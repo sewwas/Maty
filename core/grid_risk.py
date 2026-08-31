@@ -1206,12 +1206,14 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
 
         if (directional_sell or directional_buy) and _is_100pct_grid:
             dir_tp_dist     = min_tp_dist * 1.77  # Backtest optimal (was 2.5x)
-            # +1 bonus level on 100% confirmed trend, but never exceed configured grid_levels+1 (or 8 hard cap)
-            effective_levels = min(effective_levels + 1, min(8, _cfg_levels + 1))
+            # STRICT RISK MANAGEMENT: Cap exposure to max 2 levels (1 Stop, 1 Limit) during confirmed trends
+            effective_levels = min(2, effective_levels)
             _confirmed_offset_mult = 0.20          # Backtest optimal entry — tighter (was 0.35x)
             _confirmed_gap_mult    = 0.70          # Compressed gap → denser stack
         elif directional_sell or directional_buy:
             dir_tp_dist     = min_tp_dist * 1.15  # Backtest optimal (was 1.5x)
+            # STRICT RISK MANAGEMENT: Cap exposure to max 2 levels (1 Stop, 1 Limit) during confirmed trends
+            effective_levels = min(2, effective_levels)
             _confirmed_offset_mult = 0.45          # Backtest optimal (was 0.65x)
             _confirmed_gap_mult    = 1.00
         else:
