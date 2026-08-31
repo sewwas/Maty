@@ -539,7 +539,11 @@ def check_target_profit(self, current_price: float, timestamp: float) -> Optiona
     if not exit_triggered:
         sl_limit = float(getattr(self, "stop_loss", 0.0) or 0.0)
         if sl_limit > 0:
-            effective_sl = sl_limit
+            # Calculate total volume for dynamic scaling
+            total_vol = sum(float(getattr(p, "size", 0.01)) for p in self.broker.open_positions.values())
+            micro_lots = total_vol / 0.01
+            
+            effective_sl = sl_limit * micro_lots
             if total_pnl <= -abs(effective_sl):
                 exit_triggered = True
                 exit_reason = "STOP_LOSS"
