@@ -1988,9 +1988,8 @@ def trail_stop_loss_5m_structure(self, current_price: float, timestamp: float) -
             floating_profit = entry_px - current_price
 
             # Phase 1 (Breakeven Lock) REMOVED by user request.
-            # Phase 2: Structure Trail — only when trend is CONFIRMED BEARISH
-            if not trend_confirmed_bear:
-                continue
+            # Phase 2: Structure Trail — Actively trail above 5m swing structure
+            # (Trend confirmation gate removed to match BUY logic and ensure we ride downtrends smoothly)
 
             # Calculate structure-based SL: swing high plus anti-hunt buffer
             structure_sl = round(recent_swing_high + (atr_5m * 0.5), digits)
