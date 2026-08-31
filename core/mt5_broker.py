@@ -1555,10 +1555,12 @@ class MT5Broker:
                             # reason=5 → broker TP hit, reason=4 → broker SL hit,
                             # reason=0/1/2/3 → manual/bot/expert close
                             deal_reason = getattr(d, "reason", -1)
-                            if pnl > 0:
+                            if deal_reason == 4:
+                                exit_r = "BREAKEVEN_SL" if pnl > 0 else "STOP_LOSS"
+                            elif deal_reason == 5:
                                 exit_r = "TARGET_PROFIT"
-                            elif deal_reason == 4:
-                                exit_r = "STOP_LOSS"
+                            elif pnl > 0:
+                                exit_r = "TARGET_PROFIT"
                             elif deal_reason in (0, 1, 2, 3):
                                 exit_r = "BOT_CLOSE"
                             else:

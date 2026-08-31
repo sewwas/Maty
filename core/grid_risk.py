@@ -126,161 +126,16 @@ def is_auto_100pct_confirmed(self) -> bool:
 
 def enforce_profit_lock(self, current_price: float, timestamp: float) -> int:
     """
-    PRIORITY-0 PROFIT PROTECTION — Runs FIRST on every tick before any other logic.
-
-    Three hard rules, applied in order:
-    ─────────────────────────────────────────────────────────────
-    Rule 1 — BASKET EARLY EXIT:
-      If total floating PnL >= min_basket_profit, close EVERYTHING immediately.
-      This fires much earlier than check_target_profit's full target, locking in
-      any real profit before it can reverse.
-      Threshold: $1.00 for Gold/PAXG, $0.50 for others.
-
-    Rule 2 — PER-POSITION PROFIT LOCK (No-Loss Rule):
-      Once any open position has earned >= min_pos_profit:
-        • Set broker-side TP to current price (or entry + 1pip if already past).
-        • This is a HARD broker-side TP — if price reverses, broker closes it.
-        • Ensures no profitable position ever becomes a loser.
-      Threshold: $1.50 per position for Gold.
-
-    Rule 3 — PROFIT RECOVERY CLOSE (Near-Zero Rescue):
-      If basket was ever in profit (max_floating_pnl > min_basket_profit) but
-      has now drifted back within 15% of zero, close all immediately.
-      Prevents "was +$5, now +$0.30" situations.
-    ─────────────────────────────────────────────────────────────
+    BREAKEVEN PROTECTION: FULLY DISABLED by user request.
+    Trades are allowed to run freely without any SL modification based on profit.
+    Only the structure-based trail (trail_stop_loss_5m_structure) remains active.
     """
-    if not getattr(self.broker, "open_positions", None):
-        return 0
-
-    now_ts = timestamp or time.time()
-    last_pl = getattr(self, "_last_profit_lock_time", 0.0)
-    if now_ts - last_pl < 0.8:   # Run every 0.8s — tighter than other TP layers
-        return 0
-    self._last_profit_lock_time = now_ts
-
-    sym_name = str(getattr(self.broker, "symbol", getattr(self, "symbol_code", ""))).upper()
-    is_gold   = any(x in sym_name for x in ["XAU", "GOLD", "PAXG"])
-    digits    = 3 if is_gold else (2 if "BTC" in sym_name else 5)
-
-    # Fetch AI target and ATR for real-data gathering
-    state = compute_basket_state(self, current_price, timestamp)
-    atr_5m = state.get("atr_5m", current_price * 0.002)
-
-    ai_target = 0.0
-    if hasattr(self, "last_auto_eval") and isinstance(self.last_auto_eval, dict):
-        ai_target = float(self.last_auto_eval.get("recommended_target_profit", 0.0))
-
-    # 🟢 100% CONFIRMED TREND: lock profit faster & tighter to guarantee gains
-    _is_100pct = is_auto_100pct_confirmed(self)
-
-    # Dynamic profit locking thresholds
-    # Crucial: min_pos_profit set to $1.50 so any winning trade ratchets SL to breakeven immediately
-    min_pos_profit = max(current_price * 0.0002, atr_5m * 0.50)
-
-    if ai_target > 0:
-        if _is_100pct:
-            min_basket_profit = max(4.00, ai_target * 0.70)
-        else:
-            min_basket_profit = max(5.00, ai_target * 0.80)
-    else:
-        if _is_100pct:
-            min_basket_profit = max(4.00, atr_5m * 2.0)
-        else:
-            min_basket_profit = max(5.00, atr_5m * 2.5)
-    near_zero_floor   = 0.50
-
-    actions = 0
-    total_pnl = float(self.broker.get_floating_pnl(current_price))
-
-    # ─────────────────────────────────────────────────────
-    # RULE 3: Profit Recovery Close (Substantial Profit Lock)
-    # Only locks when basket reached substantial profit (>= $3.00 or min_basket_profit)
-    # and protects at least 50% of gains, never cutting at $0.20 micro-scraps.
-    # ─────────────────────────────────────────────────────
-    if not getattr(self, "_rule3_checked", False):
-        max_pnl_now = getattr(self, "max_floating_pnl", 0.0)
-        eff_min_profit = max(3.0, min_basket_profit)
-        if (max_pnl_now >= eff_min_profit and
-                total_pnl >= 2.0 and
-                total_pnl <= max_pnl_now * near_zero_floor):
-            self._rule3_checked = True  # Prevent re-triggering in same tick
-            print(f"[{sym_name}] 🏆 [PROFIT LOCK RESCUE] Peak was +${max_pnl_now:.2f}. Securing +${total_pnl:.2f} ({near_zero_floor*100:.0f}% floor).")
-            if hasattr(self.broker, "close_all_positions"):
-                try: self.broker.close_all_positions()
-                except Exception: pass
-            return actions
-    else:
-        self._rule3_checked = False  # Reset for next tick
-
-    # Update running peak
-    if total_pnl > getattr(self, "max_floating_pnl", -float("inf")):
-        self.max_floating_pnl = total_pnl
-
-    max_pnl = getattr(self, "max_floating_pnl", 0.0)
-
-    # ─────────────────────────────────────────────────────
-    # RULE 1: Per-position No-Loss Lock (Breakeven SL)
-    # If any single position is in profit >= min_pos_profit,
-    # set the STOP LOSS to entry + 1 pip. This guarantees zero loss
-    # but still allows the position to run to TP1, TP2, and Chandelier!
-    # ─────────────────────────────────────────────────────
-    for pos_id, pos_obj in list(self.broker.open_positions.items()):
-        try:
-            pos_type  = str(getattr(pos_obj, "type", "")).upper()
-            entry     = float(getattr(pos_obj, "entry_price", getattr(pos_obj, "price_open", current_price)) or current_price)
-            cur_sl    = float(getattr(pos_obj, "sl", 0.0) or 0.0)
-
-            pos_size = float(getattr(pos_obj, "size", getattr(pos_obj, "volume", 0.01)) or 0.01)
-            # FIX: include lot size so pos_profit is in actual $ terms.
-            # Previously used raw price diff — 0.02 lots @ $5 move = $10, not $5.
-            if "BUY" in pos_type:
-                pos_profit = (current_price - entry) * pos_size * 100.0  # 100 = 1 lot point value approx
-                in_profit  = current_price > entry
-            elif "SELL" in pos_type:
-                pos_profit = (entry - current_price) * pos_size * 100.0
-                in_profit  = current_price < entry
-            else:
-                continue
-
-            # 1. Smarter Breakeven Buffer (ATR-based instead of 2 pips)
-            # Give it some breathing room below the noise floor to avoid easy hunts
-            be_buffer = max(get_pip_size(sym_name, current_price) * 5.0, atr_5m * 0.10)
-            if "BUY" in pos_type:
-                lock_sl = round(entry + be_buffer, digits)
-            else:
-                lock_sl = round(entry - be_buffer, digits)
-            
-            # 2. Dynamic Profit Trail (Chandelier ATR Trail for massive trends)
-            # Instead of locking 50%, tightly hug the price allowing 1.5x ATR breathing room
-            if in_profit and pos_profit > (min_pos_profit * 1.5):
-                if "BUY" in pos_type:
-                    dynamic_sl = round(current_price - (atr_5m * 1.5), digits)
-                    # SL never moves backwards
-                    lock_sl = max(lock_sl, dynamic_sl)
-                else:
-                    dynamic_sl = round(current_price + (atr_5m * 1.5), digits)
-                    # SL never moves backwards
-                    lock_sl = min(lock_sl, dynamic_sl)
-            
-            if "BUY" in pos_type:
-                sl_is_worse = cur_sl == 0.0 or cur_sl < lock_sl
-            else:
-                sl_is_worse = cur_sl == 0.0 or cur_sl > lock_sl
-
-            # Move SL to breakeven or dynamically trail it
-            if in_profit and pos_profit >= min_pos_profit and sl_is_worse:
-                if hasattr(self.broker, "modify_position_sl_tp"):
-                    cur_tp = float(getattr(pos_obj, "tp", 0.0) or 0.0)
-                    if self.broker.modify_position_sl_tp(pos_id, sl=lock_sl, tp=cur_tp if cur_tp > 0 else None):
-                        setattr(pos_obj, "sl", lock_sl)
-                        actions += 1
-                        tag = "📈 [DYNAMIC TRAIL]" if pos_profit > (min_pos_profit * 1.5) else "🛡️ [PROFIT LOCK]"
-                        print(f"[{sym_name}] {tag} {pos_type} #{pos_id}: "
-                              f"profit=${pos_profit:.2f} → SL locked @ ${lock_sl:,.{digits}f} to secure gains!")
-        except Exception as e:
-            import logging; logging.warning(f"Exception: {e}")
-
-    return actions
+    # Update running peak for check_target_profit runner-mode calculations
+    if getattr(self.broker, "open_positions", None):
+        total_pnl = float(self.broker.get_floating_pnl(current_price))
+        if total_pnl > getattr(self, "max_floating_pnl", -float("inf")):
+            self.max_floating_pnl = total_pnl
+    return 0
 
 
 def compute_basket_state(self, current_price: float, timestamp: float) -> dict:
@@ -466,17 +321,7 @@ def evaluate_partial_tp(self, current_price: float, timestamp: float) -> int:
 
             if closed_any:
                 self._tp1_buy_taken = True
-                # Move SL of remaining positions to breakeven+buffer → zero-risk runner
-                be_sl = round(w_avg_buy + breakeven_buf, digits)
-                for pos_id, pos_obj, entry, size in buy_positions:
-                    cur_sl = float(getattr(pos_obj, "sl", 0.0) or 0.0)
-                    if pos_id in self.broker.open_positions and be_sl > cur_sl:
-                        try:
-                            if self.broker.modify_position_sl_tp(pos_id, sl=be_sl):
-                                setattr(pos_obj, "sl", be_sl)
-                                print(f"[{sym_name}] 🔒 [BREAKEVEN LOCK] BUY #{pos_id} SL → ${be_sl:,.{digits}f} (zero-risk runner)")
-                        except Exception as e:
-                            import logging; logging.warning(f"Exception: {e}")
+                # Breakeven lock removed — let runner continue freely
 
         # ── Stage 2: TP2 — Fibonacci 1.618× (25% close) ──
         if tp1_taken and not tp2_taken and current_price >= tp2_level:
@@ -551,17 +396,7 @@ def evaluate_partial_tp(self, current_price: float, timestamp: float) -> int:
                     import logging; logging.warning(f"Exception: {e}")
             if closed_any:
                 self._tp1_sell_taken = True
-                be_sl = round(w_avg_sell - breakeven_buf, digits)
-                for pos_id, pos_obj, entry, size in sell_positions:
-                    cur_sl = float(getattr(pos_obj, "sl", 0.0) or 0.0)
-                    if pos_id in self.broker.open_positions:
-                        if cur_sl == 0.0 or be_sl < cur_sl:
-                            try:
-                                if self.broker.modify_position_sl_tp(pos_id, sl=be_sl):
-                                    setattr(pos_obj, "sl", be_sl)
-                                    print(f"[{sym_name}] 🔒 [BREAKEVEN LOCK] SELL #{pos_id} SL → ${be_sl:,.{digits}f} (zero-risk runner)")
-                            except Exception as e:
-                                import logging; logging.warning(f"Exception: {e}")
+                # Breakeven lock removed — let runner continue freely
 
         # ── Stage 2: TP2 — Fibonacci 1.618× (25% close) ──
         if tp1_taken and not tp2_taken and current_price <= tp2_level:
@@ -919,6 +754,7 @@ def process_engine_tick(self, previous_price: float, current_price: float, times
                 self._fakeout_recent_fills[f_pid] = (pos_obj.entry_price, pos_obj.type, self._tick_counter)
 
         if getattr(self, "cancel_opposite_on_trigger", False):
+            sym_name = str(getattr(self.broker, "symbol", getattr(self, "symbol_code", "BTCUSDT"))).upper()
             filled_types = [self.broker.open_positions[pid].type for pid in newly_filled_pos_ids if pid in self.broker.open_positions]
             if "BUY" in filled_types:
                 for oid, ord_obj in list(self.broker.pending_orders.items()):
@@ -929,6 +765,7 @@ def process_engine_tick(self, previous_price: float, current_price: float, times
                     if getattr(ord_obj, "symbol", sym_name) == sym_name and ord_obj.type == "BUY_STOP":
                         self.broker.cancel_order(oid)
 
+    sym_name = str(getattr(self.broker, "symbol", getattr(self, "symbol_code", "BTCUSDT"))).upper()
     current_pending = sum(1 for o in getattr(self.broker, "pending_orders", {}).values() if getattr(o, "symbol", sym_name) == sym_name)
     current_open = sum(1 for p in getattr(self.broker, "open_positions", {}).values() if getattr(p, "symbol", sym_name) == sym_name)
 
@@ -2120,22 +1957,7 @@ def trail_stop_loss_5m_structure(self, current_price: float, timestamp: float) -
             # ── BUY POSITION SL LOGIC ──
             floating_profit = current_price - entry_px
 
-            # Phase 1: Breakeven Lock — once profit > $1.50, move SL to entry + $0.30
-            be_threshold = max(current_price * 0.0005, breakeven_buffer * 2.0)
-            be_gain = max(current_price * 0.0001, breakeven_buffer)
-            if floating_profit >= be_threshold:
-                breakeven_sl = round(entry_px + be_gain, digits)
-                if breakeven_sl > cur_sl and breakeven_sl < current_price:
-                    if cur_sl < entry_px:  # SL is still below entry — move it up to lock gain
-                        try:
-                            if self.broker.modify_position_sl_tp(pos_id, sl=breakeven_sl):
-                                setattr(pos_obj, "sl", breakeven_sl)
-                                modified_count += 1
-                                print(f"[{sym_name}] 🔒 [BREAKEVEN LOCK] BUY #{pos_id} SL → ${breakeven_sl:,.3f} (entry+${be_gain:.2f}, zero-risk)")
-                        except Exception as e:
-                            import logging; logging.warning(f"Exception: {e}")
-                        continue
-
+            # Phase 1 (Breakeven Lock) REMOVED by user request.
             # Phase 2: Structure Trail — Actively trail behind 5m swing structure
             # (Trend confirmation gate removed to allow smarter dynamic profit locking)
 
@@ -2162,22 +1984,7 @@ def trail_stop_loss_5m_structure(self, current_price: float, timestamp: float) -
             # ── SELL POSITION SL LOGIC ──
             floating_profit = entry_px - current_price
 
-            # Phase 1: Breakeven Lock — once profit > $1.50, move SL to entry - $0.30
-            be_threshold = max(current_price * 0.0005, breakeven_buffer * 2.0)
-            be_gain = max(current_price * 0.0001, breakeven_buffer)
-            if floating_profit >= be_threshold:
-                breakeven_sl = round(entry_px - be_gain, digits)
-                if (cur_sl == 0.0 or breakeven_sl < cur_sl) and breakeven_sl > current_price:
-                    if cur_sl == 0.0 or cur_sl > entry_px:  # SL is still above entry
-                        try:
-                            if self.broker.modify_position_sl_tp(pos_id, sl=breakeven_sl):
-                                setattr(pos_obj, "sl", breakeven_sl)
-                                modified_count += 1
-                                print(f"[{sym_name}] 🔒 [BREAKEVEN LOCK] SELL #{pos_id} SL → ${breakeven_sl:,.3f} (entry-${be_gain:.2f}, zero-risk)")
-                        except Exception as e:
-                            import logging; logging.warning(f"Exception: {e}")
-                        continue
-
+            # Phase 1 (Breakeven Lock) REMOVED by user request.
             # Phase 2: Structure Trail — only when trend is CONFIRMED BEARISH
             if not trend_confirmed_bear:
                 continue
