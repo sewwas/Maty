@@ -263,6 +263,10 @@ def evaluate_partial_tp(self, current_price: float, timestamp: float) -> int:
       _tp2_buy_taken, _tp2_sell_taken,
       _chandelier_buy_high, _chandelier_sell_low
     """
+    # USER REQUESTED: Disabled partial take profit (scale-out) entirely.
+    # The bot will now ONLY close when the full dynamic basket target is hit.
+    return 0
+    
     if not getattr(self.broker, "open_positions", None):
         return 0
     if not hasattr(self.broker, "partial_close_position"):
