@@ -567,8 +567,27 @@ def check_target_profit(self, current_price: float, timestamp: float) -> Optiona
         if total_pnl >= effective_cycle_target:
             if use_trailing:
                 self.in_runner_mode = True
+                
+                # Check if trend is aligned with positions
+                trend_aligned = False
+                auto_uni = str(getattr(self, "unidirectional_mode", getattr(self, "auto_universe_bias", "DUAL"))).upper()
+                if hasattr(self, "last_auto_eval") and isinstance(self.last_auto_eval, dict):
+                    eval_uni = self.last_auto_eval.get("unidirectional_mode", "")
+                    if eval_uni: auto_uni = str(eval_uni).upper()
+                
+                if auto_uni:
+                    has_sells_local = any("SELL" in str(getattr(p, "type", "")).upper() for p in self.broker.open_positions.values())
+                    has_buys_local  = any("BUY"  in str(getattr(p, "type", "")).upper() for p in self.broker.open_positions.values())
+                    is_bull_local = any(x in auto_uni for x in ["BUY", "BULLISH"])
+                    is_bear_local = any(x in auto_uni for x in ["SELL", "BEARISH"])
+                    trend_aligned = (has_buys_local and not has_sells_local and is_bull_local and not is_bear_local) or \
+                                    (has_sells_local and not has_buys_local and is_bear_local and not is_bull_local)
+
                 # In runner mode: Give massive breathing room to weather pullbacks and capture huge trends
-                runner_floor = max(effective_cycle_target * 0.50, max_pnl * 0.60)
+                if trend_aligned:
+                    runner_floor = max(effective_cycle_target * 0.10, max_pnl * 0.30)
+                else:
+                    runner_floor = max(effective_cycle_target * 0.50, max_pnl * 0.60)
                 
                 # Apply learned booster if win rate is extremely high
                 if getattr(self, "learned_runner_lock_boost", 0.0) > 0:
@@ -581,7 +600,8 @@ def check_target_profit(self, current_price: float, timestamp: float) -> Optiona
                 else:
                     # Let it run! Log every new high
                     if total_pnl >= max_pnl:
-                        print(f"[{sym_u}] 🚀 [RUNNER EXPANDING] Winning trend active! PnL +${total_pnl:.2f} (Target was ${effective_cycle_target:.2f}). Trailing floor: +${runner_floor:.2f}")
+                        aligned_tag = " [TREND ALIGNED]" if trend_aligned else ""
+                        print(f"[{sym_u}] 🚀 [RUNNER EXPANDING]{aligned_tag} Winning trend active! PnL +${total_pnl:.2f} (Target was ${effective_cycle_target:.2f}). Trailing floor: +${runner_floor:.2f}")
             else:
                 exit_triggered = True
                 exit_reason = "TARGET_PROFIT"
@@ -613,8 +633,27 @@ def check_target_profit(self, current_price: float, timestamp: float) -> Optiona
         # Relaxed for more noise room! Let trades breathe before target is fully hit.
         near_target_activation = effective_cycle_target * 0.85
         if not exit_triggered and max_pnl >= near_target_activation:
+            # Check if trend is aligned with positions
+            trend_aligned_lock = False
+            auto_uni = str(getattr(self, "unidirectional_mode", getattr(self, "auto_universe_bias", "DUAL"))).upper()
+            if hasattr(self, "last_auto_eval") and isinstance(self.last_auto_eval, dict):
+                eval_uni = self.last_auto_eval.get("unidirectional_mode", "")
+                if eval_uni: auto_uni = str(eval_uni).upper()
+                
+            if auto_uni:
+                has_sells_loc = any("SELL" in str(getattr(p, "type", "")).upper() for p in self.broker.open_positions.values())
+                has_buys_loc  = any("BUY"  in str(getattr(p, "type", "")).upper() for p in self.broker.open_positions.values())
+                is_bull_loc = any(x in auto_uni for x in ["BUY", "BULLISH"])
+                is_bear_loc = any(x in auto_uni for x in ["SELL", "BEARISH"])
+                trend_aligned_lock = (has_buys_loc and not has_sells_loc and is_bull_loc and not is_bear_loc) or \
+                                     (has_sells_loc and not has_buys_loc and is_bear_loc and not is_bull_loc)
+                                     
             # Lock in 30% of target or 50% of max_pnl, preventing choke-outs on standard chop
-            locked_floor = max(effective_cycle_target * 0.30, max_pnl * 0.50)
+            if trend_aligned_lock:
+                locked_floor = max(effective_cycle_target * 0.10, max_pnl * 0.20)
+            else:
+                locked_floor = max(effective_cycle_target * 0.30, max_pnl * 0.50)
+                
             if total_pnl <= locked_floor and total_pnl > 0:
                 exit_triggered = True
                 exit_reason = "TARGET_PROFIT"
