@@ -158,7 +158,7 @@ def enforce_profit_lock(self, current_price: float, timestamp: float) -> int:
         if "BUY" in pos_type:
             if current_price >= entry + breakeven_trigger_dist:
                 new_sl = round(entry + breakeven_buffer, digits)
-                if cur_sl < new_sl and new_sl < current_price:
+                if (cur_sl == 0.0 or cur_sl < new_sl) and new_sl < current_price:
                     try:
                         if self.broker.modify_position_sl_tp(pos_id, sl=new_sl, tp=cur_tp if cur_tp > 0 else None):
                             setattr(pos_obj, "sl", new_sl)
@@ -169,7 +169,7 @@ def enforce_profit_lock(self, current_price: float, timestamp: float) -> int:
         elif "SELL" in pos_type:
             if current_price <= entry - breakeven_trigger_dist:
                 new_sl = round(entry - breakeven_buffer, digits)
-                if cur_sl == 0.0 or cur_sl > new_sl and new_sl > current_price:
+                if (cur_sl == 0.0 or cur_sl > new_sl) and new_sl > current_price:
                     try:
                         if self.broker.modify_position_sl_tp(pos_id, sl=new_sl, tp=cur_tp if cur_tp > 0 else None):
                             setattr(pos_obj, "sl", new_sl)
@@ -1902,8 +1902,17 @@ def enforce_trend_aware_position_guard(self, current_price: float, timestamp: fl
     trail_cache = getattr(self, "_trail_trend_cache", None)
     trend_5m = str(trail_cache.get("trend", "NEUTRAL")).upper() if trail_cache else "NEUTRAL"
 
-    trend_is_bull = ("BUY"  in auto_uni and "ONLY" in auto_uni) or trend_5m == "BULLISH"
-    trend_is_bear = ("SELL" in auto_uni and "ONLY" in auto_uni) or trend_5m == "BEARISH"
+    # Fix: Macro bias (auto_uni) MUST override 5m noise. If we are in SELL_ONLY mode,
+    # a 5m BULLISH flicker should NOT cause us to cut positions!
+    if "BUY" in auto_uni and "ONLY" in auto_uni:
+        trend_is_bull = True
+        trend_is_bear = False
+    elif "SELL" in auto_uni and "ONLY" in auto_uni:
+        trend_is_bull = False
+        trend_is_bear = True
+    else:
+        trend_is_bull = (trend_5m == "BULLISH")
+        trend_is_bear = (trend_5m == "BEARISH")
 
     if not trend_is_bull and not trend_is_bear:
         return 0
