@@ -604,9 +604,19 @@ def check_target_profit(self, current_price: float, timestamp: float) -> Optiona
     # ─────────────────────────────────────────────────────────────
     sym_u = str(getattr(self.broker, "symbol", getattr(self, "symbol_code", ""))).upper()
     
-    # Auto-detect Cent (USC) logic disabled: treating all accounts (USC/USD) the same
+    # Auto-detect Cent (USC) logic
     is_cent_account = False
-    cent_multiplier = 1.0
+    acc_info = getattr(self.broker, "get_account_info", lambda: None)()
+    if acc_info:
+        currency = str(getattr(acc_info, "currency", "")).upper()
+        if currency in ["USC", "USX", "EUC", "GBPC"]:
+            is_cent_account = True
+            
+    # Fallback suffix check for cent accounts
+    if not is_cent_account and any(sym_u.endswith(s) for s in ["C", "MICRO"]):
+        is_cent_account = True
+
+    cent_multiplier = 100.0 if is_cent_account else 1.0
 
     min_profit_threshold = 0.50 * cent_multiplier  # Minimum gross profit to close a cycle, mitigating fee attrition
     if not exit_triggered:
@@ -1849,14 +1859,27 @@ def enforce_trend_aware_position_guard(self, current_price: float, timestamp: fl
 
     # ── Per-symbol cut-loss threshold ─────────────────────────────────────────
     # Only cut losses SMALLER than this; larger losses are left to the hard SL.
+    
+    # Auto-detect Cent (USC) logic to scale thresholds appropriately
+    is_cent_account = False
+    acc_info = getattr(self.broker, "get_account_info", lambda: None)()
+    if acc_info:
+        currency = str(getattr(acc_info, "currency", "")).upper()
+        if currency in ["USC", "USX", "EUC", "GBPC"]:
+            is_cent_account = True
+    if not is_cent_account and any(sym_name.endswith(s) for s in ["C", "MICRO"]):
+        is_cent_account = True
+        
+    cent_multiplier = 100.0 if is_cent_account else 1.0
+
     if is_gold:
-        cut_loss_threshold = -4.00    # Gold: cut if floating loss < $4
+        cut_loss_threshold = -4.00 * cent_multiplier    # Gold: cut if floating loss < $4
     elif "BTC" in sym_name:
-        cut_loss_threshold = -120.0
+        cut_loss_threshold = -120.0 * cent_multiplier
     elif "ETH" in sym_name:
-        cut_loss_threshold = -8.0
+        cut_loss_threshold = -8.0 * cent_multiplier
     else:
-        cut_loss_threshold = -0.0006  # Forex
+        cut_loss_threshold = -0.0006 * cent_multiplier  # Forex
 
     closed = 0
     for pos_id, pos_obj in list(self.broker.open_positions.items()):
