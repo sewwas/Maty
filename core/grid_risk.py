@@ -126,16 +126,59 @@ def is_auto_100pct_confirmed(self) -> bool:
 
 def enforce_profit_lock(self, current_price: float, timestamp: float) -> int:
     """
-    BREAKEVEN PROTECTION: FULLY DISABLED by user request.
-    Trades are allowed to run freely without any SL modification based on profit.
-    Only the structure-based trail (trail_stop_loss_5m_structure) remains active.
+    BREAKEVEN PROTECTION.
+    Moves SL to breakeven once a position is safely in profit.
     """
     # Update running peak for check_target_profit runner-mode calculations
     if getattr(self.broker, "open_positions", None):
         total_pnl = float(self.broker.get_floating_pnl(current_price))
         if total_pnl > getattr(self, "max_floating_pnl", -float("inf")):
             self.max_floating_pnl = total_pnl
-    return 0
+            
+    if not getattr(self.broker, "open_positions", None) or not hasattr(self.broker, "modify_position_sl_tp"):
+        return 0
+
+    sym_name = str(getattr(self.broker, "symbol", getattr(self, "symbol_code", "BTCUSDT"))).upper()
+    digits = 4 if any(x in sym_name for x in ["DOGE", "GBP", "EUR"]) else (3 if any(x in sym_name for x in ["XAU", "GOLD", "PAXG"]) else 2)
+    
+    state = compute_basket_state(self, current_price, timestamp)
+    atr = state["atr_5m"]
+    
+    actions = 0
+    
+    breakeven_trigger_dist = atr * 1.5
+    breakeven_buffer = current_price * 0.0002
+    
+    for pos_id, pos_obj in list(self.broker.open_positions.items()):
+        pos_type = str(getattr(pos_obj, "type", "")).upper()
+        entry = float(getattr(pos_obj, "entry_price", getattr(pos_obj, "price_open", current_price)) or current_price)
+        cur_sl = float(getattr(pos_obj, "sl", 0.0) or 0.0)
+        cur_tp = float(getattr(pos_obj, "tp", 0.0) or 0.0)
+        
+        if "BUY" in pos_type:
+            if current_price >= entry + breakeven_trigger_dist:
+                new_sl = round(entry + breakeven_buffer, digits)
+                if cur_sl < new_sl and new_sl < current_price:
+                    try:
+                        if self.broker.modify_position_sl_tp(pos_id, sl=new_sl, tp=cur_tp if cur_tp > 0 else None):
+                            setattr(pos_obj, "sl", new_sl)
+                            actions += 1
+                            print(f"[{sym_name}] 🛡️ [BREAKEVEN] BUY #{pos_id} SL moved to {new_sl}")
+                    except Exception as e:
+                        pass
+        elif "SELL" in pos_type:
+            if current_price <= entry - breakeven_trigger_dist:
+                new_sl = round(entry - breakeven_buffer, digits)
+                if cur_sl == 0.0 or cur_sl > new_sl and new_sl > current_price:
+                    try:
+                        if self.broker.modify_position_sl_tp(pos_id, sl=new_sl, tp=cur_tp if cur_tp > 0 else None):
+                            setattr(pos_obj, "sl", new_sl)
+                            actions += 1
+                            print(f"[{sym_name}] 🛡️ [BREAKEVEN] SELL #{pos_id} SL moved to {new_sl}")
+                    except Exception as e:
+                        pass
+                        
+    return actions
 
 
 def compute_basket_state(self, current_price: float, timestamp: float) -> dict:
@@ -547,9 +590,12 @@ def check_target_profit(self, current_price: float, timestamp: float) -> Optiona
     if not exit_triggered:
         sl_limit = float(getattr(self, "stop_loss", 0.0) or 0.0)
         if sl_limit > 0:
-            # Fix #8: Per-basket SL — fixed dollar amount, NOT scaled by lot count.
-            # Scaling by micro_lots caused SL to grow as DCA levels filled, preventing it from ever triggering.
-            if total_pnl <= -abs(sl_limit):
+            # Re-enabling lot scaling to prevent immediate stop out on deeper grids
+            total_vol = sum(float(getattr(p, "size", 0.01)) for p in self.broker.open_positions.values())
+            micro_lots = total_vol / 0.01
+            
+            effective_sl = sl_limit * micro_lots
+            if total_pnl <= -abs(effective_sl):
                 exit_triggered = True
                 exit_reason = "STOP_LOSS"
 
@@ -913,7 +959,8 @@ def process_engine_tick(self, previous_price: float, current_price: float, times
         except Exception as e:
             import logging; logging.warning(f"Exception: {e}")
 
-    if getattr(self, "_fakeout_guard_enabled", False) and self._fakeout_recent_fills:
+    is_grid_full = len(getattr(self.broker, "open_positions", {})) >= getattr(self, "grid_levels", 5)
+    if is_grid_full and getattr(self, "_fakeout_guard_enabled", False) and self._fakeout_recent_fills:
         # Per-symbol minimum distance before declaring a fakeout.
         # Requires substantial structural move against entry ($6+ on Gold) + at least 30s duration.
         sym_u = str(getattr(self.broker, "symbol", getattr(self, "symbol_code", ""))).upper()
