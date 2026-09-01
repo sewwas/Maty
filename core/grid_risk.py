@@ -682,9 +682,81 @@ def check_target_profit(self, current_price: float, timestamp: float) -> Optiona
             try: self.deploy_traps(current_price, timestamp, force=True)
             except Exception as dep_err: print(f"Redeploy err: {dep_err}")
 
-        return summary
+return summary
 
     return None
+
+
+def realign_pending_orders(bot, current_price, timestamp):
+    """
+    DYNAMIC GRID REALIGNMENT:
+    When a position is open (current_open > 0) but we still have pending orders (e.g. limit DCAs or secondary stops),
+    this function ensures those pending orders are constantly snapped to the latest real-time structural data.
+    If the market moves significantly or 5m structure updates, stale pending orders are cancelled and redeployed.
+    """
+    # 1. Anti-Spam / Cooldown Guard (Max 1 realignment per 3 minutes)
+    last_realign = getattr(bot, "_last_dynamic_realignment_time", 0.0)
+    if timestamp - last_realign < 180.0:  
+        return  # Cooldown active
+        
+    sym_name = str(getattr(bot.broker, "symbol", getattr(bot, "symbol_code", "BTCUSDT"))).upper()
+    pending = [o for o in getattr(bot.broker, "pending_orders", {}).values() if getattr(o, "symbol", sym_name) == sym_name]
+    open_pos = [p for p in getattr(bot.broker, "open_positions", {}).values() if getattr(p, "symbol", sym_name) == sym_name]
+    
+    if not pending or not open_pos:
+        return
+        
+    has_buys = any("BUY" in str(p.type).upper() for p in open_pos)
+    has_sells = any("SELL" in str(p.type).upper() for p in open_pos)
+    
+    # 2. Strict Hedge Prevention Cleanup
+    hedge_orders_deleted = False
+    for p_ord in pending:
+        is_buy_ord = "BUY" in str(p_ord.type).upper()
+        is_sell_ord = "SELL" in str(p_ord.type).upper()
+        if (has_buys and is_sell_ord) or (has_sells and is_buy_ord):
+            if hasattr(bot.broker, "cancel_order") and getattr(p_ord, "order_id", None):
+                bot.broker.cancel_order(p_ord.order_id)
+                hedge_orders_deleted = True
+                
+    if hedge_orders_deleted:
+        # If we cleaned up hedges, record time but let them rest before redeploying limits
+        bot._last_dynamic_realignment_time = timestamp
+        return
+        
+    # 3. Structural Re-evaluation
+    try:
+        from core.data import get_historical_klines
+        df_5m = get_historical_klines(sym_name, interval="3m", limit=30)
+        atr_5m = 0.0
+        if df_5m is not None and len(df_5m) > 5:
+            import numpy as np
+            highs, lows, closes = df_5m["high"].values, df_5m["low"].values, df_5m["close"].values
+            tr_list = [max(highs[i]-lows[i], abs(highs[i]-closes[i-1]), abs(lows[i]-closes[i-1])) for i in range(1, len(df_5m))]
+            atr_5m = float(np.mean(tr_list[-14:])) if len(tr_list) >= 14 else float(np.mean(tr_list))
+    except:
+        atr_5m = current_price * 0.002
+        
+    if atr_5m <= 0: atr_5m = current_price * 0.002
+    
+    # Check distance of the furthest pending order from current price
+    max_dist = 0.0
+    for p_ord in pending:
+        if getattr(p_ord, "trigger_price", 0.0) > 0:
+            dist = abs(p_ord.trigger_price - current_price)
+            if dist > max_dist: max_dist = dist
+            
+    # If pending orders are drifting too far (> 1.2 x ATR) or we have a massive structural shift
+    if max_dist > atr_5m * 1.2:
+        print(f"[{bot.symbol}] 🔄 [DYNAMIC REALIGNMENT] Pending orders stale/drifting. Canceling {len(pending)} orders to snap to real-time data.")
+        if hasattr(bot.broker, "cancel_all_orders"):
+            bot.broker.cancel_all_orders(symbol=bot.symbol)
+        
+        bot._last_dynamic_realignment_time = timestamp
+        # Redeploy traps (it will safely handle max levels because current_open is already > 0)
+        # Note: we pass force=False so it only fills the remaining grid_levels minus current_open.
+        if hasattr(bot, "deploy_traps"):
+            bot.deploy_traps(current_price, timestamp, force=False)
 
 
 def process_engine_tick(self, previous_price: float, current_price: float, timestamp: float, bb_width: Optional[float] = None) -> Optional[dict]:
@@ -883,6 +955,10 @@ def process_engine_tick(self, previous_price: float, current_price: float, times
             # evaluate_partial_tp(self, current_price, timestamp)             # Disabled per user: scale-outs bleed in chop
             align_basket_take_profits(self, current_price, timestamp)       # ATR basket TP alignment (fallback/tighten)
             enforce_position_tp(self, current_price, timestamp)             # Software-side TP guard — always take profit
+            
+            # --- DYNAMIC GRID REALIGNMENT ---
+            if current_pending > 0:
+                realign_pending_orders(self, current_price, timestamp)
         except Exception as e:
             import logging; logging.warning(f"Exception: {e}")
 
@@ -1267,24 +1343,26 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
             effective_levels = 1
 
         # ── 100% Trend Confirmed: aggressive grid mode ──────────────────────────
-        # When is_auto_100pct_confirmed fires we switch to a LIMIT-ONLY grid:
-        #   • TP boosted to 2.5× (max profit)
-        #   • Offset tightened to 0.35× ATR → enter closer to price for bigger gain
-        #   • Level gap compressed → denser stacking → more fills at better prices
-        #   • +1 extra level → more coverage on the confirmed move
-        #   • STOP orders REMOVED → never get filled against the trend direction
+        # When is_auto_100pct_confirmed fires we place 3 orders (2 Stops + 1 Limit):
+        #   • Stop-1 : closest SMC breakout level  → catches initial momentum burst
+        #   • Stop-2 : next SMC level ≥ 0.5×ATR away → rides continuation (ATR gap
+        #              guard prevents both stops filling on the same candle)
+        #   • Limit-1: best structural DCA level below/above price → mean-reversion fill
+        #   • TP extended to 1.77× min_tp_dist   → ride the full confirmed move
+        #   • Entry offset tightened to 0.20× ATR → enter as close to price as safe
         _is_100pct_grid = is_auto_100pct_confirmed(self) and not is_manual  # AUTO only — never fires in manual mode
 
         if (directional_sell or directional_buy) and _is_100pct_grid:
             dir_tp_dist     = min_tp_dist * 1.77  # Backtest optimal (was 2.5x)
-            # STRICT RISK MANAGEMENT: Cap exposure to max 2 levels (1 Stop, 1 Limit) during confirmed trends
-            effective_levels = min(2, effective_levels)
+            # 100% CONFIRMED: 3 orders — 2 Stops (continuation stack) + 1 Limit (DCA dip/spike)
+            effective_levels = min(3, effective_levels)
             _confirmed_offset_mult = 0.20          # Backtest optimal entry — tighter (was 0.35x)
             _confirmed_gap_mult    = 0.70          # Compressed gap → denser stack
         elif directional_sell or directional_buy:
             dir_tp_dist     = min_tp_dist * 1.15  # Backtest optimal (was 1.5x)
-            # STRICT RISK MANAGEMENT: Cap exposure to max 2 levels (1 Stop, 1 Limit) during confirmed trends
-            effective_levels = min(2, effective_levels)
+            # UNCONFIRMED DIRECTIONAL: 3 orders — 2 Stops (cautious stack) + 1 Limit (DCA)
+            # Wider ATR gap guard (0.8×) vs confirmed (0.5×) — trend still weak so space stops further
+            effective_levels = min(3, effective_levels)
             _confirmed_offset_mult = 0.45          # Backtest optimal (was 0.65x)
             _confirmed_gap_mult    = 1.00
         else:
@@ -1420,6 +1498,7 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
 
         def _place_buy_stop(px: float, label: str, level_idx: int):
             nonlocal placed_count
+            if placed_count + len(_open_pos) >= effective_levels: return
             sz  = self.calculate_level_size(self.order_size, self.order_size_multiplier, level_idx)
             # Smart TP: Find nearest structural level above the entry that is at least min_tp_dist away
             smart_tp = round(px + dir_tp_dist, digits) # Fallback
@@ -1444,6 +1523,7 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
 
         def _place_sell_stop(px: float, label: str, level_idx: int):
             nonlocal placed_count
+            if placed_count + len(_open_pos) >= effective_levels: return
             sz  = self.calculate_level_size(self.order_size, self.order_size_multiplier, level_idx)
             # Smart TP: Find nearest structural level below the entry that is at least min_tp_dist away
             smart_tp = round(px - dir_tp_dist, digits) # Fallback
@@ -1468,6 +1548,7 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
 
         def _place_buy_limit(px: float, label: str, level_idx: int):
             nonlocal placed_count
+            if placed_count + len(_open_pos) >= effective_levels: return
             sz  = self.calculate_level_size(self.order_size, self.order_size_multiplier, level_idx)
             smart_tp = round(px + dir_tp_dist, digits)
             smart_sl = round(px - min_sl_dist, digits)
@@ -1482,6 +1563,7 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
 
         def _place_sell_limit(px: float, label: str, level_idx: int):
             nonlocal placed_count
+            if placed_count + len(_open_pos) >= effective_levels: return
             sz  = self.calculate_level_size(self.order_size, self.order_size_multiplier, level_idx)
             smart_tp = round(px - dir_tp_dist, digits)
             smart_sl = round(px + min_sl_dist, digits)
@@ -1497,26 +1579,115 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
         self.active_buy_levels  = []
         self.active_sell_levels = []
 
+        # Minimum gap between two STOP orders on the same side.
+        # Confirmed: 0.5×ATR — trend is strong, tighter continuation stack is fine.
+        # Unconfirmed: 0.8×ATR — trend is weak, space stops wider to avoid double-fill risk.
+        _min_stop_gap_confirmed   = atr_5m * 0.5 if (atr_5m and atr_5m > 0) else (current_price * 0.003)
+        _min_stop_gap_unconfirmed = atr_5m * 0.8 if (atr_5m and atr_5m > 0) else (current_price * 0.005)
+        _min_stop_gap = _min_stop_gap_confirmed if _is_100pct_grid else _min_stop_gap_unconfirmed
+
         if directional_buy:
-            # 1 Breakout scout, then Limit DCA ladder below
-            if merged_buy:
-                _place_buy_stop(merged_buy[0][1], merged_buy[0][2], 0)
-            if effective_levels > 1:
-                limit_slots = min(effective_levels - 1, len(merged_sell))
-                for i in range(limit_slots):
-                    _place_buy_limit(merged_sell[i][1], merged_sell[i][2], i + 1)
+            if _is_100pct_grid and effective_levels >= 3:
+                # ── 100% CONFIRMED BULL: 2 BUY_STOPs + 1 BUY_LIMIT ─────────────────
+                # Stop-1: closest resistance breakout (highest-score SMC level)
+                stop1_px = merged_buy[0][1] if merged_buy else round(ask_ref + base_start_offset, digits)
+                stop1_lb = merged_buy[0][2] if merged_buy else "Anchor"
+                _place_buy_stop(stop1_px, stop1_lb, 0)
+
+                # Stop-2: continuation breakout — must be at least 0.5×ATR above Stop-1
+                #   Priority: next distinct SMC level → fallback: Stop-1 + 1.0×ATR (synthetic)
+                stop2_candidate = None
+                for (_, c_px, c_lb) in merged_buy[1:]:
+                    if c_px >= stop1_px + _min_stop_gap:
+                        stop2_candidate = (c_px, c_lb)
+                        break
+                if stop2_candidate is None:
+                    # Synthetic level: ATR step above Stop-1 so the 2nd trap is always spaced safely
+                    _atr_step = atr_5m if (atr_5m and atr_5m > 0) else current_price * 0.006
+                    stop2_candidate = (round(stop1_px + _atr_step, digits), "ATR+1")
+                _place_buy_stop(stop2_candidate[0], stop2_candidate[1], 1)
+
+                # Limit-1: DCA dip — best structural support below price
+                if merged_sell:
+                    _place_buy_limit(merged_sell[0][1], merged_sell[0][2], 2)
+                else:
+                    _place_buy_limit(round(bid_ref - base_start_offset, digits), "DCA", 2)
+
+            else:
+                # ── Unconfirmed directional BUY: 2 BUY_STOPs + 1 BUY_LIMIT (cautious) ──
+                # Stop-1: closest SMC breakout level above price
+                uc_stop1_px = merged_buy[0][1] if merged_buy else round(ask_ref + base_start_offset, digits)
+                uc_stop1_lb = merged_buy[0][2] if merged_buy else "Anchor"
+                _place_buy_stop(uc_stop1_px, uc_stop1_lb, 0)
+
+                # Stop-2: wider gap (0.8×ATR) — trend unconfirmed so keep stops further apart
+                uc_stop2 = None
+                for (_, c_px, c_lb) in merged_buy[1:]:
+                    if c_px >= uc_stop1_px + _min_stop_gap:
+                        uc_stop2 = (c_px, c_lb)
+                        break
+                if uc_stop2 is None:
+                    _atr_step = atr_5m if (atr_5m and atr_5m > 0) else current_price * 0.006
+                    uc_stop2 = (round(uc_stop1_px + _atr_step, digits), "ATR+1")
+                _place_buy_stop(uc_stop2[0], uc_stop2[1], 1)
+
+                # Limit-1: DCA dip — structural support below price
+                if merged_sell:
+                    _place_buy_limit(merged_sell[0][1], merged_sell[0][2], 2)
+                else:
+                    _place_buy_limit(round(bid_ref - base_start_offset, digits), "DCA", 2)
 
         elif directional_sell:
-            # 1 Breakout scout, then Limit DCA ladder above
-            if merged_sell:
-                _place_sell_stop(merged_sell[0][1], merged_sell[0][2], 0)
-            if effective_levels > 1:
-                limit_slots = min(effective_levels - 1, len(merged_buy))
-                for i in range(limit_slots):
-                    _place_sell_limit(merged_buy[i][1], merged_buy[i][2], i + 1)
+            if _is_100pct_grid and effective_levels >= 3:
+                # ── 100% CONFIRMED BEAR: 2 SELL_STOPs + 1 SELL_LIMIT ────────────────
+                # Stop-1: closest support breakdown (highest-score SMC level)
+                stop1_px = merged_sell[0][1] if merged_sell else round(bid_ref - base_start_offset, digits)
+                stop1_lb = merged_sell[0][2] if merged_sell else "Anchor"
+                _place_sell_stop(stop1_px, stop1_lb, 0)
+
+                # Stop-2: continuation breakdown — must be at least 0.5×ATR below Stop-1
+                stop2_candidate = None
+                for (_, c_px, c_lb) in merged_sell[1:]:
+                    if c_px <= stop1_px - _min_stop_gap:
+                        stop2_candidate = (c_px, c_lb)
+                        break
+                if stop2_candidate is None:
+                    _atr_step = atr_5m if (atr_5m and atr_5m > 0) else current_price * 0.006
+                    stop2_candidate = (round(stop1_px - _atr_step, digits), "ATR-1")
+                _place_sell_stop(stop2_candidate[0], stop2_candidate[1], 1)
+
+                # Limit-1: DCA spike fade — best structural resistance above price
+                if merged_buy:
+                    _place_sell_limit(merged_buy[0][1], merged_buy[0][2], 2)
+                else:
+                    _place_sell_limit(round(ask_ref + base_start_offset, digits), "DCA", 2)
+
+            else:
+                # ── Unconfirmed directional SELL: 2 SELL_STOPs + 1 SELL_LIMIT (cautious) ──
+                # Stop-1: closest SMC breakdown level below price
+                uc_stop1_px = merged_sell[0][1] if merged_sell else round(bid_ref - base_start_offset, digits)
+                uc_stop1_lb = merged_sell[0][2] if merged_sell else "Anchor"
+                _place_sell_stop(uc_stop1_px, uc_stop1_lb, 0)
+
+                # Stop-2: wider gap (0.8×ATR) — trend unconfirmed so keep stops further apart
+                uc_stop2 = None
+                for (_, c_px, c_lb) in merged_sell[1:]:
+                    if c_px <= uc_stop1_px - _min_stop_gap:
+                        uc_stop2 = (c_px, c_lb)
+                        break
+                if uc_stop2 is None:
+                    _atr_step = atr_5m if (atr_5m and atr_5m > 0) else current_price * 0.006
+                    uc_stop2 = (round(uc_stop1_px - _atr_step, digits), "ATR-1")
+                _place_sell_stop(uc_stop2[0], uc_stop2[1], 1)
+
+                # Limit-1: DCA spike fade — structural resistance above price
+                if merged_buy:
+                    _place_sell_limit(merged_buy[0][1], merged_buy[0][2], 2)
+                else:
+                    _place_sell_limit(round(ask_ref + base_start_offset, digits), "DCA", 2)
 
         else:
-            # Ranging — Dual mode on stops only
+            # Ranging — Dual mode on stops only (unchanged)
             buy_slots  = min(effective_levels, len(merged_buy))
             sell_slots = min(effective_levels, len(merged_sell))
             for i in range(buy_slots):
