@@ -1763,9 +1763,10 @@ def sync_cycle_history_from_trades(self):
     if not hasattr(self, "cycle_history") or self.cycle_history is None:
         self.cycle_history = []
     
-    trades_source = getattr(self, "trade_history", []) or []
-    if not trades_source and hasattr(self, "broker") and hasattr(self.broker, "closed_trades"):
+    if hasattr(self, "broker") and hasattr(self.broker, "closed_trades"):
         trades_source = getattr(self.broker, "closed_trades", []) or []
+    else:
+        trades_source = []
 
     if not trades_source:
         return
@@ -1790,10 +1791,14 @@ def sync_cycle_history_from_trades(self):
                 # Fix #17: Reduce merge window from 5s → 1s to prevent unrelated cycles from
                 # being merged together.
                 if abs(float(cycle.get("exit_time", 0.0)) - ts_val) <= 1.0:
+                    if not cycle.get("mt5_synced", False):
+                        cycle["total_pnl"] = 0.0
+                        cycle["fills_count"] = 0
+                        cycle["mt5_synced"] = True
                     cycle["total_pnl"] = round(cycle.get("total_pnl", 0.0) + pnl_val, 3)
                     cycle["pnl"] = cycle["total_pnl"]
                     fills_add = max(1, int(item.get("fills_count", item.get("size", 1))))
-                    cycle["fills_count"] = cycle.get("fills_count", 1) + fills_add
+                    cycle["fills_count"] = cycle.get("fills_count", 0) + fills_add
                     cycle["trades_count"] = cycle["fills_count"]
                     # If this deal hit TP, upgrade the whole basket's reason to TP
                     if item.get("exit_reason") == "TARGET_PROFIT":
