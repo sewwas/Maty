@@ -333,11 +333,11 @@ class AutoReadingEngine:
                 unidirectional_mode = "BUY_ONLY"
             elif data_trend == "BEARISH":
                 unidirectional_mode = "SELL_ONLY"
-            # 2. ADX Trend Breakout
-            elif adx >= 35.0 and not (rsi >= 75.0 or rsi <= 25.0):
-                if combined_bias >= 0.30:
+            # 2. ADX Trend Breakout (Allow extreme RSI to confirm momentum rather than block it)
+            elif adx >= 35.0 or is_strong_trend:
+                if combined_bias >= 0.20:
                     unidirectional_mode = "BUY_ONLY"
-                elif combined_bias <= -0.30:
+                elif combined_bias <= -0.20:
                     unidirectional_mode = "SELL_ONLY"
                 else:
                     unidirectional_mode = "DUAL"

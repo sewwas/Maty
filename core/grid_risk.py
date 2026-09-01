@@ -1307,10 +1307,6 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
                 place_buy, place_sell = True, False
             elif t_5m == "BEARISH" or (t_5m == "NEUTRAL" and t_htf == "BEARISH"):
                 place_buy, place_sell = False, True
-            elif rsi_1m <= 38.0 and t_5m == "NEUTRAL" and t_htf == "NEUTRAL":
-                place_buy, place_sell = True, False
-            elif rsi_1m >= 62.0 and t_5m == "NEUTRAL" and t_htf == "NEUTRAL":
-                place_buy, place_sell = False, True
             else:
                 place_buy, place_sell = True, True
 
