@@ -1317,6 +1317,19 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
         #   RANGING        → BUY_STOP + SELL_STOP breakout mode (unchanged)
         # Limit orders give a BETTER entry than stop orders → more profit per trade.
         # ─────────────────────────────────────────────────────────────
+
+        # --- POSITION HEDGE PREVENTION ---
+        # Never place orders in the opposite direction of an open position basket!
+        # If we are already averaging down a SELL, we MUST NOT open a BUY (which would hedge and lock PnL).
+        _open_pos = getattr(self.broker, "open_positions", {})
+        has_open_sells = any("SELL" in str(getattr(p, "type", "")).upper() for p in _open_pos.values())
+        has_open_buys  = any("BUY"  in str(getattr(p, "type", "")).upper() for p in _open_pos.values())
+        
+        if has_open_sells:
+            place_buy = False
+        if has_open_buys:
+            place_sell = False
+
         directional_sell = place_sell and not place_buy   # Pure sell signal
         directional_buy  = place_buy  and not place_sell  # Pure buy signal
         ranging_mode     = place_buy  and place_sell      # Both sides = choppy

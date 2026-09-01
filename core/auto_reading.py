@@ -335,9 +335,10 @@ class AutoReadingEngine:
                 unidirectional_mode = "SELL_ONLY"
             # 2. ADX Trend Breakout (Allow extreme RSI to confirm momentum rather than block it)
             elif adx >= 35.0 or is_strong_trend:
-                if combined_bias >= 0.20:
+                # In strong momentum, rely on EMA direction if bias is neutral
+                if combined_bias >= 0.20 or (combined_bias > -0.15 and (ema_bias > 0.1 or data_trend == "BULLISH")):
                     unidirectional_mode = "BUY_ONLY"
-                elif combined_bias <= -0.20:
+                elif combined_bias <= -0.20 or (combined_bias < 0.15 and (ema_bias < -0.1 or data_trend == "BEARISH")):
                     unidirectional_mode = "SELL_ONLY"
                 else:
                     unidirectional_mode = "DUAL"
