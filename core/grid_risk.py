@@ -147,7 +147,7 @@ def enforce_profit_lock(self, current_price: float, timestamp: float) -> int:
     actions = 0
     
     breakeven_trigger_dist = atr * 1.5
-    breakeven_buffer = current_price * 0.0002
+    breakeven_buffer = min(current_price * 0.0002, atr * 0.5)
     
     for pos_id, pos_obj in list(self.broker.open_positions.items()):
         pos_type = str(getattr(pos_obj, "type", "")).upper()
