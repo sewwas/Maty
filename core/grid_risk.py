@@ -1851,10 +1851,9 @@ def enforce_trend_aware_position_guard(self, current_price: float, timestamp: fl
         trend_is_bull = False
         trend_is_bear = True
     else:
-        # In DUAL mode, do not blindly cut positions based on 5m noise.
-        # Only allow explicit MACRO bias flips to trigger early exits.
-        trend_is_bull = False
-        trend_is_bear = False
+        # In DUAL mode, use the 5m technical trend to detect pullbacks
+        trend_is_bull = (trend_5m == "BULLISH")
+        trend_is_bear = (trend_5m == "BEARISH")
 
     if not trend_is_bull and not trend_is_bear:
         return 0
@@ -1875,13 +1874,13 @@ def enforce_trend_aware_position_guard(self, current_price: float, timestamp: fl
     cent_multiplier = 100.0 if is_cent_account else 1.0
 
     if is_gold:
-        cut_loss_threshold = -4.00 * cent_multiplier    # Gold: cut if floating loss < $4
+        profit_lock_threshold = 1.00     # Gold: lock if price moved >= $1.00 in our favor
     elif "BTC" in sym_name:
-        cut_loss_threshold = -120.0 * cent_multiplier
+        profit_lock_threshold = 40.0     # BTC: lock if price moved >= $40 in our favor
     elif "ETH" in sym_name:
-        cut_loss_threshold = -8.0 * cent_multiplier
+        profit_lock_threshold = 3.0      # ETH: lock if price moved >= $3.0 in our favor
     else:
-        cut_loss_threshold = -0.0006 * cent_multiplier  # Forex
+        profit_lock_threshold = 0.0003   # Forex: lock if price moved >= 3 pips
 
     closed = 0
     for pos_id, pos_obj in list(self.broker.open_positions.items()):
@@ -1909,17 +1908,10 @@ def enforce_trend_aware_position_guard(self, current_price: float, timestamp: fl
                 # ❌ Trend has flipped against this position
                 # Only close if in solid profit (>= $2.00) to lock gains before a real reversal.
                 # Never cut positions at a loss on trend noise; let the strategy SL protect risk.
-                if floating_pnl >= 2.0:
+                if floating_pnl >= profit_lock_threshold:
                     should_close = True
-                    tag    = "💰 [TREND FLIP — PROFIT SECURED]"
-                    detail = f"locking +${floating_pnl:.{digits}f} before reversal"
-                elif cut_loss_threshold < floating_pnl < 0:
-                    # Fix #11: Cut small losses on confirmed trend flip.
-                    # Previously only $2+ profit positions were closed — losing positions
-                    # were held while the trend pushed further against them.
-                    should_close = True
-                    tag    = "✂️ [TREND FLIP — CUTTING SMALL LOSS]"
-                    detail = f"cutting ${floating_pnl:.{digits}f} (threshold ${cut_loss_threshold:.2f})"
+                    tag    = "💰 [PULLBACK — PROFIT SECURED]"
+                    detail = f"locking +{floating_pnl:.{digits}f} price points before reversal"
                 else:
                     should_close = False
 
