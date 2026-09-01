@@ -1839,8 +1839,10 @@ def enforce_trend_aware_position_guard(self, current_price: float, timestamp: fl
         trend_is_bull = False
         trend_is_bear = True
     else:
-        trend_is_bull = (trend_5m == "BULLISH")
-        trend_is_bear = (trend_5m == "BEARISH")
+        # In DUAL mode, do not blindly cut positions based on 5m noise.
+        # Only allow explicit MACRO bias flips to trigger early exits.
+        trend_is_bull = False
+        trend_is_bear = False
 
     if not trend_is_bull and not trend_is_bear:
         return 0
