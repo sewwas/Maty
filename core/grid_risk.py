@@ -631,99 +631,14 @@ def check_target_profit(self, current_price: float, timestamp: float) -> Optiona
         # Enforce minimum profit threshold
         effective_cycle_target = max(cycle_target, min_profit_threshold)
             
-        # ── 1. Basket Target Profit & Runner Mode Expansion ──
-        # When floating profit reaches the cycle target (e.g. $10+ for Gold), let winning trends run!
-        use_trailing = getattr(self, "use_smart_trailing", True) or getattr(self, "use_trailing_stop", False)
-
+        # ── 1. Basket Target Profit (Strict Full Target) ──
+        # When floating profit reaches the full cycle target (e.g. $10+ for Gold), exit immediately.
+        # Early trailing, runner modes, and noise-based trend-reversal cuts are disabled per user
+        # request to "always harvest full profit" and not blindly close on 1-min fluctuations.
         if total_pnl >= effective_cycle_target:
-            if use_trailing:
-                self.in_runner_mode = True
-                
-                # Fix #2/#4: Use hoisted auto_uni (resolved once at top of function)
-                # Check if trend is aligned with positions
-                trend_aligned = False
-                if auto_uni:
-                    has_sells_local = any("SELL" in str(getattr(p, "type", "")).upper() for p in self.broker.open_positions.values())
-                    has_buys_local  = any("BUY"  in str(getattr(p, "type", "")).upper() for p in self.broker.open_positions.values())
-                    is_bull_local = any(x in auto_uni for x in ["BUY", "BULLISH"])
-                    is_bear_local = any(x in auto_uni for x in ["SELL", "BEARISH"])
-                    trend_aligned = (has_buys_local and not has_sells_local and is_bull_local and not is_bear_local) or \
-                                    (has_sells_local and not has_buys_local and is_bear_local and not is_bull_local)
-
-                # In runner mode: Give massive breathing room to weather pullbacks and capture huge trends
-                # Fix #2+#7: Guard with max(0.0,...) so floor can never be negative, and require
-                # minimum $0.05 net profit to cover spread/commission before exiting.
-                if trend_aligned:
-                    runner_floor = max(0.0, max(effective_cycle_target * 0.10, max_pnl * 0.30))
-                else:
-                    runner_floor = max(0.0, max(effective_cycle_target * 0.50, max_pnl * 0.60))
-                
-                # Apply learned booster if win rate is extremely high
-                if getattr(self, "learned_runner_lock_boost", 0.0) > 0:
-                    runner_floor = runner_floor * (1.0 + self.learned_runner_lock_boost)
-
-                if total_pnl <= runner_floor and total_pnl >= 0.05:  # min $0.05 to cover spread
-                    exit_triggered = True
-                    exit_reason = "RUNNER_EXPANSION"
-                    print(f"[{sym_u}] 🚀 [RUNNER EXIT] Peak was +${max_pnl:.2f}. Trailing floor +${runner_floor:.2f} reached. Net PnL: +${total_pnl:.2f}!")
-                else:
-                    # Let it run! Log every new high
-                    if total_pnl >= max_pnl:
-                        aligned_tag = " [TREND ALIGNED]" if trend_aligned else ""
-                        print(f"[{sym_u}] 🚀 [RUNNER EXPANDING]{aligned_tag} Winning trend active! PnL +${total_pnl:.2f} (Target was ${effective_cycle_target:.2f}). Trailing floor: +${runner_floor:.2f}")
-            else:
-                exit_triggered = True
-                exit_reason = "TARGET_PROFIT"
-                print(f"[{sym_u}] 💰 [CYCLE TP HIT] Basket reached target of ${effective_cycle_target:.2f} (Total PnL: ${total_pnl:.2f})! Instant Close All.")
-
-        # ── 2. Smart Trend Reversal Exit (Only in Substantial Profit) ──
-        # Only exit on trend reversal if we already have substantial profit (>= 70% of target)
-        # to prevent cutting promising trends on 1-minute noise.
-        _is_gold_tr = any(x in sym_u for x in ["XAU", "GOLD", "PAXG"])
-        trend_reversal_threshold = max(effective_cycle_target * 0.70, 5.0 if _is_gold_tr else 2.50)
-
-        if not exit_triggered and total_pnl >= trend_reversal_threshold and auto_uni:
-            has_sells = any("SELL" in str(getattr(p, "type", "")).upper() for p in self.broker.open_positions.values())
-            has_buys  = any("BUY"  in str(getattr(p, "type", "")).upper() for p in self.broker.open_positions.values())
-
-            is_bullish = any(x in auto_uni for x in ["BUY", "BULLISH"])
-            is_bearish = any(x in auto_uni for x in ["SELL", "BEARISH"])
-
-            if has_sells and not has_buys and is_bullish and not is_bearish:
-                exit_triggered = True
-                exit_reason = "TARGET_PROFIT"
-                print(f"[{sym_u}] 🔄 [TREND REVERSAL EXIT] Higher TF trend flipped to {auto_uni}. Securing +${total_pnl:.2f} (>= ${trend_reversal_threshold:.2f} threshold).")
-            elif has_buys and not has_sells and is_bearish and not is_bullish:
-                exit_triggered = True
-                exit_reason = "TARGET_PROFIT"
-                print(f"[{sym_u}] 🔄 [TREND REVERSAL EXIT] Higher TF trend flipped to {auto_uni}. Securing +${total_pnl:.2f} (>= ${trend_reversal_threshold:.2f} threshold).")
-
-        # ── 3. High-Water Mark Trailing Protection (Near Target Only) ──
-        # Relaxed for more noise room! Let trades breathe before target is fully hit.
-        near_target_activation = effective_cycle_target * 0.85
-        if not exit_triggered and max_pnl >= near_target_activation:
-            # Fix #4: Use hoisted auto_uni (resolved at function top) — no duplicate resolution
-            # Check if trend is aligned with positions
-            trend_aligned_lock = False
-            if auto_uni:
-                has_sells_loc = any("SELL" in str(getattr(p, "type", "")).upper() for p in self.broker.open_positions.values())
-                has_buys_loc  = any("BUY"  in str(getattr(p, "type", "")).upper() for p in self.broker.open_positions.values())
-                is_bull_loc = any(x in auto_uni for x in ["BUY", "BULLISH"])
-                is_bear_loc = any(x in auto_uni for x in ["SELL", "BEARISH"])
-                trend_aligned_lock = (has_buys_loc and not has_sells_loc and is_bull_loc and not is_bear_loc) or \
-                                     (has_sells_loc and not has_buys_loc and is_bear_loc and not is_bull_loc)
-                                     
-            # Fix #3: Guard locked_floor with max(0.0,...) — floor can never be negative
-            # Lock in 30% of target or 50% of max_pnl, preventing choke-outs on standard chop
-            if trend_aligned_lock:
-                locked_floor = max(0.0, max(effective_cycle_target * 0.10, max_pnl * 0.20))
-            else:
-                locked_floor = max(0.0, max(effective_cycle_target * 0.30, max_pnl * 0.50))
-                
-            if total_pnl <= locked_floor and total_pnl > 0:
-                exit_triggered = True
-                exit_reason = "TARGET_PROFIT"
-                print(f"[{sym_u}] 🏆 [PEAK PROFIT TRAIL LOCK] Peak reached +${max_pnl:.2f} (>= 85% of ${effective_cycle_target:.2f} target). Pullback floor +${locked_floor:.2f} reached. Securing +${total_pnl:.2f}!")
+            exit_triggered = True
+            exit_reason = "TARGET_PROFIT"
+            print(f"[{sym_u}] 💰 [CYCLE TP HIT] Basket reached full target of ${effective_cycle_target:.2f} (Total PnL: ${total_pnl:.2f})! Instant Close All.")
 
     if exit_triggered:
         print(f"[{self.symbol}] 🎯 [PROFIT TAKING EXIT] {exit_reason} met! Net PnL: ${total_pnl:+.2f} USD")
