@@ -1774,31 +1774,50 @@ def sync_cycle_history_from_trades(self):
     if not trades_source:
         return
 
-    seen_records = {(round(float(c.get("exit_time", c.get("timestamp", 0))), 1), round(float(c.get("pnl", c.get("total_pnl", 0))), 2)) for c in self.cycle_history if isinstance(c, dict)}
-    
+    if not hasattr(self, "_processed_deals"):
+        self._processed_deals = set()
+
     for item in trades_source:
+        deal_id = str(item.get("position_id", ""))
+        if deal_id and deal_id in self._processed_deals:
+            continue
+        if deal_id:
+            self._processed_deals.add(deal_id)
+            
         if isinstance(item, dict) and ("pnl" in item or "total_pnl" in item):
             pnl_val = float(item.get("pnl", item.get("total_pnl", 0.0)))
             ts_val = float(item.get("exit_time", item.get("timestamp", time.time())))
             st_val = float(item.get("entry_time", item.get("start_time", ts_val - 15.0)))
-            ts_round = round(ts_val, 1)
-            pnl_round = round(pnl_val, 2)
             
-            deploy_px = float(item.get("deploy_price", item.get("entry_price", item.get("open_price", 0.0))))
-            exit_px = float(item.get("exit_price", item.get("close_price", item.get("price", 0.0))))
-            fills_cnt = int(item.get("fills_count", item.get("trades_count", item.get("size", 1))))
-
-            if (ts_round, pnl_round) not in seen_records:
-                seen_records.add((ts_round, pnl_round))
+            merged = False
+            for cycle in reversed(self.cycle_history):
+                # If within 5 seconds, merge as part of the same basket closure
+                if abs(float(cycle.get("exit_time", 0.0)) - ts_val) <= 5.0:
+                    cycle["total_pnl"] = round(cycle.get("total_pnl", 0.0) + pnl_val, 3)
+                    cycle["pnl"] = cycle["total_pnl"]
+                    fills_add = max(1, int(item.get("fills_count", item.get("size", 1))))
+                    cycle["fills_count"] = cycle.get("fills_count", 1) + fills_add
+                    cycle["trades_count"] = cycle["fills_count"]
+                    # If this deal hit TP, upgrade the whole basket's reason to TP
+                    if item.get("exit_reason") == "TARGET_PROFIT":
+                        cycle["exit_reason"] = "TARGET_PROFIT"
+                    # Only mark as stop loss if the NET basket is negative and it wasn't a TP
+                    elif cycle["total_pnl"] < 0 and cycle.get("exit_reason") != "TARGET_PROFIT":
+                        cycle["exit_reason"] = "STOP_LOSS"
+                    cycle["is_win"] = cycle["total_pnl"] > 0.0
+                    merged = True
+                    break
+            
+            if not merged:
                 self.cycle_history.append({
-                    "cycle_id": item.get("cycle_id", len(self.cycle_history) + 1),
-                    "total_pnl": pnl_val,
-                    "pnl": pnl_val,
-                    "deploy_price": deploy_px,
-                    "entry_price": deploy_px,
-                    "exit_price": exit_px,
-                    "fills_count": max(1, fills_cnt),
-                    "trades_count": max(1, fills_cnt),
+                    "cycle_id": len(self.cycle_history) + 1,
+                    "total_pnl": round(pnl_val, 3),
+                    "pnl": round(pnl_val, 3),
+                    "deploy_price": float(item.get("deploy_price", item.get("entry_price", 0.0))),
+                    "entry_price": float(item.get("entry_price", item.get("open_price", 0.0))),
+                    "exit_price": float(item.get("exit_price", item.get("close_price", 0.0))),
+                    "fills_count": max(1, int(item.get("fills_count", item.get("size", 1)))),
+                    "trades_count": max(1, int(item.get("fills_count", item.get("size", 1)))),
                     "exit_reason": item.get("exit_reason", "TARGET_PROFIT" if pnl_val > 0 else "STOP_LOSS"),
                     "duration": max(1, int(ts_val - st_val)),
                     "start_time": st_val,
@@ -2202,8 +2221,12 @@ def align_basket_take_profits(self, current_price: float, timestamp: float) -> i
         else:
             best_tp = atr_tp
 
-        # Ensure minimum TP distance
-        best_tp = round(max(best_tp, current_price + min_tp_dist), digits)
+        # Ensure minimum TP distance (AND never place TP below average entry to prevent negative targets)
+        avg_entry = sum(float(getattr(p, "entry_price", getattr(p, "price_open", current_price))) * float(getattr(p, "size", 0.01)) for _, p in buy_positions) / max(0.0001, sum(float(getattr(p, "size", 0.01)) for _, p in buy_positions))
+        min_breakeven_tp = avg_entry + (current_price * 0.0002) # Tiny buffer above breakeven
+        
+        best_tp = max(best_tp, current_price + min_tp_dist)
+        best_tp = round(max(best_tp, min_breakeven_tp), digits)
 
         # Collect existing TPs to check if we should expand or tighten.
         for pos_id, pos_obj in buy_positions:
@@ -2249,8 +2272,12 @@ def align_basket_take_profits(self, current_price: float, timestamp: float) -> i
         else:
             best_tp = atr_tp
 
-        # Ensure minimum TP distance
-        best_tp = round(min(best_tp, current_price - min_tp_dist), digits)
+        # Ensure minimum TP distance (AND never place TP above average entry to prevent negative targets)
+        avg_entry = sum(float(getattr(p, "entry_price", getattr(p, "price_open", current_price))) * float(getattr(p, "size", 0.01)) for _, p in sell_positions) / max(0.0001, sum(float(getattr(p, "size", 0.01)) for _, p in sell_positions))
+        min_breakeven_tp = avg_entry - (current_price * 0.0002) # Tiny buffer below breakeven
+        
+        best_tp = min(best_tp, current_price - min_tp_dist)
+        best_tp = round(min(best_tp, min_breakeven_tp), digits)
 
         for pos_id, pos_obj in sell_positions:
             cur_tp = round(float(getattr(pos_obj, "tp", 0.0) or 0.0), digits)
