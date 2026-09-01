@@ -508,6 +508,14 @@ def check_target_profit(self, current_price: float, timestamp: float) -> Optiona
         self.max_floating_pnl = total_pnl
 
     max_pnl = self.max_floating_pnl
+
+    # ── Fix #4: Resolve trend bias ONCE here — prevents stale/inconsistent reads
+    #    across all three exit checks (runner, trend-reversal, near-target lock)
+    auto_uni = str(getattr(self, "unidirectional_mode", getattr(self, "auto_universe_bias", "DUAL"))).upper()
+    if hasattr(self, "last_auto_eval") and isinstance(self.last_auto_eval, dict):
+        eval_uni = self.last_auto_eval.get("unidirectional_mode", "")
+        if eval_uni: auto_uni = str(eval_uni).upper()
+
     if max_pnl >= effective_target and getattr(self, "use_smart_trailing", True):
         self.in_runner_mode = True
 
@@ -539,12 +547,9 @@ def check_target_profit(self, current_price: float, timestamp: float) -> Optiona
     if not exit_triggered:
         sl_limit = float(getattr(self, "stop_loss", 0.0) or 0.0)
         if sl_limit > 0:
-            # Calculate total volume for dynamic scaling
-            total_vol = sum(float(getattr(p, "size", 0.01)) for p in self.broker.open_positions.values())
-            micro_lots = total_vol / 0.01
-            
-            effective_sl = sl_limit * micro_lots
-            if total_pnl <= -abs(effective_sl):
+            # Fix #8: Per-basket SL — fixed dollar amount, NOT scaled by lot count.
+            # Scaling by micro_lots caused SL to grow as DCA levels filled, preventing it from ever triggering.
+            if total_pnl <= -abs(sl_limit):
                 exit_triggered = True
                 exit_reason = "STOP_LOSS"
 
@@ -588,13 +593,9 @@ def check_target_profit(self, current_price: float, timestamp: float) -> Optiona
             if use_trailing:
                 self.in_runner_mode = True
                 
+                # Fix #2/#4: Use hoisted auto_uni (resolved once at top of function)
                 # Check if trend is aligned with positions
                 trend_aligned = False
-                auto_uni = str(getattr(self, "unidirectional_mode", getattr(self, "auto_universe_bias", "DUAL"))).upper()
-                if hasattr(self, "last_auto_eval") and isinstance(self.last_auto_eval, dict):
-                    eval_uni = self.last_auto_eval.get("unidirectional_mode", "")
-                    if eval_uni: auto_uni = str(eval_uni).upper()
-                
                 if auto_uni:
                     has_sells_local = any("SELL" in str(getattr(p, "type", "")).upper() for p in self.broker.open_positions.values())
                     has_buys_local  = any("BUY"  in str(getattr(p, "type", "")).upper() for p in self.broker.open_positions.values())
@@ -604,16 +605,18 @@ def check_target_profit(self, current_price: float, timestamp: float) -> Optiona
                                     (has_sells_local and not has_buys_local and is_bear_local and not is_bull_local)
 
                 # In runner mode: Give massive breathing room to weather pullbacks and capture huge trends
+                # Fix #2+#7: Guard with max(0.0,...) so floor can never be negative, and require
+                # minimum $0.05 net profit to cover spread/commission before exiting.
                 if trend_aligned:
-                    runner_floor = max(effective_cycle_target * 0.10, max_pnl * 0.30)
+                    runner_floor = max(0.0, max(effective_cycle_target * 0.10, max_pnl * 0.30))
                 else:
-                    runner_floor = max(effective_cycle_target * 0.50, max_pnl * 0.60)
+                    runner_floor = max(0.0, max(effective_cycle_target * 0.50, max_pnl * 0.60))
                 
                 # Apply learned booster if win rate is extremely high
                 if getattr(self, "learned_runner_lock_boost", 0.0) > 0:
                     runner_floor = runner_floor * (1.0 + self.learned_runner_lock_boost)
 
-                if total_pnl <= runner_floor:
+                if total_pnl <= runner_floor and total_pnl >= 0.05:  # min $0.05 to cover spread
                     exit_triggered = True
                     exit_reason = "RUNNER_EXPANSION"
                     print(f"[{sym_u}] 🚀 [RUNNER EXIT] Peak was +${max_pnl:.2f}. Trailing floor +${runner_floor:.2f} reached. Net PnL: +${total_pnl:.2f}!")
@@ -653,13 +656,9 @@ def check_target_profit(self, current_price: float, timestamp: float) -> Optiona
         # Relaxed for more noise room! Let trades breathe before target is fully hit.
         near_target_activation = effective_cycle_target * 0.85
         if not exit_triggered and max_pnl >= near_target_activation:
+            # Fix #4: Use hoisted auto_uni (resolved at function top) — no duplicate resolution
             # Check if trend is aligned with positions
             trend_aligned_lock = False
-            auto_uni = str(getattr(self, "unidirectional_mode", getattr(self, "auto_universe_bias", "DUAL"))).upper()
-            if hasattr(self, "last_auto_eval") and isinstance(self.last_auto_eval, dict):
-                eval_uni = self.last_auto_eval.get("unidirectional_mode", "")
-                if eval_uni: auto_uni = str(eval_uni).upper()
-                
             if auto_uni:
                 has_sells_loc = any("SELL" in str(getattr(p, "type", "")).upper() for p in self.broker.open_positions.values())
                 has_buys_loc  = any("BUY"  in str(getattr(p, "type", "")).upper() for p in self.broker.open_positions.values())
@@ -668,11 +667,12 @@ def check_target_profit(self, current_price: float, timestamp: float) -> Optiona
                 trend_aligned_lock = (has_buys_loc and not has_sells_loc and is_bull_loc and not is_bear_loc) or \
                                      (has_sells_loc and not has_buys_loc and is_bear_loc and not is_bull_loc)
                                      
+            # Fix #3: Guard locked_floor with max(0.0,...) — floor can never be negative
             # Lock in 30% of target or 50% of max_pnl, preventing choke-outs on standard chop
             if trend_aligned_lock:
-                locked_floor = max(effective_cycle_target * 0.10, max_pnl * 0.20)
+                locked_floor = max(0.0, max(effective_cycle_target * 0.10, max_pnl * 0.20))
             else:
-                locked_floor = max(effective_cycle_target * 0.30, max_pnl * 0.50)
+                locked_floor = max(0.0, max(effective_cycle_target * 0.30, max_pnl * 0.50))
                 
             if total_pnl <= locked_floor and total_pnl > 0:
                 exit_triggered = True
@@ -702,9 +702,8 @@ def check_target_profit(self, current_price: float, timestamp: float) -> Optiona
             "exit_price": current_price
         }
 
-        if hasattr(self, "record_trade_outcome"):
-            self.record_trade_outcome(total_pnl, exit_reason, duration, current_price)
-
+        # Fix #1: record_trade_outcome is called by the caller (process_engine_tick L957).
+        # Calling it here too caused every cycle to be recorded TWICE, corrupting win-rate stats.
         if getattr(self, "auto_restart", True):
             print(f"[{self.symbol}] 🚀 [AUTO RESTART] Redeploying fresh grid at market price {current_price}...")
             try: self.deploy_traps(current_price, timestamp, force=True)
@@ -800,7 +799,9 @@ def process_engine_tick(self, previous_price: float, current_price: float, times
         self.deployed = False
         
         # ── GRID SELF-HEALING / AUTO-START GUARD ──
-        if not hasattr(self, "_last_empty_grid_time"):
+        # Fix #13: Only start the empty-grid timer when the grid IS empty.
+        # Fix #13 (Refined): Timer initialized on first empty, then reset to None if grid becomes non-empty.
+        if not hasattr(self, "_last_empty_grid_time") or self._last_empty_grid_time is None:
             self._last_empty_grid_time = timestamp
             
         if timestamp - self._last_empty_grid_time >= 300.0:  # 5 minutes stuck empty
@@ -818,7 +819,7 @@ def process_engine_tick(self, previous_price: float, current_price: float, times
             self.deploy_traps(current_price, timestamp, force=True)
         return None
     else:
-        self._last_empty_grid_time = timestamp
+        self._last_empty_grid_time = None
 
     self._tick_counter += 1
 
@@ -1791,8 +1792,9 @@ def sync_cycle_history_from_trades(self):
             
             merged = False
             for cycle in reversed(self.cycle_history):
-                # If within 5 seconds, merge as part of the same basket closure
-                if abs(float(cycle.get("exit_time", 0.0)) - ts_val) <= 5.0:
+                # Fix #17: Reduce merge window from 5s → 1s to prevent unrelated cycles from
+                # being merged together.
+                if abs(float(cycle.get("exit_time", 0.0)) - ts_val) <= 1.0:
                     cycle["total_pnl"] = round(cycle.get("total_pnl", 0.0) + pnl_val, 3)
                     cycle["pnl"] = cycle["total_pnl"]
                     fills_add = max(1, int(item.get("fills_count", item.get("size", 1))))
@@ -1830,19 +1832,6 @@ def sync_cycle_history_from_trades(self):
 def enforce_trend_aware_position_guard(self, current_price: float, timestamp: float) -> int:
     """
     🔄 TREND-AWARE POSITION GUARD — Runs every tick.
-
-    Rule 1 — TREND FLIPPED AGAINST POSITION (Quick Exit):
-      If the active auto-mode trend has reversed against an open position:
-        • If position is in ANY profit  → close immediately, lock the gain.
-        • If position is at a SMALL loss (within cut_loss_threshold) → close
-          now before the loss grows larger (stop-hunt avoidance).
-        • If loss already exceeds threshold → leave it to the hard SL.
-      This prevents SL/TP being hunted by the reversal move.
-
-    Rule 2 — TREND STILL WITH POSITION (Hold for Max Profit):
-      If trend is aligned with the open position, do NOT interfere.
-      enforce_profit_lock + trail_stop_loss will ride the move for
-      maximum profit automatically — no early exit needed.
     """
     if not getattr(self.broker, "open_positions", None):
         return 0
@@ -1858,14 +1847,13 @@ def enforce_trend_aware_position_guard(self, current_price: float, timestamp: fl
     digits   = 3 if is_gold else (2 if "BTC" in sym_name else 5)
 
     # ── Resolve current trend from freshest available source ──────────────────
-    # Primary: last_auto_eval (most recent AI decision)
     auto_uni = str(getattr(self, "unidirectional_mode",
                            getattr(self, "auto_universe_bias", "DUAL"))).upper()
     last_eval = getattr(self, "last_auto_eval", None)
     if isinstance(last_eval, dict):
         eval_uni = str(last_eval.get("unidirectional_mode", "DUAL")).upper()
         if eval_uni and eval_uni != "DUAL":
-            auto_uni = eval_uni   # Always prefer freshest AI call
+            auto_uni = eval_uni
 
     # Secondary: 5m technical trend cache (updated every 60 s)
     trail_cache = getattr(self, "_trail_trend_cache", None)
@@ -1875,7 +1863,7 @@ def enforce_trend_aware_position_guard(self, current_price: float, timestamp: fl
     trend_is_bear = ("SELL" in auto_uni and "ONLY" in auto_uni) or trend_5m == "BEARISH"
 
     if not trend_is_bull and not trend_is_bear:
-        return 0   # DUAL / ranging — no clear trend call, do nothing
+        return 0
 
     # ── Per-symbol cut-loss threshold ─────────────────────────────────────────
     # Only cut losses SMALLER than this; larger losses are left to the hard SL.
@@ -1918,6 +1906,13 @@ def enforce_trend_aware_position_guard(self, current_price: float, timestamp: fl
                     should_close = True
                     tag    = "💰 [TREND FLIP — PROFIT SECURED]"
                     detail = f"locking +${floating_pnl:.{digits}f} before reversal"
+                elif cut_loss_threshold < floating_pnl < 0:
+                    # Fix #11: Cut small losses on confirmed trend flip.
+                    # Previously only $2+ profit positions were closed — losing positions
+                    # were held while the trend pushed further against them.
+                    should_close = True
+                    tag    = "✂️ [TREND FLIP — CUTTING SMALL LOSS]"
+                    detail = f"cutting ${floating_pnl:.{digits}f} (threshold ${cut_loss_threshold:.2f})"
                 else:
                     should_close = False
 
@@ -2233,12 +2228,17 @@ def align_basket_take_profits(self, current_price: float, timestamp: float) -> i
             cur_tp = round(float(getattr(pos_obj, "tp", 0.0) or 0.0), digits)
 
             if cur_tp > current_price:
-                if _is_100pct_tp:
+                if _is_100pct_tp or cur_tp == 0.0 or best_tp > cur_tp:
                     # DYNAMIC EXPANSION: Push TP further out dynamically to ride strong momentum!
                     target_tp = max(cur_tp, best_tp)
                 else:
-                    # STANDARD TIGHTEN: TP can only move closer to price
-                    target_tp = min(cur_tp, best_tp)
+                    # Fix #10: STANDARD TIGHTEN — only tighten if new TP is meaningfully
+                    # closer (> 0.5×ATR). Prevents noisy ATR fluctuations from repeatedly
+                    # overwriting structural TPs and causing premature exits.
+                    if cur_tp > 0 and (cur_tp - best_tp) > (atr_5m * 0.5):
+                        target_tp = best_tp
+                    else:
+                        target_tp = cur_tp  # Keep existing TP — structural level still valid
             else:
                 target_tp = best_tp
 
@@ -2287,8 +2287,13 @@ def align_basket_take_profits(self, current_price: float, timestamp: float) -> i
                     # DYNAMIC EXPANSION: Push TP further down!
                     target_tp = min(cur_tp, best_tp)
                 else:
-                    # STANDARD TIGHTEN
-                    target_tp = max(cur_tp, best_tp)
+                    # Fix #10: STANDARD TIGHTEN — only tighten if new TP is meaningfully
+                    # closer (> 0.5×ATR). Prevents noisy ATR fluctuations from repeatedly
+                    # overwriting structural TPs and causing premature exits.
+                    if cur_tp > 0 and (best_tp - cur_tp) > (atr_5m * 0.5):
+                        target_tp = best_tp
+                    else:
+                        target_tp = cur_tp  # Keep existing TP — structural level still valid
             else:
                 target_tp = best_tp
 
