@@ -468,9 +468,9 @@ class BreakoutGridBot:
         
         return self.process_tick(prev_price, current_price, ts)
 
-    def record_trade_outcome(self, pnl: float, exit_reason: str, duration: float):
+    def record_trade_outcome(self, pnl: float, exit_reason: str, duration: float, exit_price: float = 0.0):
         import core.grid_risk as gr
-        return gr.record_trade_outcome(self, pnl, exit_reason, duration)
+        return gr.record_trade_outcome(self, pnl, exit_reason, duration, exit_price)
 
     def get_self_learning_metrics(self) -> dict:
         import core.grid_risk as gr
