@@ -1497,12 +1497,25 @@ class MT5Broker:
                 synced_trades = []
                 synced_pnl = 0.0
                 target_syms = {self.symbol.upper(), (exness_symbol or "").upper()}
+                # Detect Cent account at broker level
+                is_cent_account = False
+                acc_info = getattr(self, "account_info", None)
+                if acc_info:
+                    curr = str(getattr(acc_info, "currency", "")).upper()
+                    if curr in ["USC", "USX", "EUC", "GBPC"]:
+                        is_cent_account = True
+
                 for d in deals:
                     d_sym = str(getattr(d, "symbol", "")).upper()
                     if getattr(d, "magic", self.magic_number) != self.magic_number:
                         continue
                     if d_sym and (d_sym in target_syms or any(ts in d_sym or d_sym in ts for ts in target_syms if ts)):
-                        pnl = float(getattr(d, "profit", 0.0)) + float(getattr(d, "swap", 0.0)) + float(getattr(d, "commission", 0.0))
+                        if not is_cent_account and any(d_sym.endswith(s) for s in ["C", "MICRO"]):
+                            is_cent_account = True
+                        cent_mult = 100.0 if is_cent_account else 1.0
+
+                        raw_pnl = float(getattr(d, "profit", 0.0)) + float(getattr(d, "swap", 0.0)) + float(getattr(d, "commission", 0.0))
+                        pnl = raw_pnl / cent_mult
                         # Only process OUT (1) or INOUT (2) deals as closed trades.
                         # Do NOT process IN (0) deals, even if they have upfront commission.
                         if getattr(d, "entry", 0) in (1, 2):
@@ -1544,8 +1557,8 @@ class MT5Broker:
                                 "entry_price": en_price,
                                 "deploy_price": en_price,
                                 "exit_price": ex_price,
-                                "size": float(d.volume),
-                                "fills_count": max(1, int(round(float(d.volume) / 0.01))) if any(x in d_sym for x in ["XAU", "GOLD", "PAXG"]) else 1,
+                                "size": float(d.volume) / cent_mult,
+                                "fills_count": max(1, int(round((float(d.volume) / cent_mult) / 0.01))) if any(x in d_sym for x in ["XAU", "GOLD", "PAXG"]) else 1,
                                 "pnl": pnl,
                                 "entry_time": e_sec,
                                 "start_time": e_sec,

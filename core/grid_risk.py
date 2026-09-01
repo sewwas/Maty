@@ -1679,15 +1679,27 @@ def record_trade_outcome(self, pnl: float, exit_reason: str, duration: float, ex
         last_trade = self.broker.closed_trades[-1]
         exit_price  = float(last_trade.get("exit_price",  0.0))
 
+    is_cent_account = False
+    acc_info = getattr(self.broker, "get_account_info", lambda: None)()
+    if acc_info:
+        currency = str(getattr(acc_info, "currency", "")).upper()
+        if currency in ["USC", "USX", "EUC", "GBPC"]:
+            is_cent_account = True
+    if not is_cent_account and any(sym_name.endswith(s) for s in ["C", "MICRO"]):
+        is_cent_account = True
+        
+    cent_mult = 100.0 if is_cent_account else 1.0
+    real_pnl = float(pnl) / cent_mult
+
     outcome = {
         "timestamp":    now_ts,
         "exit_time":    now_ts,
         "symbol":       sym_name,
-        "pnl":          round(float(pnl), 2),
-        "total_pnl":    round(float(pnl), 2),
+        "pnl":          round(real_pnl, 2),
+        "total_pnl":    round(real_pnl, 2),
         "exit_reason":  exit_reason,
         "duration":     round(float(duration), 1),
-        "is_win":       pnl > 0.0,
+        "is_win":       real_pnl > 0.0,
         "cycle_id":     getattr(self, "current_cycle_id", len(self.cycle_history) + 1),
         "deploy_price": deploy_px,
         "entry_price":  entry_px,
