@@ -222,7 +222,7 @@ def compute_basket_state(self, current_price: float, timestamp: float) -> dict:
         _klines_cache = getattr(self, "_5m_klines_cache", None)
         _klines_ts    = getattr(self, "_5m_klines_ts", 0.0)
         if _klines_cache is None or (now_ts - _klines_ts) > 60.0:
-            df_5m = get_historical_klines(sym_fetch, interval="5m", limit=30)
+            df_5m = get_historical_klines(sym_fetch, interval="3m", limit=30)
             self._5m_klines_cache = df_5m
             self._5m_klines_ts    = now_ts
         else:
@@ -1153,7 +1153,7 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
             from core.data import get_historical_klines, calculate_technical_indicators
             import numpy as np
             df_1m  = get_historical_klines(sym_name, interval="1m", limit=250)
-            df_5m  = get_historical_klines(sym_name, interval="5m", limit=250)
+            df_5m  = get_historical_klines(sym_name, interval="3m", limit=250)
             df_htf = get_historical_klines(sym_name, interval="15m", limit=250)  # Real 15m as HTF
             
             # Manually calculate ATR 5m directly from df_5m to ensure reliability
@@ -1966,7 +1966,7 @@ def trail_stop_loss_5m_structure(self, current_price: float, timestamp: float) -
         _klines_cache = getattr(self, "_5m_klines_cache", None)
         _klines_ts    = getattr(self, "_5m_klines_ts", 0.0)
         if _klines_cache is None or (now_ts - _klines_ts) > 60.0:
-            df_5m = get_historical_klines(sym_fetch, interval="5m", limit=30)
+            df_5m = get_historical_klines(sym_fetch, interval="3m", limit=30)
             self._5m_klines_cache = df_5m
             self._5m_klines_ts    = now_ts
         else:
@@ -2150,7 +2150,7 @@ def align_basket_take_profits(self, current_price: float, timestamp: float) -> i
         _klines_cache = getattr(self, "_5m_klines_cache", None)
         _klines_ts = getattr(self, "_5m_klines_ts", 0.0)
         if _klines_cache is None or (now_ts - _klines_ts) > 60.0:
-            df_5m = get_historical_klines(sym_fetch, interval="5m", limit=30)
+            df_5m = get_historical_klines(sym_fetch, interval="3m", limit=30)
             self._5m_klines_cache = df_5m
             self._5m_klines_ts = now_ts
         else:

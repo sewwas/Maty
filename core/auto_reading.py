@@ -209,7 +209,7 @@ class AutoReadingEngine:
         if not tech:
             try:
                 from core.data import get_historical_klines, calculate_technical_indicators, detect_fvg, detect_liquidity_sweep, detect_order_blocks
-                df_klines = get_historical_klines(symbol, interval="5m", limit=100)
+                df_klines = get_historical_klines(symbol, interval="3m", limit=100)
                 if df_klines is not None and not df_klines.empty:
                     tech = calculate_technical_indicators(symbol) or {}
                     tech['fvg'] = detect_fvg(df_klines)
