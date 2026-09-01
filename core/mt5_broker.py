@@ -822,10 +822,11 @@ class MT5Broker:
                     cancel_ok = False
 
             if not cancel_ok:
-                try:
-                    self.process_tick(0.0, 0.0, time.time())
-                except Exception as e:
-                    import logging; logging.warning(f"Exception: {e}")
+                # Fix #5: Do NOT call process_tick(0,0,...) here.
+                # process_tick with (0, 0) triggers purge_duplicate_mt5_positions which can
+                # close real live positions as a side effect of the cancel error path.
+                # State will resync naturally on the next regular tick from the engine.
+                pass
 
         if cancel_ok or (ticket is None):
             self.pending_orders.pop(order_id, None)
@@ -1065,7 +1066,11 @@ class MT5Broker:
                     pos_obj.tp = final_tp
             return is_ok
 
-        return True
+        # Fix #15: Return False when position not found on MT5.
+        # Previously returned True unconditionally here, causing a silent SL tracking desync:
+        # local pos_obj.sl was updated (trail_stop_loss does setattr), but MT5 SL never moved.
+        # On next tick, target_sl > cur_sl is False (local already updated) → trail stops working.
+        return False
 
     def modify_order(self, order_id: str, price: Optional[float] = None, sl: Optional[float] = None, tp: Optional[float] = None) -> bool:
         return self.modify_position_sl_tp(order_id, sl=sl, tp=tp)
@@ -1345,8 +1350,7 @@ class MT5Broker:
         sym = symbol or self.symbol
         exness_symbol = self.get_exness_symbol(sym)
 
-        self.purge_duplicate_mt5_orders()
-        self.purge_duplicate_mt5_orders()
+        self.purge_duplicate_mt5_orders()  # Fix #6: Removed duplicate call — was called twice, causing race-condition cancels
         self.purge_duplicate_mt5_positions()
         mt5_orders = self._fetch_live_orders(exness_symbol)
         active_order_tickets = set()

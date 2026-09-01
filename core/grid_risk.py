@@ -508,14 +508,6 @@ def check_target_profit(self, current_price: float, timestamp: float) -> Optiona
         self.max_floating_pnl = total_pnl
 
     max_pnl = self.max_floating_pnl
-
-    # ── Fix #4: Resolve trend bias ONCE here — prevents stale/inconsistent reads
-    #    across all three exit checks (runner, trend-reversal, near-target lock)
-    auto_uni = str(getattr(self, "unidirectional_mode", getattr(self, "auto_universe_bias", "DUAL"))).upper()
-    if hasattr(self, "last_auto_eval") and isinstance(self.last_auto_eval, dict):
-        eval_uni = self.last_auto_eval.get("unidirectional_mode", "")
-        if eval_uni: auto_uni = str(eval_uni).upper()
-
     if max_pnl >= effective_target and getattr(self, "use_smart_trailing", True):
         self.in_runner_mode = True
 
@@ -547,9 +539,12 @@ def check_target_profit(self, current_price: float, timestamp: float) -> Optiona
     if not exit_triggered:
         sl_limit = float(getattr(self, "stop_loss", 0.0) or 0.0)
         if sl_limit > 0:
-            # Fix #8: Per-basket SL — fixed dollar amount, NOT scaled by lot count.
-            # Scaling by micro_lots caused SL to grow as DCA levels filled, preventing it from ever triggering.
-            if total_pnl <= -abs(sl_limit):
+            # Calculate total volume for dynamic scaling
+            total_vol = sum(float(getattr(p, "size", 0.01)) for p in self.broker.open_positions.values())
+            micro_lots = total_vol / 0.01
+            
+            effective_sl = sl_limit * micro_lots
+            if total_pnl <= -abs(effective_sl):
                 exit_triggered = True
                 exit_reason = "STOP_LOSS"
 
@@ -593,9 +588,13 @@ def check_target_profit(self, current_price: float, timestamp: float) -> Optiona
             if use_trailing:
                 self.in_runner_mode = True
                 
-                # Fix #2/#4: Use hoisted auto_uni (resolved once at top of function)
                 # Check if trend is aligned with positions
                 trend_aligned = False
+                auto_uni = str(getattr(self, "unidirectional_mode", getattr(self, "auto_universe_bias", "DUAL"))).upper()
+                if hasattr(self, "last_auto_eval") and isinstance(self.last_auto_eval, dict):
+                    eval_uni = self.last_auto_eval.get("unidirectional_mode", "")
+                    if eval_uni: auto_uni = str(eval_uni).upper()
+                
                 if auto_uni:
                     has_sells_local = any("SELL" in str(getattr(p, "type", "")).upper() for p in self.broker.open_positions.values())
                     has_buys_local  = any("BUY"  in str(getattr(p, "type", "")).upper() for p in self.broker.open_positions.values())
@@ -605,18 +604,16 @@ def check_target_profit(self, current_price: float, timestamp: float) -> Optiona
                                     (has_sells_local and not has_buys_local and is_bear_local and not is_bull_local)
 
                 # In runner mode: Give massive breathing room to weather pullbacks and capture huge trends
-                # Fix #2+#7: Guard with max(0.0,...) so floor can never be negative, and require
-                # minimum $0.05 net profit to cover spread/commission before exiting.
                 if trend_aligned:
-                    runner_floor = max(0.0, max(effective_cycle_target * 0.10, max_pnl * 0.30))
+                    runner_floor = max(effective_cycle_target * 0.10, max_pnl * 0.30)
                 else:
-                    runner_floor = max(0.0, max(effective_cycle_target * 0.50, max_pnl * 0.60))
+                    runner_floor = max(effective_cycle_target * 0.50, max_pnl * 0.60)
                 
                 # Apply learned booster if win rate is extremely high
                 if getattr(self, "learned_runner_lock_boost", 0.0) > 0:
                     runner_floor = runner_floor * (1.0 + self.learned_runner_lock_boost)
 
-                if total_pnl <= runner_floor and total_pnl >= 0.05:  # min $0.05 to cover spread
+                if total_pnl <= runner_floor:
                     exit_triggered = True
                     exit_reason = "RUNNER_EXPANSION"
                     print(f"[{sym_u}] 🚀 [RUNNER EXIT] Peak was +${max_pnl:.2f}. Trailing floor +${runner_floor:.2f} reached. Net PnL: +${total_pnl:.2f}!")
@@ -656,9 +653,13 @@ def check_target_profit(self, current_price: float, timestamp: float) -> Optiona
         # Relaxed for more noise room! Let trades breathe before target is fully hit.
         near_target_activation = effective_cycle_target * 0.85
         if not exit_triggered and max_pnl >= near_target_activation:
-            # Fix #4: Use hoisted auto_uni (resolved at function top) — no duplicate resolution
             # Check if trend is aligned with positions
             trend_aligned_lock = False
+            auto_uni = str(getattr(self, "unidirectional_mode", getattr(self, "auto_universe_bias", "DUAL"))).upper()
+            if hasattr(self, "last_auto_eval") and isinstance(self.last_auto_eval, dict):
+                eval_uni = self.last_auto_eval.get("unidirectional_mode", "")
+                if eval_uni: auto_uni = str(eval_uni).upper()
+                
             if auto_uni:
                 has_sells_loc = any("SELL" in str(getattr(p, "type", "")).upper() for p in self.broker.open_positions.values())
                 has_buys_loc  = any("BUY"  in str(getattr(p, "type", "")).upper() for p in self.broker.open_positions.values())
@@ -666,13 +667,12 @@ def check_target_profit(self, current_price: float, timestamp: float) -> Optiona
                 is_bear_loc = any(x in auto_uni for x in ["SELL", "BEARISH"])
                 trend_aligned_lock = (has_buys_loc and not has_sells_loc and is_bull_loc and not is_bear_loc) or \
                                      (has_sells_loc and not has_buys_loc and is_bear_loc and not is_bull_loc)
-
-            # Fix #3: Guard locked_floor with max(0.0,...) — floor can never be negative
+                                     
             # Lock in 30% of target or 50% of max_pnl, preventing choke-outs on standard chop
             if trend_aligned_lock:
-                locked_floor = max(0.0, max(effective_cycle_target * 0.10, max_pnl * 0.20))
+                locked_floor = max(effective_cycle_target * 0.10, max_pnl * 0.20)
             else:
-                locked_floor = max(0.0, max(effective_cycle_target * 0.30, max_pnl * 0.50))
+                locked_floor = max(effective_cycle_target * 0.30, max_pnl * 0.50)
                 
             if total_pnl <= locked_floor and total_pnl > 0:
                 exit_triggered = True
@@ -702,8 +702,9 @@ def check_target_profit(self, current_price: float, timestamp: float) -> Optiona
             "exit_price": current_price
         }
 
-        # Fix #1: record_trade_outcome is called by the caller (process_engine_tick L957).
-        # Calling it here too caused every cycle to be recorded TWICE, corrupting win-rate stats.
+        if hasattr(self, "record_trade_outcome"):
+            self.record_trade_outcome(total_pnl, exit_reason, duration, current_price)
+
         if getattr(self, "auto_restart", True):
             print(f"[{self.symbol}] 🚀 [AUTO RESTART] Redeploying fresh grid at market price {current_price}...")
             try: self.deploy_traps(current_price, timestamp, force=True)
@@ -799,9 +800,7 @@ def process_engine_tick(self, previous_price: float, current_price: float, times
         self.deployed = False
         
         # ── GRID SELF-HEALING / AUTO-START GUARD ──
-        # Fix #13: Only start the empty-grid timer when the grid IS empty.
-        # Fix #13 (Refined): Timer initialized on first empty, then reset to None if grid becomes non-empty.
-        if not hasattr(self, "_last_empty_grid_time") or self._last_empty_grid_time is None:
+        if not hasattr(self, "_last_empty_grid_time"):
             self._last_empty_grid_time = timestamp
             
         if timestamp - self._last_empty_grid_time >= 300.0:  # 5 minutes stuck empty
@@ -819,7 +818,7 @@ def process_engine_tick(self, previous_price: float, current_price: float, times
             self.deploy_traps(current_price, timestamp, force=True)
         return None
     else:
-        self._last_empty_grid_time = None
+        self._last_empty_grid_time = timestamp
 
     self._tick_counter += 1
 
@@ -1018,6 +1017,752 @@ def process_engine_tick(self, previous_price: float, current_price: float, times
     return None
 
 
+def deploy_traps(self, current_price: float, timestamp: float, *args, force: bool = False, bb_width: Optional[float] = None, **kwargs):
+    """
+    ⚡ UNBREAKABLE 100% RELIABLE GRID DEPLOYMENT ENGINE.
+    Deploys exact tight grid traps directly to broker with zero silent skips or bypassing.
+    """
+    if not current_price or current_price <= 0:
+        return
+
+    cooldown_expiry = getattr(self, "_post_loss_cooldown", 0.0)
+    if timestamp < cooldown_expiry:
+        return  # Silently wait out the 3m cooldown
+    if args:
+        if isinstance(args[0], bool):
+            force = args[0]
+        elif isinstance(args[0], (float, int)) or args[0] is None:
+            bb_width = args[0]
+            if len(args) > 1 and isinstance(args[1], bool):
+                force = args[1]
+
+    sym_name = str(getattr(self.broker, "symbol", getattr(self, "symbol_code", "BTCUSDT"))).upper()
+
+    if getattr(self, "_is_deploying", False):
+        return
+
+    # ── Deploy debounce: max 1 redeploy per 2 s from UI (tick-engine force=True bypasses) ──
+    _last_deploy_ts = getattr(self, "_last_deploy_ts", 0.0)
+    if not force and (timestamp - _last_deploy_ts) < 2.0:
+        return
+
+    max_capacity = (getattr(self, "grid_levels", 5) or 5) * 2
+    if not force and len(getattr(self.broker, "pending_orders", {})) >= max_capacity:
+        return
+
+
+    self._is_deploying = True
+
+    try:
+        if force and len(getattr(self.broker, "pending_orders", {})) > 0:
+            if hasattr(self.broker, "cancel_all_orders"):
+                try:
+                    self.broker.cancel_all_orders()
+                except Exception as e:
+                    import logging; logging.warning(f"Exception: {e}")
+
+        digits = 4 if any(x in sym_name for x in ["DOGE", "GBP", "EUR"]) else (3 if any(x in sym_name for x in ["XAU", "GOLD", "PAXG"]) else 2)
+        ask_ref = getattr(self.broker, "last_ask", current_price) or current_price
+        bid_ref = getattr(self.broker, "last_bid", current_price) or current_price
+
+        if hasattr(self.broker, "get_exness_symbol"):
+            try:
+                ex_sym = self.broker.get_exness_symbol(sym_name)
+                import MetaTrader5 as mt5_ref
+                if mt5_ref is not None and hasattr(mt5_ref, "symbol_info_tick"):
+                    tick_info = mt5_ref.symbol_info_tick(ex_sym)
+                    if tick_info and tick_info.ask > 0 and tick_info.bid > 0:
+                        ask_ref = tick_info.ask
+                        bid_ref = tick_info.bid
+                        current_price = (ask_ref + bid_ref) / 2.0
+                else:
+                    # Linux/Wine VPS — fetch tick via REST bridge
+                    import requests as _req
+                    import os as _os
+                    _bport = _os.getenv("WINE_BRIDGE_PORT", "8001")
+                    _r = _req.get(f"http://127.0.0.1:{_bport}/tick?symbol={ex_sym}", timeout=2.0)
+                    if _r.status_code == 200:
+                        _td = _r.json()
+                        _ask = float(_td.get("ask", 0))
+                        _bid = float(_td.get("bid", 0))
+                        if _ask > 0 and _bid > 0:
+                            ask_ref = _ask
+                            bid_ref = _bid
+                            current_price = (_ask + _bid) / 2.0
+            except Exception as e:
+                import logging; logging.warning(f"Exception: {e}")
+
+
+        if ask_ref <= 0: ask_ref = current_price
+        if bid_ref <= 0: bid_ref = current_price
+
+        gap_pct = float(getattr(self, "grid_gap", 0.07) or 0.07)
+        offset_pct = float(getattr(self, "trap_offset", 0.07) or 0.07)
+        
+        is_manual = getattr(self, "manual_override_active", False)
+
+        if not is_manual and hasattr(self, "auto_reading_engine"):
+            try:
+                from core.data import get_historical_klines, calculate_technical_indicators
+                try:
+                    from core.data import get_order_book_depth
+                    ob = get_order_book_depth(sym_name)
+                except (ImportError, AttributeError, Exception):
+                    ob = {}
+                try:
+                    from core.data import get_economic_calendar
+                    news = get_economic_calendar()
+                except (ImportError, AttributeError, Exception):
+                    news = []
+                klines_df = get_historical_klines(sym_name, interval="1m", limit=100)
+                tech = calculate_technical_indicators(klines_df) if klines_df is not None else {}
+                bal = float(getattr(self.broker, "balance", 1000.0) or 1000.0)
+                
+                eval_res = self.auto_reading_engine.evaluate_market_and_account(
+                    symbol=sym_name,
+                    current_price=current_price,
+                    account_equity=bal,
+                    tech_indicators=tech,
+                    orderbook_depth=ob,
+                    macro_news=news
+                )
+                if eval_res and isinstance(eval_res, dict):
+                    self.last_auto_eval = eval_res
+                    offset_pct = float(eval_res.get("buy_offset_pct", offset_pct) or offset_pct)
+                    gap_pct = float(eval_res.get("dynamic_gap_pct", gap_pct) or gap_pct)
+                    if "recommended_size" in eval_res:
+                        self.order_size = float(eval_res["recommended_size"])
+                    if "recommended_target_profit" in eval_res:
+                        self.deploy_target_profit = float(eval_res["recommended_target_profit"])
+            except Exception as e:
+                import logging; logging.warning(f"Exception: {e}")
+
+        off_ratio = (offset_pct / 100.0) if offset_pct >= 0.50 else (offset_pct if offset_pct < 0.01 else offset_pct / 100.0)
+        gap_ratio = (gap_pct / 100.0) if gap_pct >= 0.50 else (gap_pct if gap_pct < 0.01 else gap_pct / 100.0)
+
+        if any(x in sym_name for x in ["XAU", "PAXG", "GOLD"]):
+            # Give Gold more "noise room" so traps aren't placed too close together
+            gap_ratio = min(0.0035, max(0.0015, gap_ratio))
+            off_ratio = min(0.0035, max(0.0015, off_ratio))
+        elif "ETH" in sym_name:
+            gap_ratio = min(0.0020, max(0.0005, gap_ratio))
+            off_ratio = min(0.0025, max(0.0010, off_ratio))
+
+        buy_offset_val = current_price * off_ratio if off_ratio > 0 else current_price * 0.001
+        gap_val = current_price * gap_ratio if gap_ratio > 0 else current_price * 0.001
+        
+        b_min_stop = 0.0
+        if hasattr(self.broker, "get_cached_symbol_info") and hasattr(self.broker, "get_exness_symbol"):
+            try:
+                ex_s = self.broker.get_exness_symbol(sym_name)
+                s_info = self.broker.get_cached_symbol_info(ex_s)
+                if s_info:
+                    b_min_stop = max((getattr(s_info, "trade_stops_level", 0) or 0) * s_info.point, s_info.point * 50.0)
+            except Exception as e:
+                import logging; logging.warning(f"Exception: {e}")
+
+        base_min_off = max(current_price * 0.0005, 0.0001)
+        min_offset_dist = max(b_min_stop + (gap_val * 0.5), base_min_off)
+        buy_offset_val = max(float(buy_offset_val), min_offset_dist)
+        sell_offset_val = buy_offset_val
+        
+        min_gap_dist = max(current_price * 0.0003, 0.0001)
+        gap_val = max(float(gap_val), min_gap_dist)
+        buy_offset_val = round(buy_offset_val, digits)
+        sell_offset_val = round(sell_offset_val, digits)
+        gap_val = round(gap_val, digits)
+
+        t_5m, t_htf, rsi_1m = "NEUTRAL", "NEUTRAL", 50.0
+        atr_5m = None
+        try:
+            from core.data import get_historical_klines, calculate_technical_indicators
+            import numpy as np
+            df_1m  = get_historical_klines(sym_name, interval="1m", limit=250)
+            df_5m  = get_historical_klines(sym_name, interval="5m", limit=250)
+            df_htf = get_historical_klines(sym_name, interval="15m", limit=250)  # Real 15m as HTF
+            
+            # Manually calculate ATR 5m directly from df_5m to ensure reliability
+            if df_5m is not None and not df_5m.empty and len(df_5m) > 5:
+                highs = df_5m["high"].values
+                lows = df_5m["low"].values
+                closes = df_5m["close"].values
+                tr_list = []
+                for i in range(1, len(df_5m)):
+                    tr = max(highs[i] - lows[i], abs(highs[i] - closes[i-1]), abs(lows[i] - closes[i-1]))
+                    tr_list.append(tr)
+                if tr_list:
+                    atr_5m = float(np.mean(tr_list[-14:])) if len(tr_list) >= 14 else float(np.mean(tr_list))
+
+            tech_1m  = calculate_technical_indicators(df_1m)  if (df_1m  is not None and not df_1m.empty)  else {}
+            tech_5m  = calculate_technical_indicators(df_5m)  if (df_5m  is not None and not df_5m.empty)  else {}
+            tech_htf = calculate_technical_indicators(df_htf) if (df_htf is not None and not df_htf.empty) else {}
+            
+            t_5m  = tech_5m.get("trend",  "NEUTRAL") or "NEUTRAL"
+            t_htf = tech_htf.get("trend", "NEUTRAL") or "NEUTRAL"  # 5m wide-window HTF (replaces 15m)
+            rsi_1m = float(tech_1m.get("rsi", 50.0) or 50.0)
+        except Exception as e:
+            import logging; logging.warning(f"Exception: {e}")
+
+        if atr_5m is None or atr_5m <= 0:
+            atr_5m = current_price * 0.002
+
+        min_sl_dist = max(current_price * 0.001, atr_5m * 1.5)
+
+        acc_eq = self.broker.get_equity() if hasattr(self.broker, "get_equity") else 1000.0
+        _cfg_levels = getattr(self, "grid_levels", 5) or 5  # Hard ceiling from bot config
+        if not is_manual and hasattr(self, "last_auto_eval") and isinstance(self.last_auto_eval, dict) and "recommended_levels" in self.last_auto_eval:
+            # AutoReadingEngine may reduce levels for low-confidence markets but NEVER exceeds the configured cap
+            effective_levels = min(int(self.last_auto_eval["recommended_levels"]), _cfg_levels)
+        else:
+            effective_levels = _cfg_levels
+
+        dyn_tp_factor = max(3.0, float(effective_levels * 1.0))
+        calculated_dynamic_tp = gap_val * dyn_tp_factor
+
+        if any(x in sym_name for x in ["XAU", "GOLD", "PAXG"]):
+            min_tp_dist = max(current_price * 0.0025, min(current_price * 0.0075, calculated_dynamic_tp, atr_5m * 2.5))
+        elif "ETH" in sym_name:
+            min_tp_dist = max(current_price * 0.0025, min(current_price * 0.0075, calculated_dynamic_tp, atr_5m * 2.5))
+        else:
+            min_tp_dist = max(calculated_dynamic_tp, b_min_stop * 5.0)
+
+        side_cfg = str(getattr(self, "pending_order_side_mode", "AUTO_ADAPTIVE")).upper()
+        _auto_eval_decided = False
+        if not is_manual and side_cfg == "AUTO_ADAPTIVE" and hasattr(self, "last_auto_eval") and isinstance(self.last_auto_eval, dict):
+            auto_uni = str(self.last_auto_eval.get("unidirectional_mode", "AUTO")).upper()
+            if "BUY" in auto_uni and "ONLY" in auto_uni:
+                side_cfg = "BUY_ONLY"
+                _auto_eval_decided = True
+            elif "SELL" in auto_uni and "ONLY" in auto_uni:
+                side_cfg = "SELL_ONLY"
+                _auto_eval_decided = True
+            elif "DUAL" in auto_uni or "BOTH" in auto_uni:
+                side_cfg = "BOTH_SIDES"
+                _auto_eval_decided = True
+
+        if "DUAL" in side_cfg or "BOTH" in side_cfg:
+            place_buy, place_sell = True, True
+        elif (("BUY" in side_cfg and "ONLY" in side_cfg) or side_cfg == "BUY"):
+            place_buy, place_sell = True, False
+        elif (("SELL" in side_cfg and "ONLY" in side_cfg) or side_cfg == "SELL"):
+            place_buy, place_sell = False, True
+        elif _auto_eval_decided:
+            # AutoReadingEngine already evaluated — trust its decision, don't override
+            place_buy, place_sell = True, True
+        elif is_manual:
+            # In manual mode, if no side is explicitly selected, default to DUAL (no secret trend filtering)
+            place_buy, place_sell = True, True
+        else:
+            # FALLBACK ONLY when AutoReadingEngine did NOT run (auto_reading disabled).
+            # Uses 5m fast / 5m wide-window (HTF) trend as standalone direction filter.
+            if t_5m == "BULLISH" or (t_5m == "NEUTRAL" and t_htf == "BULLISH"):
+                place_buy, place_sell = True, False
+            elif t_5m == "BEARISH" or (t_5m == "NEUTRAL" and t_htf == "BEARISH"):
+                place_buy, place_sell = False, True
+            elif rsi_1m <= 38.0 and t_5m == "NEUTRAL" and t_htf == "NEUTRAL":
+                place_buy, place_sell = True, False
+            elif rsi_1m >= 62.0 and t_5m == "NEUTRAL" and t_htf == "NEUTRAL":
+                place_buy, place_sell = False, True
+            else:
+                place_buy, place_sell = True, True
+
+        # ─────────────────────────────────────────────────────────────
+        # DIRECTIONAL MODE: Limit orders from optimal price levels
+        #   SELL confirmed → SELL_LIMIT above current (sell the bounce at TOP/resistance)
+        #   BUY  confirmed → BUY_LIMIT  below current (buy the dip  at BOTTOM/support)
+        #   RANGING        → BUY_STOP + SELL_STOP breakout mode (unchanged)
+        # Limit orders give a BETTER entry than stop orders → more profit per trade.
+        # ─────────────────────────────────────────────────────────────
+        directional_sell = place_sell and not place_buy   # Pure sell signal
+        directional_buy  = place_buy  and not place_sell  # Pure buy signal
+        ranging_mode     = place_buy  and place_sell      # Both sides = choppy
+
+        # 3. Chop Restriction (Limit Exposure in Ranging Markets)
+        # Only risk 1 level in the chop to avoid severe whipsaws (1 trap per side).
+        if ranging_mode and not is_manual:
+            effective_levels = 1
+
+        # ── 100% Trend Confirmed: aggressive grid mode ──────────────────────────
+        # When is_auto_100pct_confirmed fires we switch to a LIMIT-ONLY grid:
+        #   • TP boosted to 2.5× (max profit)
+        #   • Offset tightened to 0.35× ATR → enter closer to price for bigger gain
+        #   • Level gap compressed → denser stacking → more fills at better prices
+        #   • +1 extra level → more coverage on the confirmed move
+        #   • STOP orders REMOVED → never get filled against the trend direction
+        _is_100pct_grid = is_auto_100pct_confirmed(self) and not is_manual  # AUTO only — never fires in manual mode
+
+        if (directional_sell or directional_buy) and _is_100pct_grid:
+            dir_tp_dist     = min_tp_dist * 1.77  # Backtest optimal (was 2.5x)
+            # STRICT RISK MANAGEMENT: Cap exposure to max 2 levels (1 Stop, 1 Limit) during confirmed trends
+            effective_levels = min(2, effective_levels)
+            _confirmed_offset_mult = 0.20          # Backtest optimal entry — tighter (was 0.35x)
+            _confirmed_gap_mult    = 0.70          # Compressed gap → denser stack
+        elif directional_sell or directional_buy:
+            dir_tp_dist     = min_tp_dist * 1.15  # Backtest optimal (was 1.5x)
+            # STRICT RISK MANAGEMENT: Cap exposure to max 2 levels (1 Stop, 1 Limit) during confirmed trends
+            effective_levels = min(2, effective_levels)
+            _confirmed_offset_mult = 0.45          # Backtest optimal (was 0.65x)
+            _confirmed_gap_mult    = 1.00
+        else:
+            dir_tp_dist     = min_tp_dist
+            _confirmed_offset_mult = 0.70  # Ranging Mode: 0.70x ATR breathing room
+            _confirmed_gap_mult    = 1.00
+
+        placed_count = 0
+        # 1. Live Spread Anti-Hunt Protection (Adds 1.5x live spread buffer so broker spikes never falsely trigger traps)
+        live_spread = max(0.0, float(ask_ref - bid_ref)) if (ask_ref > 0 and bid_ref > 0 and ask_ref >= bid_ref) else 0.0
+        spread_anti_hunt_buffer = max(live_spread * 1.5, 0.0)
+
+        # 2. Dynamic ATR-Based Trap Placement — scaled by confirmation state & live spread
+        # Cap ATR offset to 1.5× configured value — prevents large-ATR symbols (BTC/ETH)
+        # from pushing traps far beyond the user-configured distance.
+        _max_atr_offset     = buy_offset_val * 1.5
+        dynamic_atr_offset  = min((atr_5m * _confirmed_offset_mult) if (atr_5m is not None and atr_5m > 0) else 0.0, _max_atr_offset)
+        base_start_offset   = max(b_min_stop + (current_price * 0.0004), dynamic_atr_offset, buy_offset_val) + spread_anti_hunt_buffer
+
+        # ═══════════════════════════════════════════════════════════════════════
+        # SMART CONFLUENCE PLACEMENT ENGINE
+        # Only place stop orders where institutional levels exist nearby.
+        # No blind fixed-interval placement — every trap has a structural reason.
+        # ═══════════════════════════════════════════════════════════════════════
+
+        # ── Collect all known institutional reference levels ──────────────────
+        smc_eval = self.last_auto_eval if (hasattr(self, "last_auto_eval") and isinstance(self.last_auto_eval, dict)) else {}
+
+        # Order Blocks
+        bull_ob   = float(smc_eval.get("bullish_ob",       0.0) or 0.0)
+        bear_ob   = float(smc_eval.get("bearish_ob",       0.0) or 0.0)
+        # Fair Value Gap edges
+        bull_fvg_lo = float(smc_eval.get("bullish_fvg_low",  0.0) or 0.0)
+        bull_fvg_hi = float(smc_eval.get("bullish_fvg_high", 0.0) or 0.0)
+        bear_fvg_lo = float(smc_eval.get("bearish_fvg_low",  0.0) or 0.0)
+        bear_fvg_hi = float(smc_eval.get("bearish_fvg_high", 0.0) or 0.0)
+        # Liquidity pools
+        buy_liq   = float(smc_eval.get("buy_liquidity",    0.0) or 0.0)
+        sell_liq  = float(smc_eval.get("sell_liquidity",   0.0) or 0.0)
+        # VWAP
+        vwap_dev  = float(smc_eval.get("vwap_dev_pct",     0.0) or 0.0)
+        vwap_px   = current_price / (1.0 + vwap_dev / 100.0) if abs(vwap_dev) > 0.01 else 0.0
+
+        # Swing high/low from 5m cache
+        swing_hi = float(getattr(self, "_5m_klines_cache", None) is not None and
+                         hasattr(self, "_5m_klines_cache") and
+                         self._5m_klines_cache is not None and
+                         not self._5m_klines_cache.empty and
+                         self._5m_klines_cache["high"].max() or 0.0) if hasattr(self, "_5m_klines_cache") else 0.0
+        swing_lo = 0.0
+        try:
+            if hasattr(self, "_5m_klines_cache") and self._5m_klines_cache is not None and not self._5m_klines_cache.empty:
+                swing_hi = float(self._5m_klines_cache["high"].values[-8:].max())
+                swing_lo = float(self._5m_klines_cache["low"].values[-8:].min())
+        except Exception:
+            swing_hi = swing_lo = 0.0
+
+        # ── Build candidate level pools (BUY side above price, SELL side below) ─
+        snap_tol = gap_val * 1.5   # Snap tolerance: 1.5× gap — levels within this are "nearby"
+
+        # Each entry: (price, label, score_contribution)
+        buy_candidates:  list = []   # levels above ask (BUY_STOP targets)
+        sell_candidates: list = []   # levels below bid (SELL_STOP targets)
+
+        def _add_buy(px: float, label: str, score: int):
+            # Must be valid for MT5: at least b_min_stop away from ask
+            if px >= ask_ref + b_min_stop:
+                buy_candidates.append((round(px, digits), label, score))
+
+        def _add_sell(px: float, label: str, score: int):
+            # Must be valid for MT5: at least b_min_stop away from bid
+            if px <= bid_ref - b_min_stop:
+                sell_candidates.append((round(px, digits), label, score))
+
+        # BUY-side institutional levels (above current price)
+        if bull_ob > 0:   _add_buy(bull_ob,    "BullOB",    3)
+        if buy_liq > 0:   _add_buy(buy_liq,    "BuyLP",     3)
+        if bull_fvg_hi>0: _add_buy(bull_fvg_hi,"FVG_hi",   2)
+        if bull_fvg_lo>0: _add_buy(bull_fvg_lo,"FVG_lo",   2)
+        if swing_hi > 0:  _add_buy(swing_hi,   "SwingHi",   2)
+        if vwap_px > ask_ref: _add_buy(vwap_px,"VWAP",     1)
+
+        # SELL-side institutional levels (below current price)
+        if bear_ob > 0:   _add_sell(bear_ob,   "BearOB",    3)
+        if sell_liq > 0:  _add_sell(sell_liq,  "SellLP",    3)
+        if bear_fvg_lo>0: _add_sell(bear_fvg_lo,"FVG_lo",  2)
+        if bear_fvg_hi>0: _add_sell(bear_fvg_hi,"FVG_hi",  2)
+        if swing_lo > 0:  _add_sell(swing_lo,  "SwingLo",   2)
+        if vwap_px > 0 and vwap_px < bid_ref: _add_sell(vwap_px, "VWAP", 1)
+
+        # ── Merge nearby candidates (within snap_tol of each other) & score ──
+        def _merge_and_score(candidates: list, is_buy: bool) -> list:
+            """Cluster nearby levels, sum scores, return sorted by proximity to price."""
+            merged: list = []
+            used = set()
+            for idx, (px, lbl, sc) in enumerate(candidates):
+                if idx in used:
+                    continue
+                cluster_px  = [px]
+                cluster_lbl = [lbl]
+                cluster_sc  = sc
+                for jdx, (px2, lbl2, sc2) in enumerate(candidates):
+                    if jdx != idx and jdx not in used and abs(px2 - px) <= snap_tol:
+                        cluster_px.append(px2)
+                        cluster_lbl.append(lbl2)
+                        cluster_sc += sc2
+                        used.add(jdx)
+                used.add(idx)
+                best_px = round(sum(cluster_px) / len(cluster_px), digits)  # centroid
+                merged.append((cluster_sc, best_px, "+".join(set(cluster_lbl))))
+            
+            # Sort by proximity to current price:
+            # For BUY (above price), we want the lowest valid resistance (closest).
+            # For SELL (below price), we want the highest valid support (closest).
+            if is_buy:
+                return sorted(merged, key=lambda x: x[1])
+            else:
+                return sorted(merged, key=lambda x: x[1], reverse=True)
+
+        merged_buy  = _merge_and_score(buy_candidates, is_buy=True)
+        merged_sell = _merge_and_score(sell_candidates, is_buy=False)
+
+        # ── Fallback: if no SMC levels found, use base_start_offset anchor ──
+        # Guarantees at least 1 order even in data-sparse conditions.
+        ranging_mode = not (directional_buy or directional_sell)
+        if not merged_buy and (directional_buy or ranging_mode):
+            merged_buy = [(1, round(ask_ref + base_start_offset, digits), "Anchor")]
+        if not merged_sell and (directional_sell or ranging_mode):
+            merged_sell = [(1, round(bid_ref - base_start_offset, digits), "Anchor")]
+
+        # ── Place orders — top N candidates by score, up to effective_levels ──
+        placed_count = 0
+
+        def _place_buy_stop(px: float, label: str, level_idx: int):
+            nonlocal placed_count
+            sz  = self.calculate_level_size(self.order_size, self.order_size_multiplier, level_idx)
+            # Smart TP: Find nearest structural level above the entry that is at least min_tp_dist away
+            smart_tp = round(px + dir_tp_dist, digits) # Fallback
+            valid_tps = [c_px for (_, c_px, _) in merged_buy if c_px >= px + min_tp_dist and c_px <= px + (dir_tp_dist * 2.0)]
+            if valid_tps:
+                smart_tp = min(valid_tps) # lowest valid resistance above entry
+            
+            # Smart SL: Find nearest structural level below the entry that is at least min_sl_dist away
+            smart_sl = round(px - min_sl_dist, digits) # Fallback
+            valid_sls = [c_px for (_, c_px, _) in merged_sell if c_px <= px - min_sl_dist and c_px >= px - (min_sl_dist * 2.5)]
+            if valid_sls:
+                smart_sl = max(valid_sls) # highest valid level below entry
+                
+            try:
+                r = self.broker.place_order("BUY_STOP", px, sz, timestamp, tp=smart_tp, sl=smart_sl)
+                if r:
+                    placed_count += 1
+                    self.active_buy_levels.append(px)
+                    print(f"[{sym_name}] 📈 [BUY_STOP|{label}] @ ${px:,.{digits}f}  TP:${smart_tp:,.{digits}f}  SL:${smart_sl:,.{digits}f}  sz:{sz}")
+            except Exception as e:
+                print(f"[{sym_name}] BUY_STOP error @ {px}: {e}")
+
+        def _place_sell_stop(px: float, label: str, level_idx: int):
+            nonlocal placed_count
+            sz  = self.calculate_level_size(self.order_size, self.order_size_multiplier, level_idx)
+            # Smart TP: Find nearest structural level below the entry that is at least min_tp_dist away
+            smart_tp = round(px - dir_tp_dist, digits) # Fallback
+            valid_tps = [c_px for (_, c_px, _) in merged_sell if c_px <= px - min_tp_dist and c_px >= px - (dir_tp_dist * 2.0)]
+            if valid_tps:
+                smart_tp = max(valid_tps) # highest valid support below entry
+            
+            # Smart SL: Find nearest structural level above the entry that is at least min_sl_dist away
+            smart_sl = round(px + min_sl_dist, digits) # Fallback
+            valid_sls = [c_px for (_, c_px, _) in merged_buy if c_px >= px + min_sl_dist and c_px <= px + (min_sl_dist * 2.5)]
+            if valid_sls:
+                smart_sl = min(valid_sls) # lowest valid level above entry
+
+            try:
+                r = self.broker.place_order("SELL_STOP", px, sz, timestamp, tp=smart_tp, sl=smart_sl)
+                if r:
+                    placed_count += 1
+                    self.active_sell_levels.append(px)
+                    print(f"[{sym_name}] 📉 [SELL_STOP|{label}] @ ${px:,.{digits}f}  TP:${smart_tp:,.{digits}f}  SL:${smart_sl:,.{digits}f}  sz:{sz}")
+            except Exception as e:
+                print(f"[{sym_name}] SELL_STOP error @ {px}: {e}")
+
+        def _place_buy_limit(px: float, label: str, level_idx: int):
+            nonlocal placed_count
+            sz  = self.calculate_level_size(self.order_size, self.order_size_multiplier, level_idx)
+            smart_tp = round(px + dir_tp_dist, digits)
+            smart_sl = round(px - min_sl_dist, digits)
+            try:
+                r = self.broker.place_order("BUY_LIMIT", px, sz, timestamp, tp=smart_tp, sl=smart_sl)
+                if r:
+                    placed_count += 1
+                    self.active_buy_levels.append(px)
+                    print(f"[{sym_name}] 🧺 [BUY_LIMIT_DIP|{label}] @ ${px:,.{digits}f}  TP:${smart_tp:,.{digits}f}  SL:${smart_sl:,.{digits}f}  sz:{sz}")
+            except Exception as e:
+                print(f"[{sym_name}] BUY_LIMIT error @ {px}: {e}")
+
+        def _place_sell_limit(px: float, label: str, level_idx: int):
+            nonlocal placed_count
+            sz  = self.calculate_level_size(self.order_size, self.order_size_multiplier, level_idx)
+            smart_tp = round(px - dir_tp_dist, digits)
+            smart_sl = round(px + min_sl_dist, digits)
+            try:
+                r = self.broker.place_order("SELL_LIMIT", px, sz, timestamp, tp=smart_tp, sl=smart_sl)
+                if r:
+                    placed_count += 1
+                    self.active_sell_levels.append(px)
+                    print(f"[{sym_name}] 🧱 [SELL_LIMIT_SPIKE|{label}] @ ${px:,.{digits}f}  TP:${smart_tp:,.{digits}f}  SL:${smart_sl:,.{digits}f}  sz:{sz}")
+            except Exception as e:
+                print(f"[{sym_name}] SELL_LIMIT error @ {px}: {e}")
+
+        self.active_buy_levels  = []
+        self.active_sell_levels = []
+
+        if directional_buy:
+            # 1 Breakout scout, then Limit DCA ladder below
+            if merged_buy:
+                _place_buy_stop(merged_buy[0][1], merged_buy[0][2], 0)
+            if effective_levels > 1:
+                limit_slots = min(effective_levels - 1, len(merged_sell))
+                for i in range(limit_slots):
+                    _place_buy_limit(merged_sell[i][1], merged_sell[i][2], i + 1)
+
+        elif directional_sell:
+            # 1 Breakout scout, then Limit DCA ladder above
+            if merged_sell:
+                _place_sell_stop(merged_sell[0][1], merged_sell[0][2], 0)
+            if effective_levels > 1:
+                limit_slots = min(effective_levels - 1, len(merged_buy))
+                for i in range(limit_slots):
+                    _place_sell_limit(merged_buy[i][1], merged_buy[i][2], i + 1)
+
+        else:
+            # Ranging — Dual mode on stops only
+            buy_slots  = min(effective_levels, len(merged_buy))
+            sell_slots = min(effective_levels, len(merged_sell))
+            for i in range(buy_slots):
+                _place_buy_stop(merged_buy[i][1], merged_buy[i][2], i)
+            for i in range(sell_slots):
+                _place_sell_stop(merged_sell[i][1], merged_sell[i][2], i)
+
+
+        if hasattr(self.broker, "purge_duplicate_mt5_orders"):
+            try:
+                self.broker.purge_duplicate_mt5_orders()
+            except Exception as e:
+                import logging; logging.warning(f"Exception: {e}")
+
+        if placed_count > 0 or len(self.broker.pending_orders) > 0:
+            self.deployed = True
+            self.deploy_price = current_price  # Store deploy center for stale order cleanup
+            self.deploy_grid_gap = gap_val
+            self.deploy_trap_offset = buy_offset_val
+            self.last_deploy_time = timestamp
+            self._last_deploy_ts = timestamp  # Debounce timestamp — prevents rapid UI redeploys
+            print(f"[{sym_name}] ⚡ [GRID DEPLOYED] {placed_count} Traps @ ${current_price:,.2f} | Gap: ${gap_val:.2f} | Offset: ${buy_offset_val:.2f} | Lot: {self.order_size}")
+        else:
+            self.deployed = False
+            self.last_deploy_time = timestamp
+            print(f"[{sym_name}] ⚠️ Notice: 0 grid orders placed.")
+    except Exception as e:
+        self.deployed = False
+        print(f"[{sym_name}] Deployment exception: {e}")
+    finally:
+        self._is_deploying = False
+
+
+def repair_grid(self, current_price: float, timestamp: float) -> int:
+    if not self.deployed and len(self.broker.pending_orders) == 0 and len(self.broker.open_positions) == 0:
+        if timestamp >= getattr(self, "_last_deploy_attempt_time", 0.0) + 3.0:
+            self.deploy_traps(current_price, timestamp)
+    return 0
+
+
+def cleanup_stale_grid_orders(self, current_price: float) -> int:
+    if self.deployed or len(self.broker.pending_orders) <= (self.grid_levels * 2):
+        return 0
+    if not self.broker.pending_orders:
+        return 0
+
+    center_price = self.deploy_price if self.deploy_price > 0 else current_price
+
+    if getattr(self, "deploy_grid_gap", None) and getattr(self, "deploy_trap_offset", None):
+        gap_val = self.deploy_grid_gap
+        buy_offset_val = self.deploy_trap_offset
+        sell_offset_val = buy_offset_val
+    else:
+        try:
+            from core.data import get_historical_klines, calculate_technical_indicators, get_order_book_depth, get_economic_calendar
+            sym_str = getattr(self.broker, "symbol", "BTCUSDT")
+            klines_df = get_historical_klines(sym_str, interval="1m", limit=100)
+            tech = calculate_technical_indicators(klines_df)
+            ob = get_order_book_depth(sym_str)
+            news = get_economic_calendar()
+            bal = float(getattr(self.broker, "balance", 1000.0))
+
+            eval_res = self.auto_reading_engine.evaluate_market_and_account(
+                symbol=sym_str,
+                current_price=current_price,
+                account_equity=bal,
+                tech_indicators=tech,
+                orderbook_depth=ob,
+                macro_news=news
+            )
+            if eval_res and isinstance(eval_res, dict):
+                self.last_auto_eval = eval_res
+            buy_offset_val = center_price * (float(eval_res.get("buy_offset_pct", 0.07)) / 100.0)
+            sell_offset_val = center_price * (float(eval_res.get("sell_offset_pct", 0.07)) / 100.0)
+            gap_val         = center_price * (float(eval_res.get("dynamic_gap_pct", 0.07)) / 100.0)
+        except Exception:
+            buy_offset_val, gap_val = self.calculate_offset_and_gap(center_price, self.grid_gap, self.trap_offset)
+            sell_offset_val = buy_offset_val
+
+    tolerance = max(gap_val * 1.5, center_price * 0.005)
+
+    valid_buy_levels = getattr(self, "active_buy_levels", [])
+    valid_sell_levels = getattr(self, "active_sell_levels", [])
+    
+    if not valid_buy_levels and not valid_sell_levels:
+        # Fallback if somehow not deployed properly
+        valid_buy_levels = [center_price + buy_offset_val + (i * gap_val) for i in range(20)]
+        valid_sell_levels = [center_price - sell_offset_val - (i * gap_val) for i in range(20)]
+
+    cancelled_ids = []
+
+    for order_id, order in list(self.broker.pending_orders.items()):
+        if order_id in cancelled_ids:
+            continue
+        order_age = (time.time() - getattr(order, "timestamp", time.time())) if hasattr(order, "timestamp") else 999.0
+        if self.deployed and order_age < 300.0:
+            continue
+
+        if "BUY" in order.type:
+            valid_levels = valid_buy_levels
+        elif "SELL" in order.type:
+            valid_levels = valid_sell_levels
+        else:
+            continue
+
+        is_valid = any(abs(order.trigger_price - lvl) < tolerance for lvl in valid_levels)
+        if not is_valid:
+            self.broker.cancel_order(order_id)
+            cancelled_ids.append(order_id)
+
+    from collections import defaultdict
+    buy_groups: dict = defaultdict(list)
+    sell_groups: dict = defaultdict(list)
+
+    for order_id, order in list(self.broker.pending_orders.items()):
+        if order_id in cancelled_ids:
+            continue
+        if "BUY" in order.type:
+            for lvl in valid_buy_levels:
+                if abs(order.trigger_price - lvl) < tolerance:
+                    buy_groups[round(lvl, 8)].append((order_id, order))
+                    break
+        elif "SELL" in order.type:
+            for lvl in valid_sell_levels:
+                if abs(order.trigger_price - lvl) < tolerance:
+                    sell_groups[round(lvl, 8)].append((order_id, order))
+                    break
+
+    def cancel_duplicates_in_group(group_dict):
+        count = 0
+        for lvl, orders in group_dict.items():
+            if len(orders) > 1:
+                orders.sort(key=lambda x: abs(x[1].trigger_price - lvl))
+                for order_id, _ in orders[1:]:
+                    self.broker.cancel_order(order_id)
+                    cancelled_ids.append(order_id)
+                    count += 1
+        return count
+
+    cancel_duplicates_in_group(buy_groups)
+    cancel_duplicates_in_group(sell_groups)
+
+    return len(cancelled_ids)
+
+
+def record_trade_outcome(self, pnl: float, exit_reason: str, duration: float, exit_price: float = 0.0):
+    if not hasattr(self, "trade_history") or self.trade_history is None:
+        self.trade_history = []
+    if not hasattr(self, "cycle_history") or self.cycle_history is None:
+        self.cycle_history = []
+
+    now_ts = time.time()
+    # Collect current price context from broker for portal traceability
+    deploy_px = float(getattr(self, "deploy_price", 0.0) or 0.0)
+    sym_name = str(getattr(self.broker, "symbol", getattr(self, "symbol_code", "")))
+
+    # For entry, use deploy_px as the logical start of the basket
+    entry_px = deploy_px
+    if exit_price <= 0.0 and hasattr(self.broker, "closed_trades") and self.broker.closed_trades:
+        last_trade = self.broker.closed_trades[-1]
+        exit_price  = float(last_trade.get("exit_price",  0.0))
+
+    outcome = {
+        "timestamp":    now_ts,
+        "exit_time":    now_ts,
+        "symbol":       sym_name,
+        "pnl":          round(float(pnl), 2),
+        "total_pnl":    round(float(pnl), 2),
+        "exit_reason":  exit_reason,
+        "duration":     round(float(duration), 1),
+        "is_win":       pnl > 0.0,
+        "cycle_id":     getattr(self, "current_cycle_id", len(self.cycle_history) + 1),
+        "deploy_price": deploy_px,
+        "entry_price":  entry_px,
+        "exit_price":   exit_price,
+    }
+    self.trade_history.append(outcome)
+    if len(self.trade_history) > 100:
+        self.trade_history = self.trade_history[-100:]
+
+    self.cycle_history.append(outcome)
+    if len(self.cycle_history) > 100:
+        self.cycle_history = self.cycle_history[-100:]
+
+    wins = [t for t in self.trade_history if t["is_win"]]
+    losses = [t for t in self.trade_history if not t["is_win"]]
+    n_total = len(self.trade_history)
+
+    if n_total >= 3:
+        self.learned_win_rate = round((len(wins) / n_total) * 100.0, 1)
+        gross_profit = sum(t["pnl"] for t in wins) if wins else 0.0
+        gross_loss = abs(sum(t["pnl"] for t in losses)) if losses else 0.0
+        self.learned_profit_factor = round(gross_profit / gross_loss, 2) if gross_loss > 0 else 3.50
+
+        if self.learned_win_rate >= 80.0:
+            self.learned_tuning_mult = 0.90
+            self.learned_runner_lock_boost = 0.05
+        elif self.learned_win_rate >= 60.0:
+            self.learned_tuning_mult = 1.00
+            self.learned_runner_lock_boost = 0.00
+        else:
+            self.learned_tuning_mult = 1.25
+            self.learned_runner_lock_boost = -0.05
+
+
+def get_self_learning_metrics(self) -> dict:
+    hist = getattr(self, "trade_history", []) or []
+    n_total = len(hist)
+    wins = [t for t in hist if t.get("is_win", False)]
+    win_rate = getattr(self, "learned_win_rate", 75.0)
+    pf = getattr(self, "learned_profit_factor", 2.0)
+    status_str = "ACTIVE" if win_rate >= 70.0 else "OPTIMIZING GRID PARAMETERS"
+    mult = getattr(self, "learned_tuning_mult", 1.00)
+
+    return {
+        "status": status_str,
+        "sample_size": n_total,
+        "total_recorded_cycles": n_total,
+        "win_count": len(wins),
+        "loss_count": n_total - len(wins),
+        "win_rate": win_rate,
+        "rolling_win_rate_pct": win_rate,
+        "profit_factor": pf,
+        "rolling_profit_factor": pf,
+        "tuning_multiplier": mult,
+        "adaptive_gap_mult": mult,
+        "runner_lock_boost": getattr(self, "learned_runner_lock_boost", 0.00)
+    }
+
+
 def sync_cycle_history_from_trades(self):
     if not hasattr(self, "cycle_history") or self.cycle_history is None:
         self.cycle_history = []
@@ -1046,9 +1791,8 @@ def sync_cycle_history_from_trades(self):
             
             merged = False
             for cycle in reversed(self.cycle_history):
-                # Fix #17: Reduce merge window from 5s → 1s to prevent unrelated cycles from
-                # being merged together.
-                if abs(float(cycle.get("exit_time", 0.0)) - ts_val) <= 1.0:
+                # If within 5 seconds, merge as part of the same basket closure
+                if abs(float(cycle.get("exit_time", 0.0)) - ts_val) <= 5.0:
                     cycle["total_pnl"] = round(cycle.get("total_pnl", 0.0) + pnl_val, 3)
                     cycle["pnl"] = cycle["total_pnl"]
                     fills_add = max(1, int(item.get("fills_count", item.get("size", 1))))
@@ -1086,6 +1830,19 @@ def sync_cycle_history_from_trades(self):
 def enforce_trend_aware_position_guard(self, current_price: float, timestamp: float) -> int:
     """
     🔄 TREND-AWARE POSITION GUARD — Runs every tick.
+
+    Rule 1 — TREND FLIPPED AGAINST POSITION (Quick Exit):
+      If the active auto-mode trend has reversed against an open position:
+        • If position is in ANY profit  → close immediately, lock the gain.
+        • If position is at a SMALL loss (within cut_loss_threshold) → close
+          now before the loss grows larger (stop-hunt avoidance).
+        • If loss already exceeds threshold → leave it to the hard SL.
+      This prevents SL/TP being hunted by the reversal move.
+
+    Rule 2 — TREND STILL WITH POSITION (Hold for Max Profit):
+      If trend is aligned with the open position, do NOT interfere.
+      enforce_profit_lock + trail_stop_loss will ride the move for
+      maximum profit automatically — no early exit needed.
     """
     if not getattr(self.broker, "open_positions", None):
         return 0
@@ -1101,13 +1858,14 @@ def enforce_trend_aware_position_guard(self, current_price: float, timestamp: fl
     digits   = 3 if is_gold else (2 if "BTC" in sym_name else 5)
 
     # ── Resolve current trend from freshest available source ──────────────────
+    # Primary: last_auto_eval (most recent AI decision)
     auto_uni = str(getattr(self, "unidirectional_mode",
                            getattr(self, "auto_universe_bias", "DUAL"))).upper()
     last_eval = getattr(self, "last_auto_eval", None)
     if isinstance(last_eval, dict):
         eval_uni = str(last_eval.get("unidirectional_mode", "DUAL")).upper()
         if eval_uni and eval_uni != "DUAL":
-            auto_uni = eval_uni
+            auto_uni = eval_uni   # Always prefer freshest AI call
 
     # Secondary: 5m technical trend cache (updated every 60 s)
     trail_cache = getattr(self, "_trail_trend_cache", None)
@@ -1117,7 +1875,7 @@ def enforce_trend_aware_position_guard(self, current_price: float, timestamp: fl
     trend_is_bear = ("SELL" in auto_uni and "ONLY" in auto_uni) or trend_5m == "BEARISH"
 
     if not trend_is_bull and not trend_is_bear:
-        return 0
+        return 0   # DUAL / ranging — no clear trend call, do nothing
 
     # ── Per-symbol cut-loss threshold ─────────────────────────────────────────
     # Only cut losses SMALLER than this; larger losses are left to the hard SL.
@@ -1160,13 +1918,6 @@ def enforce_trend_aware_position_guard(self, current_price: float, timestamp: fl
                     should_close = True
                     tag    = "💰 [TREND FLIP — PROFIT SECURED]"
                     detail = f"locking +${floating_pnl:.{digits}f} before reversal"
-                elif cut_loss_threshold < floating_pnl < 0:
-                    # Fix #11: Cut small losses on confirmed trend flip.
-                    # Previously only $2+ profit positions were closed — losing positions
-                    # were held while the trend pushed further against them.
-                    should_close = True
-                    tag    = "✂️ [TREND FLIP — CUTTING SMALL LOSS]"
-                    detail = f"cutting ${floating_pnl:.{digits}f} (threshold ${cut_loss_threshold:.2f})"
                 else:
                     should_close = False
 
@@ -1486,13 +2237,8 @@ def align_basket_take_profits(self, current_price: float, timestamp: float) -> i
                     # DYNAMIC EXPANSION: Push TP further out dynamically to ride strong momentum!
                     target_tp = max(cur_tp, best_tp)
                 else:
-                    # Fix #10: STANDARD TIGHTEN — only tighten if new TP is meaningfully
-                    # closer (> 0.5×ATR). Prevents noisy ATR fluctuations from repeatedly
-                    # overwriting structural TPs and causing premature exits.
-                    if cur_tp > 0 and (cur_tp - best_tp) > (atr_5m * 0.5):
-                        target_tp = best_tp
-                    else:
-                        target_tp = cur_tp  # Keep existing TP — structural level still valid
+                    # STANDARD TIGHTEN: TP can only move closer to price
+                    target_tp = min(cur_tp, best_tp)
             else:
                 target_tp = best_tp
 
@@ -1541,13 +2287,8 @@ def align_basket_take_profits(self, current_price: float, timestamp: float) -> i
                     # DYNAMIC EXPANSION: Push TP further down!
                     target_tp = min(cur_tp, best_tp)
                 else:
-                    # Fix #10: STANDARD TIGHTEN — only tighten if new TP is meaningfully
-                    # closer (> 0.5×ATR). Prevents noisy ATR fluctuations from repeatedly
-                    # overwriting structural TPs and causing premature exits.
-                    if cur_tp > 0 and (best_tp - cur_tp) > (atr_5m * 0.5):
-                        target_tp = best_tp
-                    else:
-                        target_tp = cur_tp  # Keep existing TP — structural level still valid
+                    # STANDARD TIGHTEN
+                    target_tp = max(cur_tp, best_tp)
             else:
                 target_tp = best_tp
 

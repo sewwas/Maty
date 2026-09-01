@@ -322,12 +322,15 @@ class BreakoutGridBot:
             if size <= prev_size:
                 size = prev_size + 0.01
 
-            size = min(size, 0.02)
+            # Fix #9: Raise the DCA size cap from 0.02 → 0.10 so the martingale
+            # multiplier actually works across levels. Gold (XAUUSD) will still be
+            # clamped to 0.03 by sanitize_order_size() and auto_reading clamp_symbol_lot_size().
+            size = min(size, 0.10)
         else:
             if size < 0.01:
                 size = 0.01
 
-        return round(min(size, 0.02), 2)
+        return round(min(size, 0.10), 2)
 
     def ensure_attributes_initialized(self):
         if not hasattr(self, "_spacing_mode"):
