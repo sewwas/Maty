@@ -356,15 +356,15 @@ class AutoReadingEngine:
             else:
                 unidirectional_mode = "DUAL"
             # 5. SMART MONEY CONCEPTS (SMC) OVERRIDE - KILL ZONE FILTERED
-            # Only allow SMC to override if there is no strong trend. SMC is for fading liquidity, not fighting momentum.
-            if not is_strong_trend:
-                if session_name in ["LONDON", "NY", "NY_OVERLAP"]:
-                    if sweep.get('type') == 'BULLISH_SWEEP' or fvg.get('type') == 'BULLISH_FVG' or ob.get('type') == 'BULLISH_OB':
-                        unidirectional_mode = "BUY_ONLY"
-                        top_bottom_status = "SMC_BULLISH_TRAP"
-                    elif sweep.get('type') == 'BEARISH_SWEEP' or fvg.get('type') == 'BEARISH_FVG' or ob.get('type') == 'BEARISH_OB':
-                        unidirectional_mode = "SELL_ONLY"
-                        top_bottom_status = "SMC_BEARISH_TRAP"
+            # DISABLED: User requested to stop fading breakouts (trading against momentum).
+            # if not is_strong_trend:
+            #     if session_name in ["LONDON", "NY", "NY_OVERLAP"]:
+            #         if sweep.get('type') == 'BULLISH_SWEEP' or fvg.get('type') == 'BULLISH_FVG' or ob.get('type') == 'BULLISH_OB':
+            #             unidirectional_mode = "BUY_ONLY"
+            #             top_bottom_status = "SMC_BULLISH_TRAP"
+            #         elif sweep.get('type') == 'BEARISH_SWEEP' or fvg.get('type') == 'BEARISH_FVG' or ob.get('type') == 'BEARISH_OB':
+            #             unidirectional_mode = "SELL_ONLY"
+            #             top_bottom_status = "SMC_BEARISH_TRAP"
 
         now_ts = time.time()
         
