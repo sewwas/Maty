@@ -2655,3 +2655,11 @@ except Exception as rerun_err:
         st.rerun()
     except Exception as e:
         import logging; logging.warning(f"Exception: {e}")
+
+    try:
+        import json
+        with open('debug_cycles.json', 'w') as f:
+            f.write(json.dumps([c for c in cycles_list], default=str))
+    except:
+        pass
+

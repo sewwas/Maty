@@ -1479,7 +1479,7 @@ class MT5Broker:
                 try:
                     import requests
                     bridge_port = os.getenv("WINE_BRIDGE_PORT", "8001")
-                    r_h = requests.get(f"http://127.0.0.1:{bridge_port}/history?days={days}&magic={self.magic_number}", timeout=2.0)
+                    r_h = requests.get(f"http://127.0.0.1:{bridge_port}/history?days={days}", timeout=2.0)
                     if r_h.status_code == 200:
                         d_data = r_h.json()
                         raw_deals = d_data.get("deals", [])
@@ -1507,7 +1507,8 @@ class MT5Broker:
 
                 for d in deals:
                     d_sym = str(getattr(d, "symbol", "")).upper()
-                    if getattr(d, "magic", self.magic_number) != self.magic_number:
+                    d_magic = getattr(d, "magic", self.magic_number)
+                    if d_magic != self.magic_number and d_magic != 0:
                         continue
                     if d_sym and (d_sym in target_syms or any(ts in d_sym or d_sym in ts for ts in target_syms if ts)):
                         if not is_cent_account and any(d_sym.endswith(s) for s in ["C", "MICRO"]):
