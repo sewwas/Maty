@@ -544,8 +544,24 @@ def check_target_profit(self, current_price: float, timestamp: float) -> Optiona
     total_pnl = self.broker.get_floating_pnl(current_price)  # Use real MT5 profit (includes spread, swap, commission)
     duration = timestamp - getattr(self, "cycle_start_time", timestamp)
 
-    target_prof = float(getattr(self, "target_profit", 3.0) or 3.0)
-    effective_target = max(0.50, target_prof)
+    sym_u = str(getattr(self.broker, "symbol", getattr(self, "symbol_code", ""))).upper()
+    
+    # Auto-detect Cent (USC) logic
+    is_cent_account = False
+    acc_info = getattr(self.broker, "get_account_info", lambda: None)()
+    if acc_info:
+        currency = str(getattr(acc_info, "currency", "")).upper()
+        if currency in ["USC", "USX", "EUC", "GBPC"]:
+            is_cent_account = True
+            
+    # Fallback suffix check for cent accounts
+    if not is_cent_account and any(sym_u.endswith(s) for s in ["C", "MICRO"]):
+        is_cent_account = True
+
+    cent_multiplier = 100.0 if is_cent_account else 1.0
+
+    target_prof = float(getattr(self, "target_profit", 3.0) or 3.0) * cent_multiplier
+    effective_target = max(0.50 * cent_multiplier, target_prof)
 
     if total_pnl > getattr(self, "max_floating_pnl", -float("inf")):
         self.max_floating_pnl = total_pnl
@@ -573,7 +589,7 @@ def check_target_profit(self, current_price: float, timestamp: float) -> Optiona
     if not is_manual:
         # Extreme Drawdown (Catastrophic Fallback Protection)
         if not exit_triggered:
-            max_cycle_dd = float(getattr(self, "max_cycle_drawdown", 30.0) or 30.0)
+            max_cycle_dd = float(getattr(self, "max_cycle_drawdown", 30.0) or 30.0) * cent_multiplier
             extreme_dd = max_cycle_dd * 3.0
             if total_pnl <= -abs(extreme_dd):
                 exit_triggered = True
@@ -588,7 +604,7 @@ def check_target_profit(self, current_price: float, timestamp: float) -> Optiona
     # Standard Stop Loss
     # ─────────────────────────────────────────────────────────────
     if not exit_triggered:
-        sl_limit = float(getattr(self, "stop_loss", 0.0) or 0.0)
+        sl_limit = float(getattr(self, "stop_loss", 0.0) or 0.0) * cent_multiplier
         if sl_limit > 0:
             # Re-enabling lot scaling to prevent immediate stop out on deeper grids
             total_vol = sum(float(getattr(p, "size", 0.01)) for p in self.broker.open_positions.values())
@@ -602,21 +618,7 @@ def check_target_profit(self, current_price: float, timestamp: float) -> Optiona
     # ─────────────────────────────────────────────────────────────
     # Basket Target Profit (Cycle Exit)
     # ─────────────────────────────────────────────────────────────
-    sym_u = str(getattr(self.broker, "symbol", getattr(self, "symbol_code", ""))).upper()
-    
-    # Auto-detect Cent (USC) logic
-    is_cent_account = False
-    acc_info = getattr(self.broker, "get_account_info", lambda: None)()
-    if acc_info:
-        currency = str(getattr(acc_info, "currency", "")).upper()
-        if currency in ["USC", "USX", "EUC", "GBPC"]:
-            is_cent_account = True
-            
-    # Fallback suffix check for cent accounts
-    if not is_cent_account and any(sym_u.endswith(s) for s in ["C", "MICRO"]):
-        is_cent_account = True
-
-    cent_multiplier = 100.0 if is_cent_account else 1.0
+    # Cent logic is hoisted to the top of the function
 
     min_profit_threshold = 0.50 * cent_multiplier  # Minimum gross profit to close a cycle, mitigating fee attrition
     if not exit_triggered:
@@ -631,7 +633,7 @@ def check_target_profit(self, current_price: float, timestamp: float) -> Optiona
         default_target = (base_target * micro_lots) * cent_multiplier
         
         raw_ai_target = float(getattr(self, "deploy_target_profit", 0.0) or 0.0)
-        ai_target = (raw_ai_target * micro_lots) if raw_ai_target > 0 else 0.0
+        ai_target = (raw_ai_target * micro_lots) * cent_multiplier if raw_ai_target > 0 else 0.0
         
         raw_user_target = float(getattr(self, "target_profit", 0.0) or 0.0)
         user_target = (raw_user_target * micro_lots) * cent_multiplier if raw_user_target > 0 else 0.0
