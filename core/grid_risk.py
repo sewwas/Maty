@@ -560,8 +560,11 @@ def check_target_profit(self, current_price: float, timestamp: float) -> Optiona
 
     cent_multiplier = 100.0 if is_cent_account else 1.0
 
-    target_prof = float(getattr(self, "target_profit", 3.0) or 3.0) * cent_multiplier
-    effective_target = max(0.50 * cent_multiplier, target_prof)
+    total_volume = sum(float(getattr(p, "size", 0.01)) for p in self.broker.open_positions.values())
+    micro_lots = total_volume / 0.01
+
+    target_prof = float(getattr(self, "target_profit", 3.0) or 3.0) * cent_multiplier * micro_lots
+    effective_target = max(0.50 * cent_multiplier * micro_lots, target_prof)
 
     if total_pnl > getattr(self, "max_floating_pnl", -float("inf")):
         self.max_floating_pnl = total_pnl
@@ -620,12 +623,8 @@ def check_target_profit(self, current_price: float, timestamp: float) -> Optiona
     # ─────────────────────────────────────────────────────────────
     # Cent logic is hoisted to the top of the function
 
-    min_profit_threshold = 0.50 * cent_multiplier  # Minimum gross profit to close a cycle, mitigating fee attrition
+    min_profit_threshold = 0.50 * cent_multiplier * micro_lots  # Minimum gross profit to close a cycle, mitigating fee attrition
     if not exit_triggered:
-        # Calculate total open volume in the basket
-        total_volume = sum(float(getattr(p, "size", 0.01)) for p in self.broker.open_positions.values())
-        micro_lots = total_volume / 0.01
-        
         # Base target per 0.01 lot (e.g. $10 for Gold, $3 for others)
         base_target = 10.0 if any(x in sym_u for x in ["XAU", "GOLD", "PAXG"]) else 3.0
         
@@ -665,6 +664,7 @@ def check_target_profit(self, current_price: float, timestamp: float) -> Optiona
         self.in_runner_mode = False
         self.max_floating_pnl = -float("inf")
         self._max_open_in_cycle = 0
+        self._basket_max_pnl = 0.0
 
         summary = {
             "cycle_id": getattr(self, "current_cycle_id", 1),
