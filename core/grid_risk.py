@@ -903,6 +903,9 @@ def process_engine_tick(self, previous_price: float, current_price: float, times
     current_open = sum(1 for p in getattr(self.broker, "open_positions", {}).values() if getattr(p, "symbol", sym_name) == sym_name)
 
     if current_open > getattr(self, "_max_open_in_cycle", 0):
+        if getattr(self, "_max_open_in_cycle", 0) == 0:
+            self._cycle_start_realized_pnl = getattr(self.broker, "realized_pnl", 0.0)
+            self._cycle_start_time = timestamp
         self._max_open_in_cycle = current_open
 
     last_pending = getattr(self, "_last_pending_count", current_pending)
@@ -929,6 +932,16 @@ def process_engine_tick(self, previous_price: float, current_price: float, times
         self._last_synced_uni_mode = curr_uni
 
     if needs_refresh:
+        if refresh_reason == "Position cycle completed":
+            cycle_start_pnl = getattr(self, "_cycle_start_realized_pnl", getattr(self.broker, "realized_pnl", 0.0))
+            cycle_pnl = getattr(self.broker, "realized_pnl", 0.0) - cycle_start_pnl
+            
+            if abs(cycle_pnl) > 0.01:
+                reason = "NATIVE_SL" if cycle_pnl < 0 else "NATIVE_TP"
+                dur = timestamp - getattr(self, "_cycle_start_time", timestamp)
+                self.record_trade_outcome(cycle_pnl, reason, dur, current_price)
+                self.current_cycle_id = getattr(self, "current_cycle_id", 1) + 1
+                
         print(f"[{self.symbol}] 🔄 [GRID REFRESH] {refresh_reason}. Canceling {current_pending} pending orders to deploy fresh grid.")
         try:
             if hasattr(self.broker, "cancel_all_orders"):
@@ -1354,9 +1367,11 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
         ranging_mode     = place_buy  and place_sell      # Both sides = choppy
 
         # 3. Chop Restriction (Limit Exposure in Ranging Markets)
-        # Only risk 1 level in the chop to avoid severe whipsaws (1 trap per side).
+        # USER REQUEST: Do not deploy in ranging market without clear trend confirmation.
         if ranging_mode and not is_manual:
-            effective_levels = 1
+            print(f"[{self.symbol}] ⏳ [TREND WAIT] Market is ranging. Waiting for clear trend confirmation before deploying.")
+            self._is_deploying = False
+            return
 
         # ── 100% Trend Confirmed: aggressive grid mode ──────────────────────────
         # When is_auto_100pct_confirmed fires we place 3 orders (2 Stops + 1 Limit):
