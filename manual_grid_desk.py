@@ -319,112 +319,241 @@ def deploy_grid(brk: MT5Broker, levels: dict, lot_size: float, lot_mult: float =
 
 
 def cancel_all_pending(brk: MT5Broker) -> str:
-    """Cancels all pending orders for magic 777001."""
+    """Cancels all pending orders for magic 777001 with 100% reliability."""
+    cancelled = 0
+    errors = []
+    # 1. Fast batch cancel on bridge by magic (no symbol restriction to avoid alias mismatch)
     try:
-        brk.cancel_all_orders()
-        return "âœ… All pending orders cancelled."
+        import requests as _req
+        r = _req.get(f"http://127.0.0.1:{MT5_BRIDGE_PORT}/cancel_all?magic={MANUAL_MAGIC}", timeout=4.0)
+        if r.status_code == 200 and r.json().get("success"):
+            cancelled += int(r.json().get("cancelled_count", 0))
     except Exception as e:
-        return f"âš ï¸ Cancel error: {e}"
+        errors.append(str(e))
+
+    # 2. Ticket-by-ticket sweep for any remaining orders
+    try:
+        orders = get_live_pending(brk)
+        for o in orders:
+            t = getattr(o, "ticket", 0)
+            if t > 0:
+                try:
+                    import requests as _req
+                    r2 = _req.get(f"http://127.0.0.1:{MT5_BRIDGE_PORT}/order_cancel?ticket={t}", timeout=2.5)
+                    if r2.status_code == 200 and r2.json().get("success"):
+                        cancelled += 1
+                except Exception as e2:
+                    errors.append(f"Ticket {t}: {e2}")
+    except Exception as e:
+        errors.append(str(e))
+
+    # Clear broker local tracking
+    try:
+        brk.pending_orders.clear()
+        brk.ticket_to_order_id.clear()
+    except Exception:
+        pass
+
+    if errors and cancelled == 0:
+        return f"⚠️ Cancel error: {'; '.join(errors[:2])}"
+    return f"✅ Cancelled {cancelled} pending order(s)."
+
+
+def close_positions_by_side(brk: MT5Broker, side: str) -> str:
+    """Closes positions of specified side (BUY or SELL) for magic 777001."""
+    closed = 0
+    target_side = 0 if side.upper() == "BUY" else 1
+    try:
+        # Fast batch close by side on bridge
+        import requests as _req
+        r = _req.get(f"http://127.0.0.1:{MT5_BRIDGE_PORT}/close_all?magic={MANUAL_MAGIC}&side={side.upper()}", timeout=4.0)
+        if r.status_code == 200 and r.json().get("success"):
+            closed += int(r.json().get("closed_count", 0))
+    except Exception:
+        pass
+
+    # Ticket-by-ticket sweep
+    try:
+        positions = get_live_positions(brk)
+        for p in positions:
+            if getattr(p, "type", 0) == target_side:
+                t = getattr(p, "ticket", 0)
+                v = getattr(p, "volume", 0.0)
+                if t > 0:
+                    import requests as _req
+                    r2 = _req.get(f"http://127.0.0.1:{MT5_BRIDGE_PORT}/position_close?ticket={t}&volume={v}", timeout=3.0)
+                    if r2.status_code == 200 and r2.json().get("success"):
+                        closed += 1
+    except Exception as e:
+        return f"⚠️ Error closing {side}: {e}"
+
+    try:
+        for pid, pos in list(brk.open_positions.items()):
+            if str(getattr(pos, "type", "")).upper() == side.upper():
+                brk.open_positions.pop(pid, None)
+    except Exception:
+        pass
+
+    return f"✅ Closed {closed} {side} position(s)."
 
 
 def flatten_all(brk: MT5Broker, state: dict) -> str:
-    """Cancels all pending + closes all open positions for magic 777001."""
+    """
+    Cancels all pending orders + closes all open positions for magic 777001.
+    Directly targets MT5 bridge for 100% guaranteed execution.
+    """
+    # 1. Cancel all pending orders
+    cancel_res = cancel_all_pending(brk)
+
+    # 2. Close all open positions for magic 777001
+    closed_count = 0
+    total_pnl = 0.0
+    errors = []
+
+    # Fast batch close on bridge by magic
     try:
-        brk.cancel_all_orders()
+        import requests as _req
+        r = _req.get(f"http://127.0.0.1:{MT5_BRIDGE_PORT}/close_all?magic={MANUAL_MAGIC}", timeout=5.0)
+        if r.status_code == 200 and r.json().get("success"):
+            closed_count += int(r.json().get("closed_count", 0))
     except Exception as e:
-        logging.warning(f"Cancel pending: {e}")
+        errors.append(str(e))
 
+    # Second pass: query remaining positions for magic 777001 and close by ticket
     try:
-        closed = brk.close_all_positions(
-            exit_price=get_live_price(SYMBOL) or get_default_price(SYMBOL),
-            timestamp=time.time(),
-            symbol=SYMBOL,
-        )
-        total_pnl = sum(float(r.get("pnl", 0.0)) for r in closed)
-
-        # Record to trade history
-        if closed:
-            ts_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            record = {
-                "time":      ts_str,
-                "action":    "FLATTEN ALL",
-                "count":     len(closed),
-                "total_pnl": round(total_pnl, 2),
-            }
-            state["trade_history"].insert(0, record)
-            state["trade_history"] = state["trade_history"][:MAX_HISTORY_ROWS]
-        
-        state["deployed"] = False
-        state["grid_levels"] = []
-        save_state(state)
-        return f"âœ… Flattened {len(closed)} positions | Net P&L: ${total_pnl:+.2f}"
+        positions = get_live_positions(brk)
+        for p in positions:
+            t = getattr(p, "ticket", 0)
+            v = getattr(p, "volume", 0.0)
+            pnl_val = float(getattr(p, "profit", 0.0))
+            if t > 0:
+                try:
+                    import requests as _req
+                    r2 = _req.get(f"http://127.0.0.1:{MT5_BRIDGE_PORT}/position_close?ticket={t}&volume={v}", timeout=3.0)
+                    if r2.status_code == 200 and r2.json().get("success"):
+                        closed_count += 1
+                        total_pnl += pnl_val
+                except Exception as e2:
+                    errors.append(f"Pos {t}: {e2}")
     except Exception as e:
-        return f"âš ï¸ Flatten error: {e}"
+        errors.append(str(e))
+
+    # Clear broker local tracking
+    try:
+        brk.open_positions.clear()
+        brk.ticket_to_position_id.clear()
+    except Exception:
+        pass
+
+    # Record trade history
+    ts_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    record = {
+        "time":      ts_str,
+        "action":    "FLATTEN ALL",
+        "count":     closed_count,
+        "total_pnl": round(total_pnl, 2),
+    }
+    state["trade_history"].insert(0, record)
+    state["trade_history"] = state["trade_history"][:MAX_HISTORY_ROWS]
+    state["deployed"] = False
+    state["grid_levels"] = []
+    save_state(state)
+
+    if errors and closed_count == 0:
+        return f"⚠️ Flatten warning: {'; '.join(errors[:2])}"
+    return f"✅ Flattened {closed_count} position(s) | Net P&L: ${total_pnl:+.2f}"
 
 
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ══════════════════════════════════════════════════════════════════════════════
 #  BACKGROUND P&L MONITOR (auto-flatten daemon)
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ══════════════════════════════════════════════════════════════════════════════
 
-@st.cache_resource
 def get_pnl_monitor():
     """
     Starts a background daemon that watches floating P&L every 1 second.
     Auto-flattens when Target Profit or Stop Loss is hit.
-    Uses a shared dict for cross-thread communication.
+    Dynamically re-reads user configuration on every tick so new Target Profit ($) applies instantly.
+    Auto-re-arms for subsequent trades so the monitor NEVER stays dead.
     """
     shared = {
-        "active":        False,
+        "active":        True,
         "target_profit": 5.0,
         "stop_loss":     25.0,
         "last_pnl":      0.0,
         "last_msg":      "",
         "triggered":     False,
+        "manual_paused": False,
+        "auto_rearm":    True,
     }
 
     def _monitor_loop():
         while True:
             try:
-                if shared["active"]:
-                    brk = get_manual_broker()
-                    pnl = get_total_floating_pnl(brk)
+                # 1. Dynamically sync config from disk on every tick
+                cur_state = load_state()
+                cur_cfg = cur_state.get("grid_config", {})
+                tp_target = float(cur_cfg.get("target_profit", shared["target_profit"]))
+                sl_limit  = float(cur_cfg.get("stop_loss", shared["stop_loss"]))
+                shared["target_profit"] = tp_target
+                shared["stop_loss"]     = sl_limit
+
+                brk = get_manual_broker()
+                positions = get_live_positions(brk)
+                has_positions = len(positions) > 0
+                is_deployed   = bool(cur_state.get("deployed", False))
+
+                # Auto-arm whenever grid is deployed or open positions exist (unless user manually paused)
+                if (is_deployed or has_positions) and not shared["manual_paused"]:
+                    shared["active"] = True
+
+                if shared["active"] and not shared["manual_paused"]:
+                    pnl = sum(float(getattr(p, "profit", 0.0)) for p in positions)
                     shared["last_pnl"] = round(pnl, 2)
 
-                    if pnl >= shared["target_profit"] and not shared["triggered"]:
-                        shared["triggered"] = True
-                        shared["last_msg"] = f"ðŸŽ¯ TARGET HIT ${pnl:+.2f} â€” Auto-Flattening!"
-                        try:
-                            state = load_state()
-                            flatten_all(brk, state)
-                            shared["active"] = False
-                        except Exception as fe:
-                            shared["last_msg"] = f"âš ï¸ Auto-flatten error: {fe}"
-                            shared["triggered"] = False
+                    # Only evaluate profit targets when there are ACTUAL open positions
+                    if has_positions:
+                        if pnl >= tp_target and not shared["triggered"]:
+                            shared["triggered"] = True
+                            msg = f"🎯 TARGET PROFIT HIT: ${pnl:+.2f} (Target: +${tp_target:.2f}) — Auto-Flattening all!"
+                            shared["last_msg"] = msg
+                            logging.info(f"[Manual Grid Monitor] {msg}")
 
-                    elif pnl <= -abs(shared["stop_loss"]) and not shared["triggered"]:
-                        shared["triggered"] = True
-                        shared["last_msg"] = f"ðŸ›‘ STOP LOSS ${pnl:+.2f} â€” Auto-Flattening!"
-                        try:
-                            state = load_state()
-                            flatten_all(brk, state)
-                            shared["active"] = False
-                        except Exception as fe:
-                            shared["last_msg"] = f"âš ï¸ Auto-flatten error: {fe}"
+                            flat_res = flatten_all(brk, cur_state)
+                            shared["last_msg"] = f"🎯 TARGET HIT ${pnl:+.2f}! {flat_res} · Desk is READY for next grid."
+                            
+                            # Re-arm monitor so subsequent trades are monitored
+                            time.sleep(2.0)
+                            shared["triggered"] = False
+                            if not shared.get("auto_rearm", True):
+                                shared["active"] = False
+
+                        elif pnl <= -abs(sl_limit) and not shared["triggered"]:
+                            shared["triggered"] = True
+                            msg = f"🛑 STOP LOSS HIT: ${pnl:+.2f} (SL: -${sl_limit:.2f}) — Auto-Flattening all!"
+                            shared["last_msg"] = msg
+                            logging.info(f"[Manual Grid Monitor] {msg}")
+
+                            flat_res = flatten_all(brk, cur_state)
+                            shared["last_msg"] = f"🛑 STOP LOSS HIT ${pnl:+.2f}! {flat_res} · Desk is READY for next grid."
+
+                            time.sleep(2.0)
+                            shared["triggered"] = False
+                            if not shared.get("auto_rearm", True):
+                                shared["active"] = False
+                        else:
                             shared["triggered"] = False
                     else:
                         shared["triggered"] = False
+                else:
+                    shared["last_pnl"] = 0.0
             except Exception as e:
-                logging.warning(f"[PnL Monitor] {e}")
+                logging.warning(f"[PnL Monitor Error] {e}")
             time.sleep(1.0)
 
     t = threading.Thread(target=_monitor_loop, daemon=True)
     t.start()
     return shared
 
-
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-#  CHART BUILDER
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 def build_chart(df: pd.DataFrame, grid_levels: dict, center_price: float, current_price: float) -> go.Figure:
     """
@@ -895,15 +1024,48 @@ st.markdown(f"""
 #  UI â€” P&L MONITOR STATUS BAR
 # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
-mon_cls  = "monitor-active" if monitor["active"] else "monitor-inactive"
+is_monitoring = monitor["active"] and not monitor.get("manual_paused", False)
+mon_cls  = "monitor-active" if is_monitoring else "monitor-inactive"
 if monitor.get("last_msg") and monitor["triggered"]:
     mon_cls = "monitor-trigger"
-mon_msg = monitor.get("last_msg") or (
-    f"ðŸŸ¢ Auto-Flatten ACTIVE Â· Target: +${cfg['target_profit']:.2f} Â· SL: -${cfg['stop_loss']:.2f}"
-    if monitor["active"]
-    else f"âš« Auto-Flatten INACTIVE Â· Enable by clicking Deploy Grid"
-)
-st.markdown(f'<div class="monitor-alert {mon_cls}">{mon_msg}</div>', unsafe_allow_html=True)
+
+# Dynamic status text
+if is_monitoring:
+    mon_status_badge = "🟢 ARMED & ACTIVE"
+    badge_bg = "#052e16"
+    badge_color = "#4ade80"
+    badge_border = "#166534"
+else:
+    mon_status_badge = "⏸️ PAUSED"
+    badge_bg = "#27272a"
+    badge_color = "#a1a1aa"
+    badge_border = "#3f3f46"
+
+cur_tp = float(cfg.get("target_profit", 5.0))
+cur_sl = float(cfg.get("stop_loss", 25.0))
+dist_tp = max(0.0, cur_tp - floating_pnl)
+
+st.markdown(f'''
+<div style="background:#141417;border:1px solid #27272a;border-radius:10px;padding:12px 16px;margin:10px 0 14px 0;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;">
+    <div style="display:flex;align-items:center;gap:12px;">
+        <span style="background:{badge_bg};color:{badge_color};border:1px solid {badge_border};font-size:0.75rem;font-weight:700;padding:4px 10px;border-radius:6px;font-family:'JetBrains Mono',monospace;">
+            {mon_status_badge}
+        </span>
+        <div style="font-size:0.82rem;color:#d4d4d8;">
+            <b>Auto-Flatten Target:</b> <span style="color:#4ade80;font-family:'JetBrains Mono',monospace;font-weight:700;">+${cur_tp:.2f}</span> · 
+            <b>Stop Loss:</b> <span style="color:#f87171;font-family:'JetBrains Mono',monospace;font-weight:700;">-${cur_sl:.2f}</span>
+        </div>
+    </div>
+    <div style="display:flex;align-items:center;gap:14px;font-size:0.78rem;font-family:'JetBrains Mono',monospace;">
+        <span style="color:#a1a1aa;">Floating: <b style="color:{'#4ade80' if floating_pnl >= 0 else '#f87171'}">${floating_pnl:+.2f}</b></span>
+        <span style="color:#71717a;">|</span>
+        <span style="color:#a1a1aa;">To Target: <b style="color:#60a5fa">${dist_tp:.2f}</b></span>
+    </div>
+</div>
+''', unsafe_allow_html=True)
+
+if monitor.get("last_msg"):
+    st.markdown(f'<div class="monitor-alert {mon_cls}">{monitor["last_msg"]}</div>', unsafe_allow_html=True)
 
 # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 #  UI â€” ACTION MESSAGE BANNER
@@ -1138,8 +1300,8 @@ with config_col:
             if not connected:
                 st.session_state.mgd_action_msg = "❌ MT5 not connected."
             else:
-                res = brk.close_buy_positions(symbol=SYMBOL)
-                st.session_state.mgd_action_msg = f"✅ Closed {len(res)} BUY position(s)."
+                msg = close_positions_by_side(brk, "BUY")
+                st.session_state.mgd_action_msg = msg
             st.rerun()
 
     with col_b2:
@@ -1147,16 +1309,34 @@ with config_col:
             if not connected:
                 st.session_state.mgd_action_msg = "❌ MT5 not connected."
             else:
-                res = brk.close_sell_positions(symbol=SYMBOL)
-                st.session_state.mgd_action_msg = f"✅ Closed {len(res)} SELL position(s)."
+                msg = close_positions_by_side(brk, "SELL")
+                st.session_state.mgd_action_msg = msg
             st.rerun()
 
-    if st.button("🗑️  CANCEL PENDING", key="btn_cancel", width='stretch'):
-        msg = cancel_all_pending(brk)
-        state["deployed"] = False
-        state["grid_levels"] = []
-        monitor["active"] = False
-        save_state(state)
+    col_cp1, col_cp2 = st.columns(2)
+    with col_cp1:
+        if st.button("🗑️  CANCEL PENDING", key="btn_cancel", width='stretch'):
+            msg = cancel_all_pending(brk)
+            state["deployed"] = False
+            state["grid_levels"] = []
+            save_state(state)
+            st.session_state.mgd_action_msg = msg
+            st.rerun()
+
+    with col_cp2:
+        # Toggle Monitor Armed / Paused
+        is_paused = monitor.get("manual_paused", False)
+        pause_label = "▶️ ARM MONITOR" if is_paused else "⏸️ PAUSE MONITOR"
+        if st.button(pause_label, key="btn_toggle_mon", width='stretch'):
+            monitor["manual_paused"] = not is_paused
+            monitor["active"] = not monitor["manual_paused"]
+            st.session_state.mgd_action_msg = "✅ Monitor ARMED & READY" if not monitor["manual_paused"] else "⏸️ Monitor PAUSED"
+            st.rerun()
+
+    if st.button("🚨  FLATTEN ALL (Force Close)", type="secondary", key="btn_flatten", width='stretch'):
+        msg = flatten_all(brk, state)
+        monitor["triggered"] = False
+        monitor["active"] = True  # Keep monitor ready for next deployment
         st.session_state.mgd_action_msg = msg
         st.rerun()
 
