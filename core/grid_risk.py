@@ -1343,23 +1343,31 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
         # ─────────────────────────────────────────────────────────────
 
         # --- POSITION HEDGE PREVENTION ---
-        # Never place orders in the opposite direction of an open position basket, UNLESS it's a 100% confirmed trend.
+        # Never place orders in the opposite direction of an open OR pending position basket, UNLESS it's a 100% confirmed trend.
         _open_pos = getattr(self.broker, "open_positions", {})
+        _pending_ord = getattr(self.broker, "pending_orders", {})
+        
         has_open_sells = any("SELL" in str(getattr(p, "type", "")).upper() for p in _open_pos.values())
         has_open_buys  = any("BUY"  in str(getattr(p, "type", "")).upper() for p in _open_pos.values())
+        
+        has_pending_sells = any("SELL" in str(getattr(p, "type", "")).upper() for p in _pending_ord.values())
+        has_pending_buys  = any("BUY"  in str(getattr(p, "type", "")).upper() for p in _pending_ord.values())
+
+        has_sells = has_open_sells or has_pending_sells
+        has_buys = has_open_buys or has_pending_buys
         
         _is_100pct_grid = is_auto_100pct_confirmed(self) and not is_manual  # AUTO only — never fires in manual mode
 
         _is_hedged_override = False
 
-        if has_open_sells and not _is_100pct_grid:
+        if has_sells and not _is_100pct_grid:
             place_buy = False
-        elif has_open_sells and _is_100pct_grid and place_buy:
+        elif has_sells and _is_100pct_grid and place_buy:
             _is_hedged_override = True
 
-        if has_open_buys and not _is_100pct_grid:
+        if has_buys and not _is_100pct_grid:
             place_sell = False
-        elif has_open_buys and _is_100pct_grid and place_sell:
+        elif has_buys and _is_100pct_grid and place_sell:
             _is_hedged_override = True
 
         directional_sell = place_sell and not place_buy   # Pure sell signal
