@@ -1378,12 +1378,6 @@ with config_col:
         st.session_state.mgd_action_msg = msg
         st.rerun()
 
-    if st.button("🚨  FLATTEN ALL", type="secondary", key="btn_flatten", width='stretch'):
-        msg = flatten_all(brk, state)
-        monitor["active"] = False
-        st.session_state.mgd_action_msg = msg
-        st.rerun()
-
     st.markdown('<hr class="divider">', unsafe_allow_html=True)
     if st.button("🔄  Refresh", key="btn_refresh", width='stretch'):
         save_state(state)
