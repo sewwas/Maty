@@ -100,26 +100,29 @@ def load_state() -> dict:
     try:
         if os.path.exists(STATE_FILE):
             with open(STATE_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                # Merge with defaults so new keys always exist
-                for k, v in default.items():
-                    if k not in data:
-                        data[k] = v
-                if "grid_config" in data:
-                    for ck, cv in default["grid_config"].items():
-                        if ck not in data["grid_config"]:
-                            data["grid_config"][ck] = cv
-                return data
+                content = f.read().strip()
+                if content:
+                    data = json.loads(content)
+                    for k, v in default.items():
+                        if k not in data:
+                            data[k] = v
+                    if "grid_config" in data:
+                        for ck, cv in default["grid_config"].items():
+                            if ck not in data["grid_config"]:
+                                data["grid_config"][ck] = cv
+                    return data
     except Exception as e:
         logging.warning(f"Manual state load: {e}")
     return default
 
 
 def save_state(state: dict):
-    """Saves manual desk state to disk."""
+    """Saves manual desk state to disk atomically."""
     try:
-        with open(STATE_FILE, "w", encoding="utf-8") as f:
+        tmp_file = f"{STATE_FILE}.tmp"
+        with open(tmp_file, "w", encoding="utf-8") as f:
             json.dump(state, f, indent=2)
+        os.replace(tmp_file, STATE_FILE)
     except Exception as e:
         logging.warning(f"Manual state save: {e}")
 
@@ -467,121 +470,151 @@ def flatten_all(brk: MT5Broker, state: dict) -> str:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  BACKGROUND P&L MONITOR (auto-flatten daemon)
+#  MT5 CONNECTIVITY CHECK HELPER
 # ══════════════════════════════════════════════════════════════════════════════
 
+def check_mt5_connected(brk: MT5Broker) -> bool:
+    """Checks if MT5 is connected via bridge port 8002 with proper timeout."""
+    try:
+        import requests as _req
+        r = _req.get(f"http://127.0.0.1:{MT5_BRIDGE_PORT}/account", timeout=2.5)
+        if r.status_code == 200:
+            d = r.json()
+            if d.get("connected") and int(d.get("login", 0)) > 0:
+                return True
+    except Exception:
+        pass
+    try:
+        return bool(brk.ensure_connected())
+    except Exception:
+        return False
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  BACKGROUND P&L MONITOR (auto-flatten daemon) - CACHED SINGLETON
+# ══════════════════════════════════════════════════════════════════════════════
+
+_MONITOR_SHARED = None
+_MONITOR_LOCK = threading.Lock()
+
+@st.cache_resource
 def get_pnl_monitor():
     """
-    Starts a background daemon that watches floating P&L every 1 second.
+    Starts a background daemon that watches floating P&L every 0.35 seconds.
     Auto-flattens when Target Profit or Stop Loss is hit.
     Dynamically re-reads user configuration on every tick so new Target Profit ($) applies instantly.
     Auto-re-arms for subsequent trades so the monitor NEVER stays dead.
     """
-    shared = {
-        "active":        True,
-        "target_profit": 5.0,
-        "stop_loss":     25.0,
-        "last_pnl":      0.0,
-        "last_msg":      "",
-        "triggered":     False,
-        "manual_paused": False,
-        "auto_rearm":    True,
-    }
+    global _MONITOR_SHARED
+    with _MONITOR_LOCK:
+        if _MONITOR_SHARED is not None:
+            return _MONITOR_SHARED
 
-    def _monitor_loop():
-        while True:
-            try:
-                # 1. Dynamically sync config from disk on every tick
-                cur_state = load_state()
-                cur_cfg = cur_state.get("grid_config", {})
-                tp_target = float(cur_cfg.get("target_profit", shared["target_profit"]))
-                sl_limit  = float(cur_cfg.get("stop_loss", shared["stop_loss"]))
-                shared["target_profit"] = tp_target
-                shared["stop_loss"]     = sl_limit
+        shared = {
+            "active":        True,
+            "target_profit": 5.0,
+            "stop_loss":     25.0,
+            "last_pnl":      0.0,
+            "last_msg":      "",
+            "triggered":     False,
+            "manual_paused": False,
+            "auto_rearm":    True,
+        }
 
-                brk = get_manual_broker()
-                positions = get_live_positions(brk)
-                has_positions = len(positions) > 0
-                is_deployed   = bool(cur_state.get("deployed", False))
+        def _monitor_loop():
+            while True:
+                try:
+                    # 1. Dynamically sync config from disk on every tick
+                    cur_state = load_state()
+                    cur_cfg = cur_state.get("grid_config", {})
+                    tp_target = float(cur_cfg.get("target_profit", shared["target_profit"]))
+                    sl_limit  = float(cur_cfg.get("stop_loss", shared["stop_loss"]))
+                    shared["target_profit"] = tp_target
+                    shared["stop_loss"]     = sl_limit
 
-                # Auto-arm whenever grid is deployed or open positions exist (unless user manually paused)
-                if (is_deployed or has_positions) and not shared["manual_paused"]:
-                    shared["active"] = True
+                    brk = get_manual_broker()
+                    positions = get_live_positions(brk)
+                    has_positions = len(positions) > 0
+                    is_deployed   = bool(cur_state.get("deployed", False))
 
-                if shared["active"] and not shared["manual_paused"]:
-                    pnl = sum(float(getattr(p, "profit", 0.0)) for p in positions)
-                    shared["last_pnl"] = round(pnl, 2)
+                    # Auto-arm whenever grid is deployed or open positions exist (unless user manually paused)
+                    if (is_deployed or has_positions) and not shared["manual_paused"]:
+                        shared["active"] = True
 
-                    # Only evaluate profit targets when there are ACTUAL open positions
-                    if has_positions:
-                        if pnl >= tp_target and not shared["triggered"]:
-                            shared["triggered"] = True
-                            msg = f"🎯 TARGET PROFIT HIT: ${pnl:+.2f} (Target: +${tp_target:.2f}) — Closing all active and pending orders!"
-                            logging.info(f"[Manual Grid Monitor] {msg}")
+                    if shared["active"] and not shared["manual_paused"]:
+                        pnl = sum(float(getattr(p, "profit", 0.0)) for p in positions)
+                        shared["last_pnl"] = round(pnl, 2)
 
-                            # 1. Close all active positions + cancel all pending orders
-                            flat_res = flatten_all(brk, cur_state)
+                        # Only evaluate profit targets when there are ACTUAL open positions
+                        if has_positions:
+                            if pnl >= tp_target and not shared["triggered"]:
+                                shared["triggered"] = True
+                                msg = f"🎯 TARGET PROFIT HIT: ${pnl:+.2f} (Target: +${tp_target:.2f}) — Closing all active and pending orders!"
+                                logging.info(f"[Manual Grid Monitor] {msg}")
 
-                            # 2. Check Auto-Redeploy New Grid setting
-                            auto_redeploy = cur_cfg.get("auto_redeploy", True)
-                            if auto_redeploy:
-                                time.sleep(0.6)  # Fast MT5 order clearance buffer
-                                new_center = get_mt5_live_price(brk)
-                                new_levels = compute_grid_levels(
-                                    new_center,
-                                    float(cur_cfg.get("gap_value", 2.0)),
-                                    int(cur_cfg.get("levels_above", 3)),
-                                    int(cur_cfg.get("levels_below", 3)),
-                                    gap_mode=cur_cfg.get("gap_mode", "USD ($)"),
-                                    offset_val=float(cur_cfg.get("offset_value", 1.5)),
-                                    offset_mode=cur_cfg.get("offset_mode", "USD ($)"),
-                                )
-                                n_lot = float(cur_cfg.get("lot_size", 0.01))
-                                n_mult = float(cur_cfg.get("lot_mult", 1.0))
-                                placed, errors = deploy_grid(brk, new_levels, n_lot, n_mult)
-                                if placed > 0:
-                                    cur_state["deployed"] = True
-                                    cur_state["grid_levels"] = new_levels
-                                    cur_state["grid_config"]["center_price"] = new_center
-                                    save_state(cur_state)
-                                    shared["last_msg"] = f"🎯 TARGET HIT ${pnl:+.2f}! All closed. 🚀 Auto-deployed NEW GRID ({placed} orders) centered at ${new_center:,.2f}"
-                                    logging.info(f"[Manual Grid Monitor] {shared['last_msg']}")
+                                # 1. Close all active positions + cancel all pending orders
+                                flat_res = flatten_all(brk, cur_state)
+
+                                # 2. Check Auto-Redeploy New Grid setting
+                                auto_redeploy = cur_cfg.get("auto_redeploy", True)
+                                if auto_redeploy:
+                                    time.sleep(0.6)  # Fast MT5 order clearance buffer
+                                    new_center = get_mt5_live_price(brk)
+                                    new_levels = compute_grid_levels(
+                                        new_center,
+                                        float(cur_cfg.get("gap_value", 2.0)),
+                                        int(cur_cfg.get("levels_above", 3)),
+                                        int(cur_cfg.get("levels_below", 3)),
+                                        gap_mode=cur_cfg.get("gap_mode", "USD ($)"),
+                                        offset_val=float(cur_cfg.get("offset_value", 1.5)),
+                                        offset_mode=cur_cfg.get("offset_mode", "USD ($)"),
+                                    )
+                                    n_lot = float(cur_cfg.get("lot_size", 0.01))
+                                    n_mult = float(cur_cfg.get("lot_mult", 1.0))
+                                    placed, errors = deploy_grid(brk, new_levels, n_lot, n_mult)
+                                    if placed > 0:
+                                        cur_state["deployed"] = True
+                                        cur_state["grid_levels"] = new_levels
+                                        cur_state["grid_config"]["center_price"] = new_center
+                                        save_state(cur_state)
+                                        shared["last_msg"] = f"🎯 TARGET HIT ${pnl:+.2f}! All closed. 🚀 Auto-deployed NEW GRID ({placed} orders) centered at ${new_center:,.2f}"
+                                        logging.info(f"[Manual Grid Monitor] {shared['last_msg']}")
+                                    else:
+                                        shared["last_msg"] = f"🎯 TARGET HIT ${pnl:+.2f}! All closed. Redeploy errors: {'; '.join(errors[:2])}"
                                 else:
-                                    shared["last_msg"] = f"🎯 TARGET HIT ${pnl:+.2f}! All closed. Redeploy errors: {'; '.join(errors[:2])}"
+                                    shared["last_msg"] = f"🎯 TARGET HIT ${pnl:+.2f}! {flat_res} · Desk is READY for next grid."
+
+                                # Re-arm monitor for the new cycle
+                                time.sleep(2.0)
+                                shared["triggered"] = False
+                                shared["active"] = True
+
+                            elif pnl <= -abs(sl_limit) and not shared["triggered"]:
+                                shared["triggered"] = True
+                                msg = f"🛑 STOP LOSS HIT: ${pnl:+.2f} (SL: -${sl_limit:.2f}) — Auto-Flattening all!"
+                                logging.info(f"[Manual Grid Monitor] {msg}")
+
+                                flat_res = flatten_all(brk, cur_state)
+                                shared["last_msg"] = f"🛑 STOP LOSS HIT ${pnl:+.2f}! {flat_res} · Desk is READY for next grid."
+
+                                time.sleep(2.0)
+                                shared["triggered"] = False
+                                if not shared.get("auto_rearm", True):
+                                    shared["active"] = False
                             else:
-                                shared["last_msg"] = f"🎯 TARGET HIT ${pnl:+.2f}! {flat_res} · Desk is READY for next grid."
-
-                            # Re-arm monitor for the new cycle
-                            time.sleep(2.0)
-                            shared["triggered"] = False
-                            shared["active"] = True
-
-                        elif pnl <= -abs(sl_limit) and not shared["triggered"]:
-                            shared["triggered"] = True
-                            msg = f"🛑 STOP LOSS HIT: ${pnl:+.2f} (SL: -${sl_limit:.2f}) — Auto-Flattening all!"
-                            shared["last_msg"] = msg
-                            logging.info(f"[Manual Grid Monitor] {msg}")
-
-                            flat_res = flatten_all(brk, cur_state)
-                            shared["last_msg"] = f"🛑 STOP LOSS HIT ${pnl:+.2f}! {flat_res} · Desk is READY for next grid."
-
-                            time.sleep(2.0)
-                            shared["triggered"] = False
-                            if not shared.get("auto_rearm", True):
-                                shared["active"] = False
+                                shared["triggered"] = False
                         else:
                             shared["triggered"] = False
                     else:
-                        shared["triggered"] = False
-                else:
-                    shared["last_pnl"] = 0.0
-            except Exception as e:
-                logging.warning(f"[PnL Monitor Error] {e}")
-            time.sleep(0.35)
+                        shared["last_pnl"] = 0.0
+                except Exception as e:
+                    logging.warning(f"[PnL Monitor Error] {e}")
+                time.sleep(0.35)
 
-    t = threading.Thread(target=_monitor_loop, daemon=True)
-    t.start()
-    return shared
+        t = threading.Thread(target=_monitor_loop, daemon=True, name="ManualGridPnLMonitor")
+        t.start()
+        _MONITOR_SHARED = shared
+        return _MONITOR_SHARED
 
 
 def build_chart(df: pd.DataFrame, grid_levels: dict, center_price: float, current_price: float) -> go.Figure:
@@ -966,7 +999,7 @@ monitor["stop_loss"]     = cfg["stop_loss"]
 #  UI â€” HEADER
 # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
-connected   = brk.ensure_connected()
+connected   = check_mt5_connected(brk)
 conn_label  = "CONNECTED" if connected else "OFFLINE"
 conn_color  = "#22c55e" if connected else "#ef4444"
 conn_bg     = "#0f2b1a" if connected else "#2b0f0f"
@@ -1299,7 +1332,7 @@ with config_col:
 
     # ── ACTION BUTTONS ────────────────────────────────────────────────────────
     if st.button("🚀  DEPLOY GRID", type="primary", key="btn_deploy", width='stretch'):
-        if not connected:
+        if not check_mt5_connected(brk):
             st.session_state.mgd_action_msg = "❌ MT5 not connected. Cannot deploy."
         else:
             # Re-fetch real-time tick right at deployment instant to guarantee exact centering
