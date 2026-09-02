@@ -1397,8 +1397,16 @@ class MT5Broker:
                         self.pending_orders[ord_id] = ord_obj
 
         if mt5_orders is not None:
+            current_time = time.time()
             for ticket, oid in list(self.ticket_to_order_id.items()):
                 if ticket not in active_order_tickets:
+                    # Give pending orders a 5-second grace period to appear on MT5 to prevent instant wiping
+                    p_ord = self.pending_orders.get(oid)
+                    if p_ord and hasattr(p_ord, "timestamp"):
+                        ts = p_ord.timestamp
+                        ts_sec = ts / 1000.0 if ts > 1e11 else ts
+                        if current_time - ts_sec < 5.0:
+                            continue
                     self.pending_orders.pop(oid, None)
                     self.ticket_to_order_id.pop(ticket, None)
 
