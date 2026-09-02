@@ -13,7 +13,8 @@
     "lot_size": 0.01,
     "lot_mult": 1.0,
     "target_profit": 5.0,
-    "stop_loss": 25.0
+    "stop_loss": 25.0,
+    "auto_redeploy": true
   },
   "trade_history": [],
   "deployed": false,

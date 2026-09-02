@@ -91,6 +91,7 @@ def load_state() -> dict:
             "lot_mult": 1.0,
             "target_profit": 5.0,
             "stop_loss": 25.0,
+            "auto_redeploy": True,
         },
         "trade_history": [],
         "deployed": False,
@@ -514,18 +515,45 @@ def get_pnl_monitor():
                     if has_positions:
                         if pnl >= tp_target and not shared["triggered"]:
                             shared["triggered"] = True
-                            msg = f"🎯 TARGET PROFIT HIT: ${pnl:+.2f} (Target: +${tp_target:.2f}) — Auto-Flattening all!"
-                            shared["last_msg"] = msg
+                            msg = f"🎯 TARGET PROFIT HIT: ${pnl:+.2f} (Target: +${tp_target:.2f}) — Closing all active and pending orders!"
                             logging.info(f"[Manual Grid Monitor] {msg}")
 
+                            # 1. Close all active positions + cancel all pending orders
                             flat_res = flatten_all(brk, cur_state)
-                            shared["last_msg"] = f"🎯 TARGET HIT ${pnl:+.2f}! {flat_res} · Desk is READY for next grid."
-                            
-                            # Re-arm monitor so subsequent trades are monitored
+
+                            # 2. Check Auto-Redeploy New Grid setting
+                            auto_redeploy = cur_cfg.get("auto_redeploy", True)
+                            if auto_redeploy:
+                                time.sleep(1.5)  # Let MT5 complete order cancellations
+                                new_center = get_mt5_live_price(brk)
+                                new_levels = compute_grid_levels(
+                                    new_center,
+                                    float(cur_cfg.get("gap_value", 2.0)),
+                                    int(cur_cfg.get("levels_above", 3)),
+                                    int(cur_cfg.get("levels_below", 3)),
+                                    gap_mode=cur_cfg.get("gap_mode", "USD ($)"),
+                                    offset_val=float(cur_cfg.get("offset_value", 1.5)),
+                                    offset_mode=cur_cfg.get("offset_mode", "USD ($)"),
+                                )
+                                n_lot = float(cur_cfg.get("lot_size", 0.01))
+                                n_mult = float(cur_cfg.get("lot_mult", 1.0))
+                                placed, errors = deploy_grid(brk, new_levels, n_lot, n_mult)
+                                if placed > 0:
+                                    cur_state["deployed"] = True
+                                    cur_state["grid_levels"] = new_levels
+                                    cur_state["grid_config"]["center_price"] = new_center
+                                    save_state(cur_state)
+                                    shared["last_msg"] = f"🎯 TARGET HIT ${pnl:+.2f}! All closed. 🚀 Auto-deployed NEW GRID ({placed} orders) centered at ${new_center:,.2f}"
+                                    logging.info(f"[Manual Grid Monitor] {shared['last_msg']}")
+                                else:
+                                    shared["last_msg"] = f"🎯 TARGET HIT ${pnl:+.2f}! All closed. Redeploy errors: {'; '.join(errors[:2])}"
+                            else:
+                                shared["last_msg"] = f"🎯 TARGET HIT ${pnl:+.2f}! {flat_res} · Desk is READY for next grid."
+
+                            # Re-arm monitor for the new cycle
                             time.sleep(2.0)
                             shared["triggered"] = False
-                            if not shared.get("auto_rearm", True):
-                                shared["active"] = False
+                            shared["active"] = True
 
                         elif pnl <= -abs(sl_limit) and not shared["triggered"]:
                             shared["triggered"] = True
@@ -1052,8 +1080,9 @@ st.markdown(f'''
             {mon_status_badge}
         </span>
         <div style="font-size:0.82rem;color:#d4d4d8;">
-            <b>Auto-Flatten Target:</b> <span style="color:#4ade80;font-family:'JetBrains Mono',monospace;font-weight:700;">+${cur_tp:.2f}</span> · 
-            <b>Stop Loss:</b> <span style="color:#f87171;font-family:'JetBrains Mono',monospace;font-weight:700;">-${cur_sl:.2f}</span>
+            <b>Target Profit:</b> <span style="color:#4ade80;font-family:'JetBrains Mono',monospace;font-weight:700;">+${cur_tp:.2f}</span> · 
+            <b>Stop Loss:</b> <span style="color:#f87171;font-family:'JetBrains Mono',monospace;font-weight:700;">-${cur_sl:.2f}</span> · 
+            <b>Cycle:</b> <span style="color:#38bdf8;font-weight:600;">{'🔄 Auto-Deploy ON' if cfg.get('auto_redeploy', True) else '⏹️ Auto-Deploy OFF'}</span>
         </div>
     </div>
     <div style="display:flex;align-items:center;gap:14px;font-size:0.78rem;font-family:'JetBrains Mono',monospace;">
@@ -1201,8 +1230,16 @@ with config_col:
             key="mgd_sl",
         )
 
+    auto_redeploy = st.toggle(
+        "🔄 Auto-Deploy New Grid on Target Profit",
+        value=bool(cfg.get("auto_redeploy", True)),
+        help="When Target Profit is reached: automatically closes all active positions, cancels all pending orders, and immediately deploys a brand new grid centered on live market price.",
+        key="mgd_auto_redeploy",
+    )
+
     # Persist config changes
     cfg.update({
+        "auto_redeploy": auto_redeploy,
         "center_mode":   center_mode,
         "center_price":  center_price_input,
         "levels_above":  int(levels_above),
