@@ -400,27 +400,25 @@ def close_positions_by_side(brk: MT5Broker, side: str) -> str:
 
 def flatten_all(brk: MT5Broker, state: dict) -> str:
     """
-    Cancels all pending orders + closes all open positions for magic 777001.
-    Directly targets MT5 bridge for 100% guaranteed execution.
+    Immediately takes profit by closing all open positions first,
+    then cancels all pending orders for magic 777001.
+    100% guaranteed execution directly via MT5 bridge.
     """
-    # 1. Cancel all pending orders
-    cancel_res = cancel_all_pending(brk)
-
-    # 2. Close all open positions for magic 777001
+    # 1. Close all open positions FIRST (Lock in profits immediately!)
     closed_count = 0
     total_pnl = 0.0
     errors = []
 
-    # Fast batch close on bridge by magic
+    # Fast bulk close on bridge by magic
     try:
         import requests as _req
-        r = _req.get(f"http://127.0.0.1:{MT5_BRIDGE_PORT}/close_all?magic={MANUAL_MAGIC}", timeout=5.0)
+        r = _req.get(f"http://127.0.0.1:{MT5_BRIDGE_PORT}/close_all?magic={MANUAL_MAGIC}", timeout=4.0)
         if r.status_code == 200 and r.json().get("success"):
             closed_count += int(r.json().get("closed_count", 0))
     except Exception as e:
         errors.append(str(e))
 
-    # Second pass: query remaining positions for magic 777001 and close by ticket
+    # Ticket-by-ticket sweep for remaining open positions
     try:
         positions = get_live_positions(brk)
         for p in positions:
@@ -430,7 +428,7 @@ def flatten_all(brk: MT5Broker, state: dict) -> str:
             if t > 0:
                 try:
                     import requests as _req
-                    r2 = _req.get(f"http://127.0.0.1:{MT5_BRIDGE_PORT}/position_close?ticket={t}&volume={v}", timeout=3.0)
+                    r2 = _req.get(f"http://127.0.0.1:{MT5_BRIDGE_PORT}/position_close?ticket={t}&volume={v}", timeout=2.5)
                     if r2.status_code == 200 and r2.json().get("success"):
                         closed_count += 1
                         total_pnl += pnl_val
@@ -438,6 +436,9 @@ def flatten_all(brk: MT5Broker, state: dict) -> str:
                     errors.append(f"Pos {t}: {e2}")
     except Exception as e:
         errors.append(str(e))
+
+    # 2. Cancel all pending orders immediately
+    cancel_res = cancel_all_pending(brk)
 
     # Clear broker local tracking
     try:
@@ -524,7 +525,7 @@ def get_pnl_monitor():
                             # 2. Check Auto-Redeploy New Grid setting
                             auto_redeploy = cur_cfg.get("auto_redeploy", True)
                             if auto_redeploy:
-                                time.sleep(1.5)  # Let MT5 complete order cancellations
+                                time.sleep(0.6)  # Fast MT5 order clearance buffer
                                 new_center = get_mt5_live_price(brk)
                                 new_levels = compute_grid_levels(
                                     new_center,
@@ -576,7 +577,7 @@ def get_pnl_monitor():
                     shared["last_pnl"] = 0.0
             except Exception as e:
                 logging.warning(f"[PnL Monitor Error] {e}")
-            time.sleep(1.0)
+            time.sleep(0.35)
 
     t = threading.Thread(target=_monitor_loop, daemon=True)
     t.start()
