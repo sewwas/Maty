@@ -603,9 +603,13 @@ class MT5Broker:
                         self.ticket_to_order_id[ticket] = loc_ord.order_id
                         return loc_ord
                     else:
+                        err_msg = data.get("error", "Order rejected")
+                        retcode = data.get("retcode", "")
                         print(f"[{exness_symbol}] REST Bridge order_send returned: {data}")
+                        raise Exception(f"{err_msg} (retcode {retcode})")
             except Exception as e:
                 print(f"[{self.symbol}] REST Bridge order_send exception: {e}")
+                raise e
             return None
 
         filling_flags = getattr(symbol_info, "filling_mode", 0) or 0

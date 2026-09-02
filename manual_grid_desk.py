@@ -304,6 +304,8 @@ def deploy_grid(brk: MT5Broker, levels: dict, lot_size: float, lot_mult: float =
             order = brk.place_order("BUY_STOP", price=price, size=actual_lot, timestamp=ts)
             if order:
                 placed += 1
+            else:
+                errors.append(f"BUY_STOP @ {price:.2f}: Broker returned no order")
         except Exception as e:
             errors.append(f"BUY_STOP @ {price:.2f} ({actual_lot}L): {e}")
         current_lot *= lot_mult
@@ -315,6 +317,8 @@ def deploy_grid(brk: MT5Broker, levels: dict, lot_size: float, lot_mult: float =
             order = brk.place_order("SELL_STOP", price=price, size=actual_lot, timestamp=ts)
             if order:
                 placed += 1
+            else:
+                errors.append(f"SELL_STOP @ {price:.2f}: Broker returned no order")
         except Exception as e:
             errors.append(f"SELL_STOP @ {price:.2f} ({actual_lot}L): {e}")
         current_lot *= lot_mult
@@ -1351,18 +1355,27 @@ with config_col:
                 offset_mode=offset_mode,
             )
             placed, errors = deploy_grid(brk, levels, lot_size, lot_mult)
-            if errors:
-                st.session_state.mgd_action_msg = f"⚠️ Placed {placed} orders. Errors: {'; '.join(errors[:3])}"
+            if placed == 0:
+                first_err = errors[0] if errors else "Broker rejected order placement"
+                st.session_state.mgd_action_msg = f"❌ Deployment failed (0 orders placed): {first_err}"
+            elif errors:
+                st.session_state.mgd_action_msg = f"⚠️ Placed {placed} orders. Errors: {'; '.join(errors[:2])}"
+                state["deployed"]     = True
+                state["grid_levels"]  = levels
+                state["grid_config"]["center_price"] = center_to_deploy
+                monitor["active"]     = True
+                monitor["triggered"]  = False
+                save_state(state)
             else:
                 step_disp = f"${levels['step']:.2f}" if gap_mode == "USD ($)" else f"{gap_val:.3f}%"
                 off_disp = f"${levels['offset']:.2f}" if offset_mode == "USD ($)" else f"{offset_val:.3f}%"
                 st.session_state.mgd_action_msg = f"✅ Grid deployed! {placed} orders placed centered at ${center_to_deploy:,.2f} (Offset: {off_disp}, Gap: {step_disp}, Magic #{MANUAL_MAGIC})"
-            state["deployed"]     = True
-            state["grid_levels"]  = levels
-            state["grid_config"]["center_price"] = center_to_deploy
-            monitor["active"]     = True
-            monitor["triggered"]  = False
-            save_state(state)
+                state["deployed"]     = True
+                state["grid_levels"]  = levels
+                state["grid_config"]["center_price"] = center_to_deploy
+                monitor["active"]     = True
+                monitor["triggered"]  = False
+                save_state(state)
         st.rerun()
 
     col_b1, col_b2 = st.columns(2)
