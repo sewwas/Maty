@@ -866,11 +866,27 @@ class MT5Broker:
                     if getattr(o, "magic", self.magic_number) == self.magic_number:
                         all_tks.add((o.ticket, o.symbol))
 
+            has_error = False
             for t, sym_name_tk in all_tks:
                 req = {"action": mt5.TRADE_ACTION_REMOVE, "order": t, "symbol": sym_name_tk}
                 res = mt5.order_send(req)
-                if res and res.retcode not in (0, 10009, 10008, 10004):
-                    raise Exception(f"MT5 cancel failed for {t} retcode {res.retcode}")
+                if res and res.retcode not in (0, 10009, 10008, 10004) and res.retcode != 10013:
+                    print(f"[MT5Broker] MT5 cancel failed for {t} retcode {res.retcode}")
+                    has_error = True
+                elif res is None:
+                    print(f"[MT5Broker] MT5 cancel failed for {t} (No response)")
+                    has_error = True
+                else:
+                    # Success or already removed (10013)
+                    oid = self.ticket_to_order_id.get(t)
+                    if oid: self.pending_orders.pop(oid, None)
+                    self.pending_orders.pop(f"mt5_{t}", None)
+                    self.pending_orders.pop(f"live_ord_{t}", None)
+                    self.ticket_to_order_id.pop(t, None)
+                    
+            if has_error:
+                raise Exception("Failed to cancel one or more MT5 orders")
+                
         else:
             try:
                 import requests

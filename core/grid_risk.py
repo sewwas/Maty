@@ -682,7 +682,7 @@ def check_target_profit(self, current_price: float, timestamp: float) -> Optiona
             try: self.deploy_traps(current_price, timestamp, force=True)
             except Exception as dep_err: print(f"Redeploy err: {dep_err}")
 
-return summary
+        return summary
 
     return None
 
@@ -930,8 +930,13 @@ def process_engine_tick(self, previous_price: float, current_price: float, times
 
     if needs_refresh:
         print(f"[{self.symbol}] 🔄 [GRID REFRESH] {refresh_reason}. Canceling {current_pending} pending orders to deploy fresh grid.")
-        if hasattr(self.broker, "cancel_all_orders"):
-            self.broker.cancel_all_orders(symbol=self.symbol)
+        try:
+            if hasattr(self.broker, "cancel_all_orders"):
+                self.broker.cancel_all_orders(symbol=self.symbol)
+        except Exception as e:
+            print(f"[{self.symbol}] ⚠️ Cancel orders failed: {e}. Will retry next tick.")
+            return None
+            
         self.deployed = False
         self._max_open_in_cycle = 0
         self._last_pending_count = 0
@@ -949,6 +954,9 @@ def process_engine_tick(self, previous_price: float, current_price: float, times
 
     if len(getattr(self.broker, "open_positions", {})) > 0:
         try:
+            if enforce_global_hedged_recovery(self, current_price, timestamp):
+                return None
+                
             enforce_profit_lock(self, current_price, timestamp)
             enforce_trend_aware_position_guard(self, current_price, timestamp)  # 🔄 Trend flip → quick exit; trend aligned → hold for max profit
             trail_stop_loss_5m_structure(self, current_price, timestamp)
@@ -1322,16 +1330,24 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
         # ─────────────────────────────────────────────────────────────
 
         # --- POSITION HEDGE PREVENTION ---
-        # Never place orders in the opposite direction of an open position basket!
-        # If we are already averaging down a SELL, we MUST NOT open a BUY (which would hedge and lock PnL).
+        # Never place orders in the opposite direction of an open position basket, UNLESS it's a 100% confirmed trend.
         _open_pos = getattr(self.broker, "open_positions", {})
         has_open_sells = any("SELL" in str(getattr(p, "type", "")).upper() for p in _open_pos.values())
         has_open_buys  = any("BUY"  in str(getattr(p, "type", "")).upper() for p in _open_pos.values())
         
-        if has_open_sells:
+        _is_100pct_grid = is_auto_100pct_confirmed(self) and not is_manual  # AUTO only — never fires in manual mode
+
+        _is_hedged_override = False
+
+        if has_open_sells and not _is_100pct_grid:
             place_buy = False
-        if has_open_buys:
+        elif has_open_sells and _is_100pct_grid and place_buy:
+            _is_hedged_override = True
+
+        if has_open_buys and not _is_100pct_grid:
             place_sell = False
+        elif has_open_buys and _is_100pct_grid and place_sell:
+            _is_hedged_override = True
 
         directional_sell = place_sell and not place_buy   # Pure sell signal
         directional_buy  = place_buy  and not place_sell  # Pure buy signal
@@ -1350,12 +1366,13 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
         #   • Limit-1: best structural DCA level below/above price → mean-reversion fill
         #   • TP extended to 1.77× min_tp_dist   → ride the full confirmed move
         #   • Entry offset tightened to 0.20× ATR → enter as close to price as safe
-        _is_100pct_grid = is_auto_100pct_confirmed(self) and not is_manual  # AUTO only — never fires in manual mode
 
         if (directional_sell or directional_buy) and _is_100pct_grid:
             dir_tp_dist     = min_tp_dist * 1.77  # Backtest optimal (was 2.5x)
             # 100% CONFIRMED: 3 orders — 2 Stops (continuation stack) + 1 Limit (DCA dip/spike)
             effective_levels = min(3, effective_levels)
+            if _is_hedged_override:
+                effective_levels = min(2, effective_levels)
             _confirmed_offset_mult = 0.20          # Backtest optimal entry — tighter (was 0.35x)
             _confirmed_gap_mult    = 0.70          # Compressed gap → denser stack
         elif directional_sell or directional_buy:
@@ -1499,7 +1516,8 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
         def _place_buy_stop(px: float, label: str, level_idx: int):
             nonlocal placed_count
             if placed_count + len(_open_pos) >= effective_levels: return
-            sz  = self.calculate_level_size(self.order_size, self.order_size_multiplier, level_idx)
+            _mult = 1.0 if _is_hedged_override else self.order_size_multiplier
+            sz  = self.calculate_level_size(self.order_size, _mult, level_idx)
             # Smart TP: Find nearest structural level above the entry that is at least min_tp_dist away
             smart_tp = round(px + dir_tp_dist, digits) # Fallback
             valid_tps = [c_px for (_, c_px, _) in merged_buy if c_px >= px + min_tp_dist and c_px <= px + (dir_tp_dist * 2.0)]
@@ -1524,7 +1542,8 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
         def _place_sell_stop(px: float, label: str, level_idx: int):
             nonlocal placed_count
             if placed_count + len(_open_pos) >= effective_levels: return
-            sz  = self.calculate_level_size(self.order_size, self.order_size_multiplier, level_idx)
+            _mult = 1.0 if _is_hedged_override else self.order_size_multiplier
+            sz  = self.calculate_level_size(self.order_size, _mult, level_idx)
             # Smart TP: Find nearest structural level below the entry that is at least min_tp_dist away
             smart_tp = round(px - dir_tp_dist, digits) # Fallback
             valid_tps = [c_px for (_, c_px, _) in merged_sell if c_px <= px - min_tp_dist and c_px >= px - (dir_tp_dist * 2.0)]
@@ -1549,7 +1568,8 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
         def _place_buy_limit(px: float, label: str, level_idx: int):
             nonlocal placed_count
             if placed_count + len(_open_pos) >= effective_levels: return
-            sz  = self.calculate_level_size(self.order_size, self.order_size_multiplier, level_idx)
+            _mult = 1.0 if _is_hedged_override else self.order_size_multiplier
+            sz  = self.calculate_level_size(self.order_size, _mult, level_idx)
             smart_tp = round(px + dir_tp_dist, digits)
             smart_sl = round(px - min_sl_dist, digits)
             try:
@@ -1564,7 +1584,8 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
         def _place_sell_limit(px: float, label: str, level_idx: int):
             nonlocal placed_count
             if placed_count + len(_open_pos) >= effective_levels: return
-            sz  = self.calculate_level_size(self.order_size, self.order_size_multiplier, level_idx)
+            _mult = 1.0 if _is_hedged_override else self.order_size_multiplier
+            sz  = self.calculate_level_size(self.order_size, _mult, level_idx)
             smart_tp = round(px - dir_tp_dist, digits)
             smart_sl = round(px + min_sl_dist, digits)
             try:
@@ -2508,4 +2529,65 @@ def sync_trap_mode_realtime(self, current_price: float, timestamp: float) -> boo
     Ensures active MT5 grid orders stay stable without canceling active orders in a loop.
     Pending orders remain active on MT5 so they can fill cleanly into trades.
     """
+    return False
+
+def enforce_global_hedged_recovery(self, current_price: float, timestamp: float) -> bool:
+    """
+    Monitors global hedged PnL. If both BUY and SELL positions are open
+    and total net PnL crosses $1.00, it closes EVERYTHING and resets.
+    """
+    _open_pos = getattr(self.broker, "open_positions", {})
+    if len(_open_pos) == 0:
+        return False
+        
+    types = [str(getattr(p, "type", "")).upper() for p in _open_pos.values()]
+    has_buys = any("BUY" in t for t in types)
+    has_sells = any("SELL" in t for t in types)
+    
+    total_pnl = sum(float(getattr(p, "profit", 0.0)) for p in _open_pos.values())
+    total_volume = sum(float(getattr(p, "volume", 0.01)) for p in _open_pos.values())
+    
+    buy_vol = sum(float(getattr(p, "volume", 0)) for p in _open_pos.values() if "BUY" in str(getattr(p, "type", "")).upper())
+    sell_vol = sum(float(getattr(p, "volume", 0)) for p in _open_pos.values() if "SELL" in str(getattr(p, "type", "")).upper())
+    current_trend = str(getattr(self, "unidirectional_mode", getattr(self, "auto_universe_bias", ""))).upper()
+    
+    is_hedged = has_buys and has_sells
+    is_counter_trend = False
+    if buy_vol > sell_vol and current_trend == "BEARISH":
+        is_counter_trend = True
+    elif sell_vol > buy_vol and current_trend == "BULLISH":
+        is_counter_trend = True
+        
+    if is_hedged or is_counter_trend:
+        # Tight escape for trapped/counter-trend positions
+        dynamic_threshold = max(1.00, (total_volume / 0.01) * 0.50)
+    else:
+        # Trend-aligned positions: use larger activation threshold to harvest full structural move
+        dynamic_threshold = max(5.00, (total_volume / 0.01) * 3.00)
+    
+    if total_pnl > getattr(self, "_basket_max_pnl", 0.0):
+        self._basket_max_pnl = total_pnl
+        
+    if getattr(self, "_basket_max_pnl", 0.0) > dynamic_threshold:
+        sym_name = str(getattr(self.broker, "symbol", getattr(self, "symbol_code", "BTCUSDT"))).upper()
+        
+        is_reversal = False
+        if buy_vol > sell_vol and current_trend == "BEARISH":
+            is_reversal = True
+        elif sell_vol > buy_vol and current_trend == "BULLISH":
+            is_reversal = True
+            
+        drop_limit = max(dynamic_threshold, self._basket_max_pnl * 0.80)
+        
+        if is_reversal or total_pnl <= drop_limit:
+            reason = "TREND REVERSAL" if is_reversal else f"TRAILING PROFIT DROP (Peak: ${self._basket_max_pnl:.2f}, Drop Limit: ${drop_limit:.2f})"
+            print(f"[{sym_name}] 💥 [BASKET HARVEST] {reason}. Securing +${total_pnl:.2f} net profit. Nuking entire basket!")
+            if hasattr(self.broker, "close_all_positions"):
+                self.broker.close_all_positions(symbol=sym_name)
+            if hasattr(self.broker, "cancel_all_orders"):
+                self.broker.cancel_all_orders(symbol=sym_name)
+            self.deployed = False
+            self._basket_max_pnl = 0.0
+            return True
+            
     return False
