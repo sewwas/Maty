@@ -1420,8 +1420,13 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
         # from pushing traps far beyond the user-configured distance.
         _max_atr_offset     = buy_offset_val * 1.5
         dynamic_atr_offset  = min((atr_5m * _confirmed_offset_mult) if (atr_5m is not None and atr_5m > 0) else 0.0, _max_atr_offset)
-        base_start_offset   = max(b_min_stop + (current_price * 0.0004), dynamic_atr_offset, buy_offset_val) + spread_anti_hunt_buffer
-
+        
+        if _is_100pct_grid:
+            # 100% CONFIRMED: Get in fast. Ignore the wider buy_offset_val to allow very tight trap placement.
+            base_start_offset = max(b_min_stop + (current_price * 0.0001), dynamic_atr_offset) + spread_anti_hunt_buffer
+        else:
+            base_start_offset = max(b_min_stop + (current_price * 0.0004), dynamic_atr_offset, buy_offset_val) + spread_anti_hunt_buffer
+        
         # ═══════════════════════════════════════════════════════════════════════
         # SMART CONFLUENCE PLACEMENT ENGINE
         # Only place stop orders where institutional levels exist nearby.
