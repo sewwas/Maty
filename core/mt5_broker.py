@@ -368,7 +368,7 @@ class MT5Broker:
             import requests
             bridge_port = os.getenv("WINE_BRIDGE_PORT", "8001")
             sym_param = f"?symbol={symbol}" if symbol else ""
-            r = requests.get(f"http://127.0.0.1:{bridge_port}/orders{sym_param}", timeout=1.0)
+            r = requests.get(f"http://127.0.0.1:{bridge_port}/orders{sym_param}", timeout=5.0)
             if r.status_code == 200:
                 data = r.json()
                 res = []
@@ -400,7 +400,7 @@ class MT5Broker:
             import requests
             bridge_port = os.getenv("WINE_BRIDGE_PORT", "8001")
             sym_param = f"?symbol={symbol}" if symbol else ""
-            r = requests.get(f"http://127.0.0.1:{bridge_port}/positions{sym_param}", timeout=1.0)
+            r = requests.get(f"http://127.0.0.1:{bridge_port}/positions{sym_param}", timeout=5.0)
             if r.status_code == 200:
                 data = r.json()
                 res = []

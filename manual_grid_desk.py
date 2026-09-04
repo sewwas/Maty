@@ -170,7 +170,7 @@ def get_mt5_live_price(brk: MT5Broker = None) -> float:
     """
     try:
         import requests as _req
-        r = _req.get(f"http://127.0.0.1:{MT5_BRIDGE_PORT}/symbol_info?symbol={EXNESS_SYMBOL}", timeout=0.8)
+        r = _req.get(f"http://127.0.0.1:{MT5_BRIDGE_PORT}/symbol_info?symbol={EXNESS_SYMBOL}", timeout=4.0)
         if r.status_code == 200:
             d = r.json()
             ask = float(d.get("ask", 0.0) or 0.0)
@@ -238,28 +238,26 @@ def compute_grid_levels(
 #  LIVE MT5 DATA HELPERS
 # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
+ALLOWED_MANUAL_MAGICS = (MANUAL_MAGIC, 0, 1008876)
+
 def get_live_positions(brk: MT5Broker) -> list:
-    """Returns open positions for magic 777001 only."""
-    raw = brk._fetch_live_positions(symbol=EXNESS_SYMBOL)
-    if not raw:
-        raw = brk._fetch_live_positions()
+    """Returns open positions for this manual desk (magic 777001, 1008876, or manual 0)."""
+    raw = brk._fetch_live_positions()
     if not raw:
         return []
-    return [p for p in raw if getattr(p, "magic", 0) == MANUAL_MAGIC]
+    return [p for p in raw if getattr(p, "magic", 0) in ALLOWED_MANUAL_MAGICS]
 
 
 def get_live_pending(brk: MT5Broker) -> list:
-    """Returns pending orders for magic 777001 only."""
-    raw = brk._fetch_live_orders(symbol=EXNESS_SYMBOL)
-    if not raw:
-        raw = brk._fetch_live_orders()
+    """Returns pending orders for this manual desk (magic 777001, 1008876, or manual 0)."""
+    raw = brk._fetch_live_orders()
     if not raw:
         return []
-    return [o for o in raw if getattr(o, "magic", 0) == MANUAL_MAGIC]
+    return [o for o in raw if getattr(o, "magic", 0) in ALLOWED_MANUAL_MAGICS]
 
 
 def get_total_floating_pnl(brk: MT5Broker) -> float:
-    """Sums floating P&L across all open positions for magic 777001."""
+    """Sums floating P&L across all open positions for this manual desk."""
     positions = get_live_positions(brk)
     return sum(float(getattr(p, "profit", 0.0)) for p in positions)
 
@@ -271,7 +269,7 @@ def get_account_summary(brk: MT5Broker) -> dict:
     """
     try:
         import requests as _req
-        r = _req.get(f"http://127.0.0.1:{MT5_BRIDGE_PORT}/account", timeout=1.5)
+        r = _req.get(f"http://127.0.0.1:{MT5_BRIDGE_PORT}/account", timeout=4.0)
         if r.status_code == 200:
             d = r.json()
             if d.get("connected") and int(d.get("login", 0)) > 0:
@@ -298,21 +296,27 @@ def get_account_summary(brk: MT5Broker) -> dict:
 def deploy_grid(brk: MT5Broker, levels: dict, lot_size: float, lot_mult: float = 1.0) -> tuple:
     """
     Places BUY_STOP orders above center and SELL_STOP orders below center.
+    Validates prices against live market ticks to prevent retcode 10015 (Invalid price).
     Applies lot multiplier per level (Martingale scaling).
     Returns (placed_count, errors_list).
     """
     placed, errors = 0, []
     ts = time.time()
 
+    # Query live market prices to guarantee stop orders are valid
+    live_p = get_mt5_live_price(brk)
+    min_dist = brk.get_min_stop_distance() if hasattr(brk, "get_min_stop_distance") else 0.50
+
     current_lot = lot_size
     for price in levels["buy_stops"]:
         try:
             actual_lot = round(current_lot, 2)
-            order = brk.place_order("BUY_STOP", price=price, size=actual_lot, timestamp=ts)
+            target_px = max(price, round(live_p + min_dist, 2)) if (live_p > 0 and price <= live_p) else price
+            order = brk.place_order("BUY_STOP", price=target_px, size=actual_lot, timestamp=ts)
             if order:
                 placed += 1
             else:
-                errors.append(f"BUY_STOP @ {price:.2f}: Broker returned no order")
+                errors.append(f"BUY_STOP @ {target_px:.2f}: Broker returned no order")
         except Exception as e:
             errors.append(f"BUY_STOP @ {price:.2f} ({actual_lot}L): {e}")
         current_lot *= lot_mult
@@ -321,11 +325,12 @@ def deploy_grid(brk: MT5Broker, levels: dict, lot_size: float, lot_mult: float =
     for price in levels["sell_stops"]:
         try:
             actual_lot = round(current_lot, 2)
-            order = brk.place_order("SELL_STOP", price=price, size=actual_lot, timestamp=ts)
+            target_px = min(price, round(live_p - min_dist, 2)) if (live_p > 0 and price >= live_p) else price
+            order = brk.place_order("SELL_STOP", price=target_px, size=actual_lot, timestamp=ts)
             if order:
                 placed += 1
             else:
-                errors.append(f"SELL_STOP @ {price:.2f}: Broker returned no order")
+                errors.append(f"SELL_STOP @ {target_px:.2f}: Broker returned no order")
         except Exception as e:
             errors.append(f"SELL_STOP @ {price:.2f} ({actual_lot}L): {e}")
         current_lot *= lot_mult
@@ -423,30 +428,40 @@ def close_positions_by_side(brk: MT5Broker, side: str) -> str:
 
 def flatten_all(brk: MT5Broker, state: dict) -> str:
     """
-    Immediately takes profit / flattens by closing all open positions first,
-    then cancelling all pending orders for magic 777001.
+    Immediately takes profit / flattens by closing all open positions first ASAP,
+    then cancelling all pending orders for this manual desk.
     Performs multi-pass verification to guarantee 100% of all active and pending orders are closed.
     """
     closed_count = 0
     total_pnl = 0.0
     errors = []
 
-    for attempt in range(5):
-        # 1. Fast bulk close on bridge by magic (15.0s timeout to allow multi-position execution)
-        try:
-            import requests as _req
-            r = _req.get(f"http://127.0.0.1:{MT5_BRIDGE_PORT}/close_all?magic={MANUAL_MAGIC}", timeout=15.0)
-            if r.status_code == 200 and r.json().get("success"):
-                closed_count += int(r.json().get("closed_count", 0))
-        except Exception as e:
-            errors.append(str(e))
+    # Get account currency for precise profit reporting
+    acc = get_account_summary(brk)
+    acct_curr = acc.get("currency", "USD")
+    curr_sym = "¢" if acct_curr == "USC" else "$"
 
-        # 2. Fast bulk cancel on bridge by magic (10.0s timeout)
-        try:
-            import requests as _req
-            _req.get(f"http://127.0.0.1:{MT5_BRIDGE_PORT}/cancel_all?magic={MANUAL_MAGIC}", timeout=10.0)
-        except Exception:
-            pass
+    for attempt in range(5):
+        # 1. Fast bulk close on bridge for manual desk magics (777001, then residual 0)
+        for m_id in [MANUAL_MAGIC, 0]:
+            try:
+                import requests as _req
+                r = _req.get(f"http://127.0.0.1:{MT5_BRIDGE_PORT}/close_all?magic={m_id}", timeout=15.0)
+                if r.status_code == 200:
+                    d = r.json()
+                    if d.get("success"):
+                        closed_count += int(d.get("closed_count", 0))
+                        total_pnl += float(d.get("total_pnl", 0.0))
+            except Exception as e:
+                errors.append(str(e))
+
+        # 2. Fast bulk cancel on bridge for manual desk magics
+        for m_id in [MANUAL_MAGIC, 0]:
+            try:
+                import requests as _req
+                _req.get(f"http://127.0.0.1:{MT5_BRIDGE_PORT}/cancel_all?magic={m_id}", timeout=10.0)
+            except Exception:
+                pass
 
         # 3. Ticket-by-ticket sweep for remaining open positions
         try:
@@ -482,11 +497,11 @@ def flatten_all(brk: MT5Broker, state: dict) -> str:
             errors.append(str(e))
 
         # 5. Verification check: Are both active positions and pending orders 0?
-        time.sleep(0.20)
         rem_pos = get_live_positions(brk)
         rem_ord = get_live_pending(brk)
         if len(rem_pos) == 0 and len(rem_ord) == 0:
             break
+        time.sleep(0.10)
 
     # Verification: check if any remain
     final_rem_pos = get_live_positions(brk)
@@ -518,7 +533,7 @@ def flatten_all(brk: MT5Broker, state: dict) -> str:
 
     if not is_fully_clean:
         return f"⚠️ Flatten warning ({len(final_rem_pos)} pos, {len(final_rem_ord)} ord remaining): {'; '.join(errors[:2])}"
-    return f"✅ 100% Closed & Flattened ({closed_count} pos closed) | Net P&L: ${total_pnl:+.2f}"
+    return f"✅ 100% Closed & Flattened ({closed_count} pos closed) | Net P&L: {curr_sym}{total_pnl:+.2f} {acct_curr}"
 
 
 
@@ -600,12 +615,16 @@ def get_pnl_monitor():
 
                         # Only evaluate profit targets when there are ACTUAL open positions
                         if has_positions:
+                            acc_i = get_account_summary(brk)
+                            acct_curr = acc_i.get("currency", "USD")
+                            curr_sym = "¢" if acct_curr == "USC" else "$"
+
                             if pnl >= tp_target and not shared["triggered"]:
                                 shared["triggered"] = True
-                                msg = f"🎯 TARGET PROFIT HIT: ${pnl:+.2f} (Target: +${tp_target:.2f}) — 100% Closing ALL Active & Pending Orders!"
+                                msg = f"🎯 TARGET PROFIT HIT: {curr_sym}{pnl:+.2f} {acct_curr} (Target: +{curr_sym}{tp_target:.2f} {acct_curr}) — 100% ASAP Closing ALL Active & Pending Orders!"
                                 logging.info(f"[Manual Grid Monitor] {msg}")
 
-                                # 1. 100% Guaranteed Close All Active Positions + Cancel All Pending Orders
+                                # 1. 100% Guaranteed Close All Active Positions + Cancel All Pending Orders ASAP
                                 flat_res = flatten_all(brk, cur_state)
 
                                 # Extra sweep to ensure absolute 0 remaining orders/positions
@@ -615,13 +634,12 @@ def get_pnl_monitor():
                                     if not rem_p and not rem_o:
                                         break
                                     flatten_all(brk, cur_state)
-                                    time.sleep(0.2)
+                                    time.sleep(0.10)
 
                                 # 2. Check Auto-Redeploy New Grid setting
                                 auto_redeploy = cur_cfg.get("auto_redeploy", True)
                                 if auto_redeploy:
-                                    time.sleep(0.4)  # MT5 order settlement buffer
-                                    # Fetch fresh live price at this exact instant from MT5 broker
+                                    time.sleep(0.3)  # MT5 order settlement buffer
                                     new_center = get_mt5_live_price(brk)
                                     new_levels = compute_grid_levels(
                                         new_center,
@@ -640,12 +658,12 @@ def get_pnl_monitor():
                                         cur_state["grid_levels"] = new_levels
                                         cur_state["grid_config"]["center_price"] = new_center
                                         save_state(cur_state)
-                                        shared["last_msg"] = f"🎯 TARGET HIT ${pnl:+.2f}! 100% Closed. 🚀 Auto-deployed NEW GRID ({placed} orders) centered at fresh live price ${new_center:,.2f}"
+                                        shared["last_msg"] = f"🎯 TARGET HIT {curr_sym}{pnl:+.2f}! 100% Closed. 🚀 Auto-deployed NEW GRID ({placed} orders) centered at {curr_sym}{new_center:,.2f}"
                                         logging.info(f"[Manual Grid Monitor] {shared['last_msg']}")
                                     else:
-                                        shared["last_msg"] = f"🎯 TARGET HIT ${pnl:+.2f}! 100% Closed. Redeploy errors: {'; '.join(errors[:2])}"
+                                        shared["last_msg"] = f"🎯 TARGET HIT {curr_sym}{pnl:+.2f}! 100% Closed. Redeploy warnings: {'; '.join(errors[:2])}"
                                 else:
-                                    shared["last_msg"] = f"🎯 TARGET HIT ${pnl:+.2f}! {flat_res} · Desk is READY for next grid."
+                                    shared["last_msg"] = f"🎯 TARGET HIT {curr_sym}{pnl:+.2f}! {flat_res} · Desk is READY for next grid."
 
                                 # Re-arm monitor for the new cycle
                                 time.sleep(2.0)
@@ -680,7 +698,7 @@ def get_pnl_monitor():
                         shared["last_pnl"] = 0.0
                 except Exception as e:
                     logging.warning(f"[PnL Monitor Error] {e}")
-                time.sleep(0.35)
+                time.sleep(1.0)
 
         t = threading.Thread(target=_monitor_loop, daemon=True, name="ManualGridPnLMonitor")
         t.start()
