@@ -11,10 +11,10 @@ _ORDERS_PER_SLOT = {"GOLD": 5, "MAJOR": 5, "MINOR": 3, "ALT": 2}
 # Hybrid safety bounds: live ATR drives the actual values; these are hard floor/ceiling guards.
 # To add a new symbol just add a row here — no gap/offset tuning needed, ATR handles it.
 PAIR_SAFETY_BOUNDS = {
-    "XAUUSD":   {"min_gap": 0.03, "max_gap": 0.80,  "min_offset": 0.03, "max_offset": 0.60,  "min_tp": 3.00, "max_tp":  40.0, "base_lot": 0.01, "std_gap": 0.07, "std_offset": 0.07, "lot_mult": 1.25, "max_cycle_sl": 2.50},
-    "PAXGUSDT": {"min_gap": 0.03, "max_gap": 0.80,  "min_offset": 0.03, "max_offset": 0.60,  "min_tp": 3.00, "max_tp":  40.0, "base_lot": 0.01, "std_gap": 0.07, "std_offset": 0.07, "lot_mult": 1.25, "max_cycle_sl": 2.50},
-    "GOLD":     {"min_gap": 0.03, "max_gap": 0.80,  "min_offset": 0.03, "max_offset": 0.60,  "min_tp": 3.00, "max_tp":  40.0, "base_lot": 0.01, "std_gap": 0.07, "std_offset": 0.07, "lot_mult": 1.25, "max_cycle_sl": 2.50},
-    "ETHUSDT":  {"min_gap": 0.5,  "max_gap": 3.0,  "min_offset": 0.5,  "max_offset": 25.0,  "min_tp": 2.00, "max_tp":  60.0, "base_lot": 0.15,  "std_gap": 0.10, "std_offset": 0.08, "lot_mult": 1.25, "max_cycle_sl": 1.50},
+    "XAUUSD":   {"min_gap": 0.03, "max_gap": 0.80,  "min_offset": 0.03, "max_offset": 0.60,  "min_tp": 8.00, "max_tp":  40.0, "base_lot": 0.01, "std_gap": 0.07, "std_offset": 0.07, "lot_mult": 1.00, "max_cycle_sl": 8.00},
+    "PAXGUSDT": {"min_gap": 0.03, "max_gap": 0.80,  "min_offset": 0.03, "max_offset": 0.60,  "min_tp": 8.00, "max_tp":  40.0, "base_lot": 0.01, "std_gap": 0.07, "std_offset": 0.07, "lot_mult": 1.00, "max_cycle_sl": 8.00},
+    "GOLD":     {"min_gap": 0.03, "max_gap": 0.80,  "min_offset": 0.03, "max_offset": 0.60,  "min_tp": 8.00, "max_tp":  40.0, "base_lot": 0.01, "std_gap": 0.07, "std_offset": 0.07, "lot_mult": 1.00, "max_cycle_sl": 8.00},
+    "ETHUSDT":  {"min_gap": 0.5,  "max_gap": 3.0,   "min_offset": 0.5,  "max_offset": 25.0,  "min_tp": 4.00, "max_tp":  60.0, "base_lot": 0.05, "std_gap": 0.10, "std_offset": 0.08, "lot_mult": 1.00, "max_cycle_sl": 6.00},
 }
 _DEFAULT_SAFETY_BOUNDS = {"min_gap": 0.03, "max_gap": 2.0, "min_offset": 0.03, "max_offset": 1.50, "min_tp": 2.00, "max_tp": 80.0, "base_lot": 0.01}
 
@@ -23,7 +23,7 @@ def clamp_symbol_lot_size(symbol: str, raw_size: float) -> float:
     """Clamps lot size strictly according to symbol category limits."""
     clean_sym = symbol.upper()
     if any(x in clean_sym for x in ["PAXG", "XAU", "GOLD"]):
-        return min(0.03, max(0.01, round(raw_size, 2)))
+        return 0.01  # Strict flat 0.01 lot size for Gold — zero martingale escalation
     else:
         return max(0.01, round(raw_size, 2))
 
@@ -321,35 +321,36 @@ class AutoReadingEngine:
         else:
             data_trend = str(tech.get("trend", "NEUTRAL")).upper()
             
-            if is_strong_trend:
-                is_overbought_rally = False
-                is_oversold_dip = False
-            else:
-                is_overbought_rally = (rsi >= 70.0 or vwap_dev >= 0.35)
-                is_oversold_dip = (rsi <= 30.0 or vwap_dev <= -0.35)
-            
-            # 1. 6-Indicator Weighted Trend (Top Priority)
-            if data_trend == "BULLISH":
+            # ── ANTI-EXHAUSTION PEAK & TROUGH GUARDS ──
+            # Never buy at overbought exhaustion peaks (RSI >= 68 or VWAP dev >= +0.30%)!
+            # Never sell at oversold exhaustion troughs (RSI <= 32 or VWAP dev <= -0.30%)!
+            is_exhaustion_peak   = (rsi >= 68.0 or vwap_dev >= 0.30)
+            is_exhaustion_trough = (rsi <= 32.0 or vwap_dev <= -0.30)
+
+            if is_exhaustion_peak and (data_trend == "BULLISH" or combined_bias > 0):
+                # Uptrend is overextended into an extreme overbought peak.
+                # DO NOT buy the top! Set DUAL mode so limits only catch dips at support.
+                top_bottom_status = "OVERBOUGHT_PEAK_PULLBACK_WAIT"
+                unidirectional_mode = "DUAL"
+            elif is_exhaustion_trough and (data_trend == "BEARISH" or combined_bias < 0):
+                # Downtrend is overextended into an extreme oversold trough.
+                # DO NOT sell the bottom! Set DUAL mode so limits only catch bounces at resistance.
+                top_bottom_status = "OVERSOLD_TROUGH_BOUNCE_WAIT"
+                unidirectional_mode = "DUAL"
+            # 1. 6-Indicator Weighted Trend (Active when NOT at exhaustion extremes)
+            elif data_trend == "BULLISH":
                 unidirectional_mode = "BUY_ONLY"
             elif data_trend == "BEARISH":
                 unidirectional_mode = "SELL_ONLY"
-            # 2. ADX Trend Breakout (Allow extreme RSI to confirm momentum rather than block it)
+            # 2. ADX Trend Breakout (Allow momentum if not exhausted)
             elif adx >= 35.0 or is_strong_trend:
-                # In strong momentum, rely on EMA direction if bias is neutral
                 if combined_bias >= 0.20 or (combined_bias > -0.15 and (ema_bias > 0.1 or data_trend == "BULLISH")):
                     unidirectional_mode = "BUY_ONLY"
                 elif combined_bias <= -0.20 or (combined_bias < 0.15 and (ema_bias < -0.1 or data_trend == "BEARISH")):
                     unidirectional_mode = "SELL_ONLY"
                 else:
                     unidirectional_mode = "DUAL"
-            # 3. Mean Reversion (Overbought/Oversold)
-            elif is_overbought_rally and combined_bias < 0.30:
-                top_bottom_status = "RALLY_SELL_OVERBOUGHT"
-                unidirectional_mode = "SELL_ONLY"
-            elif is_oversold_dip and combined_bias > -0.30:
-                top_bottom_status = "DIP_BUY_OVERSOLD"
-                unidirectional_mode = "BUY_ONLY"
-            # 4. Fallback to Combined Bias
+            # 3. Fallback to Combined Bias
             elif combined_bias >= 0.30:
                 unidirectional_mode = "BUY_ONLY"
             elif combined_bias <= -0.30:
@@ -503,6 +504,12 @@ class AutoReadingEngine:
         if abs(combined_bias) >= 0.50:
             dynamic_target_profit = round(dynamic_target_profit * 1.35, 2)
             lot_multiplier = 1.35
+
+        is_gold = any(x in clean_sym for x in ["XAU", "GOLD", "PAXG"])
+        if is_gold:
+            lot_multiplier = 1.0
+            max_levels = min(max_levels, 3)
+            dynamic_target_profit = max(sym_bounds.get("min_tp", 8.00), dynamic_target_profit)
 
         smc_result = {"smc_bias": "NEUTRAL", "smc_score": 50, "elliott_wave": 0,
                       "elliott_confidence": 0.0, "bos_direction": "NEUTRAL",

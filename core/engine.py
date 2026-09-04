@@ -309,6 +309,11 @@ class BreakoutGridBot:
         return round(base_gap * clamped_ratio, 6)
 
     def calculate_level_size(self, base_size: float, mult: float, level_idx: int) -> float:
+        sym = str(getattr(self, "symbol", getattr(getattr(self, "broker", None), "symbol", "")) or "").upper()
+        # Gold / PAXG: Strict capital protection — ALWAYS flat lot sizing (no Martingale escalation!)
+        if any(x in sym for x in ["XAU", "GOLD", "PAXG"]):
+            return round(base_size, 2)
+
         if mult == 1.0 or level_idx == 0:
             return round(base_size, 8)
 
@@ -322,9 +327,6 @@ class BreakoutGridBot:
             if size <= prev_size:
                 size = prev_size + 0.01
 
-            # Fix #9: Raise the DCA size cap from 0.02 → 0.10 so the martingale
-            # multiplier actually works across levels. Gold (XAUUSD) will still be
-            # clamped to 0.03 by sanitize_order_size() and auto_reading clamp_symbol_lot_size().
             size = min(size, 0.10)
         else:
             if size < 0.01:

@@ -542,7 +542,8 @@ def check_target_profit(self, current_price: float, timestamp: float) -> Optiona
         return None
 
     total_pnl = self.broker.get_floating_pnl(current_price)  # Use real MT5 profit (includes spread, swap, commission)
-    duration = timestamp - getattr(self, "cycle_start_time", timestamp)
+    _c_st = float(getattr(self, "_cycle_start_time", 0.0) or getattr(self, "cycle_start_time", 0.0) or timestamp)
+    duration = max(1.0, timestamp - _c_st)
 
     sym_u = str(getattr(self.broker, "symbol", getattr(self, "symbol_code", ""))).upper()
     
@@ -623,12 +624,17 @@ def check_target_profit(self, current_price: float, timestamp: float) -> Optiona
                 pass
 
         if sl_limit > 0:
-            # FIX #2: Minimum hold time guard — do NOT evaluate the standard SL for
-            # the first 30 seconds of a cycle. This prevents wick-hunted flash stops
-            # (e.g. a 1-second or 6-second trade that hits SL on a spread spike).
-            # NOTE: The Extreme Drawdown fallback above is NOT guarded — it remains
-            # an instant hard-stop for truly catastrophic moves only.
-            _MIN_HOLD_SECS = 30.0
+            # FIX #2: Trend-aligned breathing room & Minimum hold time guard.
+            # When open positions are aligned with the confirmed macro trend
+            # (e.g. SELL positions in SELL_ONLY mode or BUY positions in BUY_ONLY mode),
+            # normal pullbacks are expected and should NOT trigger a panic stop loss.
+            open_pos_types = [str(getattr(p, "type", "")).upper() for p in self.broker.open_positions.values()]
+            is_all_sell = bool(open_pos_types and all("SELL" in t for t in open_pos_types))
+            is_all_buy  = bool(open_pos_types and all("BUY" in t for t in open_pos_types))
+            is_trend_aligned = (is_all_sell and "SELL" in auto_uni) or (is_all_buy and "BUY" in auto_uni)
+
+            # Hold at least 60s for trend-aligned positions to survive candle fluctuations
+            _MIN_HOLD_SECS = 60.0 if is_trend_aligned else 30.0
             _cycle_open_time = getattr(self, "_cycle_start_time", timestamp)
             _hold_elapsed = timestamp - _cycle_open_time if _cycle_open_time > 0 else _MIN_HOLD_SECS
 
@@ -642,7 +648,7 @@ def check_target_profit(self, current_price: float, timestamp: float) -> Optiona
                     exit_triggered = True
                     exit_reason = "STOP_LOSS"
                     print(f"[{self.symbol}] 🛑 [CYCLE SL HIT] PnL ${total_pnl:.2f} <= -${effective_sl:.2f} "
-                          f"(SL cap: ${sl_limit:.2f}/lot × {micro_lots:.1f} lots | hold: {_hold_elapsed:.0f}s)")
+                          f"(SL cap: ${sl_limit:.2f}/lot × {micro_lots:.1f} lots | hold: {_hold_elapsed:.0f}s | trend_aligned: {is_trend_aligned})")
 
     # ─────────────────────────────────────────────────────────────
     # Basket Target Profit (Cycle Exit)
@@ -665,6 +671,11 @@ def check_target_profit(self, current_price: float, timestamp: float) -> Optiona
         
         cycle_target = ai_target if ai_target > 0 else (user_target if user_target > 0 else default_target)
         
+        is_gold = any(x in sym_u for x in ["XAU", "GOLD", "PAXG"])
+        min_gold_target = 8.0 * micro_lots * cent_multiplier
+        if is_gold and cycle_target < min_gold_target:
+            cycle_target = min_gold_target
+
         # Enforce minimum profit threshold
         effective_cycle_target = max(cycle_target, min_profit_threshold)
             
@@ -701,13 +712,7 @@ def check_target_profit(self, current_price: float, timestamp: float) -> Optiona
             "exit_price": current_price
         }
 
-        # Fix #1: record_trade_outcome is called by the caller (process_engine_tick L957).
-        # Calling it here too caused every cycle to be recorded TWICE, corrupting win-rate stats.
-        if getattr(self, "auto_restart", True):
-            print(f"[{self.symbol}] 🚀 [AUTO RESTART] Redeploying fresh grid at market price {current_price}...")
-            try: self.deploy_traps(current_price, timestamp, force=True)
-            except Exception as dep_err: print(f"Redeploy err: {dep_err}")
-
+        # Note: Grid redeployment is managed after full MT5 clearance & cooldown in process_engine_tick
         return summary
 
     return None
@@ -887,7 +892,9 @@ def process_engine_tick(self, previous_price: float, current_price: float, times
 
         if timestamp >= getattr(self, "_last_deploy_attempt_time", 0.0) + 3.0:
             self._last_deploy_attempt_time = timestamp   # Prevent runaway deploy loop on every tick
-            self.deploy_traps(current_price, timestamp, force=True)
+            post_cd = max(getattr(self, "_post_loss_cooldown", 0.0), getattr(self, "_post_cycle_cooldown_until", 0.0))
+            if timestamp >= post_cd:
+                self.deploy_traps(current_price, timestamp, force=True)
         return None
     else:
         self._last_empty_grid_time = None
@@ -932,6 +939,8 @@ def process_engine_tick(self, previous_price: float, current_price: float, times
         if getattr(self, "_max_open_in_cycle", 0) == 0:
             self._cycle_start_realized_pnl = getattr(self.broker, "realized_pnl", 0.0)
             self._cycle_start_time = timestamp
+            self.cycle_start_time = timestamp
+            self._cycle_recorded = False
         self._max_open_in_cycle = current_open
 
     last_pending = getattr(self, "_last_pending_count", current_pending)
@@ -962,11 +971,27 @@ def process_engine_tick(self, previous_price: float, current_price: float, times
             cycle_start_pnl = getattr(self, "_cycle_start_realized_pnl", getattr(self.broker, "realized_pnl", 0.0))
             cycle_pnl = getattr(self.broker, "realized_pnl", 0.0) - cycle_start_pnl
             
-            if abs(cycle_pnl) > 0.01:
-                reason = "NATIVE_SL" if cycle_pnl < 0 else "NATIVE_TP"
-                dur = timestamp - getattr(self, "_cycle_start_time", timestamp)
-                self.record_trade_outcome(cycle_pnl, reason, dur, current_price)
-                self.current_cycle_id = getattr(self, "current_cycle_id", 1) + 1
+            # Anti-duplication guard: ONLY record if not already recorded by exit handlers
+            if not getattr(self, "_cycle_recorded", False):
+                is_duplicate = False
+                if hasattr(self, "cycle_history") and self.cycle_history:
+                    last_c = self.cycle_history[-1]
+                    if abs(float(last_c.get("exit_time", 0.0)) - timestamp) < 60.0 and abs(float(last_c.get("total_pnl", 0.0)) - cycle_pnl) < 0.1:
+                        is_duplicate = True
+
+                if not is_duplicate and abs(cycle_pnl) > 0.01:
+                    reason = "NATIVE_SL" if cycle_pnl < 0 else "NATIVE_TP"
+                    dur = max(1.0, timestamp - getattr(self, "_cycle_start_time", timestamp))
+                    self.record_trade_outcome(cycle_pnl, reason, dur, current_price)
+                    self.current_cycle_id = getattr(self, "current_cycle_id", len(self.cycle_history)) + 1
+                    self._cycle_recorded = True
+                    if cycle_pnl < 0:
+                        self._post_loss_cooldown = timestamp + 180.0
+                        self._post_cycle_cooldown_until = timestamp + 180.0
+                    else:
+                        self._post_cycle_cooldown_until = timestamp + 90.0
+
+            self._cycle_recorded = False  # Reset for next cycle
                 
         print(f"[{self.symbol}] 🔄 [GRID REFRESH] {refresh_reason}. Canceling {current_pending} pending orders to deploy fresh grid.")
         try:
@@ -980,7 +1005,13 @@ def process_engine_tick(self, previous_price: float, current_price: float, times
         self._max_open_in_cycle = 0
         self._last_pending_count = 0
         self._last_open_count = 0
-        self.deploy_traps(current_price, timestamp, force=False)
+        
+        post_cd = max(getattr(self, "_post_loss_cooldown", 0.0), getattr(self, "_post_cycle_cooldown_until", 0.0))
+        if timestamp >= post_cd:
+            self.deploy_traps(current_price, timestamp, force=False)
+        else:
+            remaining_cd = int(post_cd - timestamp)
+            print(f"[{self.symbol}] ⏳ [POST-CYCLE COOLDOWN] Grid refresh pending. Waiting {remaining_cd}s cooldown before deploying fresh grid.")
         return None
 
     self._last_pending_count = current_pending
@@ -1053,11 +1084,19 @@ def process_engine_tick(self, previous_price: float, current_price: float, times
     if summary is not None:
         exit_reason = summary.get("exit_reason", "TARGET_PROFIT")
         self.record_trade_outcome(summary.get("total_pnl", 0.0), exit_reason, summary.get("duration", 0.0), current_price)
-        if exit_reason == "STOP_LOSS":
+        self._cycle_recorded = True
+        pnl_val = float(summary.get("total_pnl", 0.0))
+        if exit_reason == "STOP_LOSS" or pnl_val < 0:
             self._post_loss_cooldown = timestamp + (3 * 60)  # 3 min cooldown on Stop Loss
-            print(f"[{self.symbol}] ⏳ [COOLDOWN] Market highly volatile. Halting grid deployment for 3 minutes.")
+            self._post_cycle_cooldown_until = timestamp + (3 * 60)
+            print(f"[{self.symbol}] ⏳ [COOLDOWN] Stop Loss hit (-${abs(pnl_val):.2f}). Halting grid deployment for 3 minutes.")
+        elif exit_reason in ("TARGET_PROFIT", "PARTIAL_TP") or pnl_val > 0:
+            self._post_cycle_cooldown_until = timestamp + 90.0
+            print(f"[{self.symbol}] ⏳ [COOLDOWN] Profit secured (+${pnl_val:.2f}). Cooling down for 90s before next grid deployment to avoid chasing momentum.")
+        else:
+            self._post_cycle_cooldown_until = timestamp + 60.0
         
-        self.current_cycle_id += 1
+        self.current_cycle_id = getattr(self, "current_cycle_id", len(self.cycle_history)) + 1
 
         # CYCLE OVERLAP FIX: Hard MT5 position check before restarting.
         # Reset flags first, then verify MT5 is truly empty before deploying.
@@ -1108,7 +1147,12 @@ def process_engine_tick(self, previous_price: float, current_price: float, times
             pass
 
         if getattr(self, "auto_restart", True) and mt5_clear:
-            self.deploy_traps(current_price, timestamp, force=True)
+            post_cd = max(getattr(self, "_post_loss_cooldown", 0.0), getattr(self, "_post_cycle_cooldown_until", 0.0))
+            if timestamp >= post_cd:
+                self.deploy_traps(current_price, timestamp, force=True)
+            else:
+                remaining_cd = int(post_cd - timestamp)
+                print(f"[{self.symbol}] ⏳ [POST-CYCLE COOLDOWN] Waiting {remaining_cd}s cooldown before redeploying grid.")
 
         return summary
 
@@ -1123,9 +1167,12 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
     if not current_price or current_price <= 0:
         return
 
-    cooldown_expiry = getattr(self, "_post_loss_cooldown", 0.0)
-    if timestamp < cooldown_expiry:
-        return  # Silently wait out the 3m cooldown
+    cooldown_expiry = max(
+        getattr(self, "_post_loss_cooldown", 0.0),
+        getattr(self, "_post_cycle_cooldown_until", 0.0)
+    )
+    if timestamp < cooldown_expiry and not kwargs.get("manual_user_deploy", False):
+        return  # Silently wait out the cooldown
     if args:
         if isinstance(args[0], bool):
             force = args[0]
@@ -1314,6 +1361,9 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
         else:
             effective_levels = _cfg_levels
 
+        if any(x in sym_name for x in ["XAU", "GOLD", "PAXG"]):
+            effective_levels = min(effective_levels, 3)
+
         dyn_tp_factor = max(3.0, float(effective_levels * 1.0))
         calculated_dynamic_tp = gap_val * dyn_tp_factor
 
@@ -1491,41 +1541,53 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
         except Exception:
             swing_hi = swing_lo = 0.0
 
-        # ── Build candidate level pools (BUY side above price, SELL side below) ─
+        # ── Build candidate level pools: RESISTANCE (above price) & SUPPORT (below price) ──
         snap_tol = gap_val * 1.5   # Snap tolerance: 1.5× gap — levels within this are "nearby"
 
         # Each entry: (price, label, score_contribution)
-        buy_candidates:  list = []   # levels above ask (BUY_STOP targets)
-        sell_candidates: list = []   # levels below bid (SELL_STOP targets)
+        resistance_candidates: list = []  # levels above ask (RESISTANCE / SUPPLY: Bearish OBs, FVGs, Swing Highs)
+        support_candidates:    list = []  # levels below bid (SUPPORT / DEMAND: Bullish OBs, FVGs, Swing Lows)
 
-        def _add_buy(px: float, label: str, score: int):
+        def _add_resistance(px: float, label: str, score: int):
             # Must be valid for MT5: at least b_min_stop away from ask
             if px >= ask_ref + b_min_stop:
-                buy_candidates.append((round(px, digits), label, score))
+                resistance_candidates.append((round(px, digits), label, score))
 
-        def _add_sell(px: float, label: str, score: int):
+        def _add_support(px: float, label: str, score: int):
             # Must be valid for MT5: at least b_min_stop away from bid
             if px <= bid_ref - b_min_stop:
-                sell_candidates.append((round(px, digits), label, score))
+                support_candidates.append((round(px, digits), label, score))
 
-        # BUY-side institutional levels (above current price)
-        if bull_ob > 0:   _add_buy(bull_ob,    "BullOB",    3)
-        if buy_liq > 0:   _add_buy(buy_liq,    "BuyLP",     3)
-        if bull_fvg_hi>0: _add_buy(bull_fvg_hi,"FVG_hi",   2)
-        if bull_fvg_lo>0: _add_buy(bull_fvg_lo,"FVG_lo",   2)
-        if swing_hi > 0:  _add_buy(swing_hi,   "SwingHi",   2)
-        if vwap_px > ask_ref: _add_buy(vwap_px,"VWAP",     1)
+        # RESISTANCE (above current price) — prime zones to pre-trap bounces with SELL_LIMIT:
+        # 1. Bearish Order Block (institutional supply where smart money initiated dumps)
+        if bear_ob > 0:       _add_resistance(bear_ob,     "BearOB",   4)
+        # 2. Bearish FVG boundaries (imbalance supply zones)
+        if bear_fvg_hi > 0:   _add_resistance(bear_fvg_hi, "BearFVG",  3)
+        if bear_fvg_lo > 0:   _add_resistance(bear_fvg_lo, "BearFVG",  2)
+        # 3. Buy-side Liquidity Pool & Swing Highs (stops waiting to be swept)
+        if buy_liq > 0:       _add_resistance(buy_liq,     "BuyLiq",   3)
+        if swing_hi > 0:      _add_resistance(swing_hi,    "SwingHi",  2)
+        # 4. VWAP if above price
+        if vwap_px >= ask_ref + b_min_stop: _add_resistance(vwap_px, "VWAP", 1)
+        # 5. Breaker Block (if bull_ob is now above price after a breakdown)
+        if bull_ob >= ask_ref + b_min_stop: _add_resistance(bull_ob, "BreakerOB", 2)
 
-        # SELL-side institutional levels (below current price)
-        if bear_ob > 0:   _add_sell(bear_ob,   "BearOB",    3)
-        if sell_liq > 0:  _add_sell(sell_liq,  "SellLP",    3)
-        if bear_fvg_lo>0: _add_sell(bear_fvg_lo,"FVG_lo",  2)
-        if bear_fvg_hi>0: _add_sell(bear_fvg_hi,"FVG_hi",  2)
-        if swing_lo > 0:  _add_sell(swing_lo,  "SwingLo",   2)
-        if vwap_px > 0 and vwap_px < bid_ref: _add_sell(vwap_px, "VWAP", 1)
+        # SUPPORT (below current price) — prime zones to pre-trap dips with BUY_LIMIT:
+        # 1. Bullish Order Block (institutional demand where smart money initiated pumps)
+        if bull_ob > 0:       _add_support(bull_ob,     "BullOB",   4)
+        # 2. Bullish FVG boundaries (imbalance demand zones)
+        if bull_fvg_lo > 0:   _add_support(bull_fvg_lo, "BullFVG",  3)
+        if bull_fvg_hi > 0:   _add_support(bull_fvg_hi, "BullFVG",  2)
+        # 3. Sell-side Liquidity Pool & Swing Lows (stops waiting to be swept)
+        if sell_liq > 0:      _add_support(sell_liq,    "SellLiq",  3)
+        if swing_lo > 0:      _add_support(swing_lo,    "SwingLo",  2)
+        # 4. VWAP if below price
+        if vwap_px > 0 and vwap_px <= bid_ref - b_min_stop: _add_support(vwap_px, "VWAP", 1)
+        # 5. Breaker Block (if bear_ob is now below price after a breakout)
+        if bear_ob > 0 and bear_ob <= bid_ref - b_min_stop: _add_support(bear_ob, "BreakerOB", 2)
 
-        # ── Merge nearby candidates (within snap_tol of each other) & score ──
-        def _merge_and_score(candidates: list, is_buy: bool) -> list:
+        # ── Merge nearby candidates (within snap_tol) & score ──
+        def _merge_and_score(candidates: list, is_resistance: bool) -> list:
             """Cluster nearby levels, sum scores, return sorted by proximity to price."""
             merged: list = []
             used = set()
@@ -1543,89 +1605,69 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
                         used.add(jdx)
                 used.add(idx)
                 best_px = round(sum(cluster_px) / len(cluster_px), digits)  # centroid
-                merged.append((cluster_sc, best_px, "+".join(set(cluster_lbl))))
+                merged.append((cluster_sc, best_px, "+".join(sorted(set(cluster_lbl)))))
             
-            # Sort by proximity to current price:
-            # For BUY (above price), we want the lowest valid resistance (closest).
-            # For SELL (below price), we want the highest valid support (closest).
-            if is_buy:
+            # Proximity sorting:
+            # Resistance (above price): lowest valid level is closest to price -> sort ASCENDING
+            # Support (below price): highest valid level is closest to price -> sort DESCENDING
+            if is_resistance:
                 return sorted(merged, key=lambda x: x[1])
             else:
                 return sorted(merged, key=lambda x: x[1], reverse=True)
 
-        merged_buy  = _merge_and_score(buy_candidates, is_buy=True)
-        merged_sell = _merge_and_score(sell_candidates, is_buy=False)
+        merged_resistance = _merge_and_score(resistance_candidates, is_resistance=True)
+        merged_support    = _merge_and_score(support_candidates, is_resistance=False)
 
-        # ── Fallback: if no SMC levels found, use base_start_offset anchor ──
-        # Guarantees at least 1 order even in data-sparse conditions.
+        # ── Fallback Anchors ──
+        # Guarantees structural levels exist even if SMC data is sparse
         ranging_mode = not (directional_buy or directional_sell)
-        if not merged_buy and (directional_buy or ranging_mode):
-            merged_buy = [(1, round(ask_ref + base_start_offset, digits), "Anchor")]
-        if not merged_sell and (directional_sell or ranging_mode):
-            merged_sell = [(1, round(bid_ref - base_start_offset, digits), "Anchor")]
+        if not merged_resistance and (directional_sell or directional_buy or ranging_mode):
+            merged_resistance = [(1, round(ask_ref + base_start_offset, digits), "Anchor")]
+        if not merged_support and (directional_buy or directional_sell or ranging_mode):
+            merged_support = [(1, round(bid_ref - base_start_offset, digits), "Anchor")]
 
-        # ── Place orders — top N candidates by score, up to effective_levels ──
+        # ── Order Placement Helpers with Structural TP & SL ──
         placed_count = 0
 
-        def _place_buy_stop(px: float, label: str, level_idx: int):
+        def _place_sell_limit(px: float, label: str, level_idx: int):
             nonlocal placed_count
             if placed_count + len(_open_pos) >= effective_levels: return
             _mult = 1.0 if _is_hedged_override else self.order_size_multiplier
             sz  = self.calculate_level_size(self.order_size, _mult, level_idx)
-            # Smart TP: Find nearest structural level above the entry that is at least min_tp_dist away
-            smart_tp = round(px + dir_tp_dist, digits) # Fallback
-            valid_tps = [c_px for (_, c_px, _) in merged_buy if c_px >= px + min_tp_dist and c_px <= px + (dir_tp_dist * 2.0)]
+            # Smart TP: target nearest structural support below entry
+            smart_tp = round(px - dir_tp_dist, digits)
+            valid_tps = [c_px for (_, c_px, _) in merged_support if c_px <= px - min_tp_dist and c_px >= px - (dir_tp_dist * 2.0)]
             if valid_tps:
-                smart_tp = min(valid_tps) # lowest valid resistance above entry
-            
-            # Smart SL: Find nearest structural level below the entry that is at least min_sl_dist away
-            smart_sl = round(px - min_sl_dist, digits) # Fallback
-            valid_sls = [c_px for (_, c_px, _) in merged_sell if c_px <= px - min_sl_dist and c_px >= px - (min_sl_dist * 2.5)]
+                smart_tp = max(valid_tps)
+            # Smart SL: protected above nearest structural resistance over entry
+            smart_sl = round(px + min_sl_dist, digits)
+            valid_sls = [c_px for (_, c_px, _) in merged_resistance if c_px >= px + min_sl_dist and c_px <= px + (min_sl_dist * 2.5)]
             if valid_sls:
-                smart_sl = max(valid_sls) # highest valid level below entry
-                
+                smart_sl = min(valid_sls)
             try:
-                r = self.broker.place_order("BUY_STOP", px, sz, timestamp, tp=smart_tp, sl=smart_sl)
-                if r:
-                    placed_count += 1
-                    self.active_buy_levels.append(px)
-                    print(f"[{sym_name}] 📈 [BUY_STOP|{label}] @ ${px:,.{digits}f}  TP:${smart_tp:,.{digits}f}  SL:${smart_sl:,.{digits}f}  sz:{sz}")
-            except Exception as e:
-                print(f"[{sym_name}] BUY_STOP error @ {px}: {e}")
-
-        def _place_sell_stop(px: float, label: str, level_idx: int):
-            nonlocal placed_count
-            if placed_count + len(_open_pos) >= effective_levels: return
-            _mult = 1.0 if _is_hedged_override else self.order_size_multiplier
-            sz  = self.calculate_level_size(self.order_size, _mult, level_idx)
-            # Smart TP: Find nearest structural level below the entry that is at least min_tp_dist away
-            smart_tp = round(px - dir_tp_dist, digits) # Fallback
-            valid_tps = [c_px for (_, c_px, _) in merged_sell if c_px <= px - min_tp_dist and c_px >= px - (dir_tp_dist * 2.0)]
-            if valid_tps:
-                smart_tp = max(valid_tps) # highest valid support below entry
-            
-            # Smart SL: Find nearest structural level above the entry that is at least min_sl_dist away
-            smart_sl = round(px + min_sl_dist, digits) # Fallback
-            valid_sls = [c_px for (_, c_px, _) in merged_buy if c_px >= px + min_sl_dist and c_px <= px + (min_sl_dist * 2.5)]
-            if valid_sls:
-                smart_sl = min(valid_sls) # lowest valid level above entry
-
-            try:
-                r = self.broker.place_order("SELL_STOP", px, sz, timestamp, tp=smart_tp, sl=smart_sl)
+                r = self.broker.place_order("SELL_LIMIT", px, sz, timestamp, tp=smart_tp, sl=smart_sl)
                 if r:
                     placed_count += 1
                     self.active_sell_levels.append(px)
-                    print(f"[{sym_name}] 📉 [SELL_STOP|{label}] @ ${px:,.{digits}f}  TP:${smart_tp:,.{digits}f}  SL:${smart_sl:,.{digits}f}  sz:{sz}")
+                    print(f"[{sym_name}] 🧱 [SELL_LIMIT_BOUNCE|{label}] @ ${px:,.{digits}f}  TP:${smart_tp:,.{digits}f}  SL:${smart_sl:,.{digits}f}  sz:{sz}")
             except Exception as e:
-                print(f"[{sym_name}] SELL_STOP error @ {px}: {e}")
+                print(f"[{sym_name}] SELL_LIMIT error @ {px}: {e}")
 
         def _place_buy_limit(px: float, label: str, level_idx: int):
             nonlocal placed_count
             if placed_count + len(_open_pos) >= effective_levels: return
             _mult = 1.0 if _is_hedged_override else self.order_size_multiplier
             sz  = self.calculate_level_size(self.order_size, _mult, level_idx)
+            # Smart TP: target nearest structural resistance above entry
             smart_tp = round(px + dir_tp_dist, digits)
+            valid_tps = [c_px for (_, c_px, _) in merged_resistance if c_px >= px + min_tp_dist and c_px <= px + (dir_tp_dist * 2.0)]
+            if valid_tps:
+                smart_tp = min(valid_tps)
+            # Smart SL: protected below nearest structural support under entry
             smart_sl = round(px - min_sl_dist, digits)
+            valid_sls = [c_px for (_, c_px, _) in merged_support if c_px <= px - min_sl_dist and c_px >= px - (min_sl_dist * 2.5)]
+            if valid_sls:
+                smart_sl = max(valid_sls)
             try:
                 r = self.broker.place_order("BUY_LIMIT", px, sz, timestamp, tp=smart_tp, sl=smart_sl)
                 if r:
@@ -1635,140 +1677,130 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
             except Exception as e:
                 print(f"[{sym_name}] BUY_LIMIT error @ {px}: {e}")
 
-        def _place_sell_limit(px: float, label: str, level_idx: int):
+        def _place_sell_stop(px: float, label: str, level_idx: int):
             nonlocal placed_count
             if placed_count + len(_open_pos) >= effective_levels: return
             _mult = 1.0 if _is_hedged_override else self.order_size_multiplier
             sz  = self.calculate_level_size(self.order_size, _mult, level_idx)
             smart_tp = round(px - dir_tp_dist, digits)
+            valid_tps = [c_px for (_, c_px, _) in merged_support if c_px <= px - min_tp_dist and c_px >= px - (dir_tp_dist * 2.0)]
+            if valid_tps:
+                smart_tp = max(valid_tps)
             smart_sl = round(px + min_sl_dist, digits)
+            valid_sls = [c_px for (_, c_px, _) in merged_resistance if c_px >= px + min_sl_dist and c_px <= px + (min_sl_dist * 2.5)]
+            if valid_sls:
+                smart_sl = min(valid_sls)
             try:
-                r = self.broker.place_order("SELL_LIMIT", px, sz, timestamp, tp=smart_tp, sl=smart_sl)
+                r = self.broker.place_order("SELL_STOP", px, sz, timestamp, tp=smart_tp, sl=smart_sl)
                 if r:
                     placed_count += 1
                     self.active_sell_levels.append(px)
-                    print(f"[{sym_name}] 🧱 [SELL_LIMIT_SPIKE|{label}] @ ${px:,.{digits}f}  TP:${smart_tp:,.{digits}f}  SL:${smart_sl:,.{digits}f}  sz:{sz}")
+                    print(f"[{sym_name}] 📉 [SELL_STOP_BREAKDOWN|{label}] @ ${px:,.{digits}f}  TP:${smart_tp:,.{digits}f}  SL:${smart_sl:,.{digits}f}  sz:{sz}")
             except Exception as e:
-                print(f"[{sym_name}] SELL_LIMIT error @ {px}: {e}")
+                print(f"[{sym_name}] SELL_STOP error @ {px}: {e}")
+
+        def _place_buy_stop(px: float, label: str, level_idx: int):
+            nonlocal placed_count
+            if placed_count + len(_open_pos) >= effective_levels: return
+            _mult = 1.0 if _is_hedged_override else self.order_size_multiplier
+            sz  = self.calculate_level_size(self.order_size, _mult, level_idx)
+            smart_tp = round(px + dir_tp_dist, digits)
+            valid_tps = [c_px for (_, c_px, _) in merged_resistance if c_px >= px + min_tp_dist and c_px <= px + (dir_tp_dist * 2.0)]
+            if valid_tps:
+                smart_tp = min(valid_tps)
+            smart_sl = round(px - min_sl_dist, digits)
+            valid_sls = [c_px for (_, c_px, _) in merged_support if c_px <= px - min_sl_dist and c_px >= px - (min_sl_dist * 2.5)]
+            if valid_sls:
+                smart_sl = max(valid_sls)
+            try:
+                r = self.broker.place_order("BUY_STOP", px, sz, timestamp, tp=smart_tp, sl=smart_sl)
+                if r:
+                    placed_count += 1
+                    self.active_buy_levels.append(px)
+                    print(f"[{sym_name}] 📈 [BUY_STOP_BREAKOUT|{label}] @ ${px:,.{digits}f}  TP:${smart_tp:,.{digits}f}  SL:${smart_sl:,.{digits}f}  sz:{sz}")
+            except Exception as e:
+                print(f"[{sym_name}] BUY_STOP error @ {px}: {e}")
 
         self.active_buy_levels  = []
         self.active_sell_levels = []
 
-        # Minimum gap between two STOP orders on the same side.
-        # Confirmed: 0.5×ATR — trend is strong, tighter continuation stack is fine.
-        # Unconfirmed: 0.8×ATR — trend is weak, space stops wider to avoid double-fill risk.
+        # Minimum spacing between orders on same side
         _min_stop_gap_confirmed   = atr_5m * 0.5 if (atr_5m and atr_5m > 0) else (current_price * 0.003)
         _min_stop_gap_unconfirmed = atr_5m * 0.8 if (atr_5m and atr_5m > 0) else (current_price * 0.005)
         _min_stop_gap = _min_stop_gap_confirmed if _is_100pct_grid else _min_stop_gap_unconfirmed
 
-        if directional_buy:
-            if _is_100pct_grid and effective_levels >= 3:
-                # ── 100% CONFIRMED BULL: 2 BUY_STOPs + 1 BUY_LIMIT ─────────────────
-                # Stop-1: closest resistance breakout (highest-score SMC level)
-                stop1_px = merged_buy[0][1] if merged_buy else round(ask_ref + base_start_offset, digits)
-                stop1_lb = merged_buy[0][2] if merged_buy else "Anchor"
-                _place_buy_stop(stop1_px, stop1_lb, 0)
+        # ── INSTITUTIONAL PRE-MOVE TRAP DEPLOYMENT ──
+        if directional_sell:
+            # ── CONFIRMED BEARISH (SELL MODE) ──
+            # INSTITUTIONAL TRAP: Catch price BEFORE the dump by shorting the bounce into supply!
+            # 1. Primary Trap: SELL_LIMIT at nearest Bearish OB / FVG / Resistance above price
+            lim1_px = merged_resistance[0][1] if merged_resistance else round(ask_ref + base_start_offset, digits)
+            lim1_lb = merged_resistance[0][2] if merged_resistance else "Anchor"
+            _place_sell_limit(lim1_px, lim1_lb, 0)
 
-                # Stop-2: continuation breakout — must be at least 0.5×ATR above Stop-1
-                #   Priority: next distinct SMC level → fallback: Stop-1 + 1.0×ATR (synthetic)
-                stop2_candidate = None
-                for (_, c_px, c_lb) in merged_buy[1:]:
-                    if c_px >= stop1_px + _min_stop_gap:
-                        stop2_candidate = (c_px, c_lb)
+            # 2. Secondary Trap: Higher SELL_LIMIT (DCA Retracement Wick Fade)
+            if effective_levels >= 2:
+                lim2_cand = None
+                for (_, c_px, c_lb) in merged_resistance[1:]:
+                    if c_px >= lim1_px + _min_stop_gap:
+                        lim2_cand = (c_px, c_lb)
                         break
-                if stop2_candidate is None:
-                    # Synthetic level: ATR step above Stop-1 so the 2nd trap is always spaced safely
+                if lim2_cand is None:
                     _atr_step = atr_5m if (atr_5m and atr_5m > 0) else current_price * 0.006
-                    stop2_candidate = (round(stop1_px + _atr_step, digits), "ATR+1")
-                _place_buy_stop(stop2_candidate[0], stop2_candidate[1], 1)
+                    lim2_cand = (round(lim1_px + _atr_step, digits), "ATR+1")
+                _place_sell_limit(lim2_cand[0], lim2_cand[1], 1)
 
-                # Limit-1: DCA dip — best structural support below price
-                if merged_sell:
-                    _place_buy_limit(merged_sell[0][1], merged_sell[0][2], 2)
-                else:
-                    _place_buy_limit(round(bid_ref - base_start_offset, digits), "DCA", 2)
+            # 3. Continuation Trap: SELL_STOP breakdown at support floor below price
+            if effective_levels >= 3:
+                stop_px = merged_support[0][1] if merged_support else round(bid_ref - base_start_offset, digits)
+                stop_lb = merged_support[0][2] if merged_support else "Anchor"
+                _place_sell_stop(stop_px, stop_lb, 2)
 
-            else:
-                # ── Unconfirmed directional BUY: 2 BUY_STOPs + 1 BUY_LIMIT (cautious) ──
-                # Stop-1: closest SMC breakout level above price
-                uc_stop1_px = merged_buy[0][1] if merged_buy else round(ask_ref + base_start_offset, digits)
-                uc_stop1_lb = merged_buy[0][2] if merged_buy else "Anchor"
-                _place_buy_stop(uc_stop1_px, uc_stop1_lb, 0)
+        elif directional_buy:
+            # ── CONFIRMED BULLISH (BUY MODE) ──
+            # INSTITUTIONAL TRAP: Catch price BEFORE the pump by buying the dip into demand!
+            # 1. Primary Trap: BUY_LIMIT at nearest Bullish OB / FVG / Support below price
+            lim1_px = merged_support[0][1] if merged_support else round(bid_ref - base_start_offset, digits)
+            lim1_lb = merged_support[0][2] if merged_support else "Anchor"
+            _place_buy_limit(lim1_px, lim1_lb, 0)
 
-                # Stop-2: wider gap (0.8×ATR) — trend unconfirmed so keep stops further apart
-                uc_stop2 = None
-                for (_, c_px, c_lb) in merged_buy[1:]:
-                    if c_px >= uc_stop1_px + _min_stop_gap:
-                        uc_stop2 = (c_px, c_lb)
+            # 2. Secondary Trap: Deeper BUY_LIMIT (DCA Dip Wick Fade)
+            if effective_levels >= 2:
+                lim2_cand = None
+                for (_, c_px, c_lb) in merged_support[1:]:
+                    if c_px <= lim1_px - _min_stop_gap:
+                        lim2_cand = (c_px, c_lb)
                         break
-                if uc_stop2 is None:
+                if lim2_cand is None:
                     _atr_step = atr_5m if (atr_5m and atr_5m > 0) else current_price * 0.006
-                    uc_stop2 = (round(uc_stop1_px + _atr_step, digits), "ATR+1")
-                _place_buy_stop(uc_stop2[0], uc_stop2[1], 1)
+                    lim2_cand = (round(lim1_px - _atr_step, digits), "ATR-1")
+                _place_buy_limit(lim2_cand[0], lim2_cand[1], 1)
 
-                # Limit-1: DCA dip — structural support below price
-                if merged_sell:
-                    _place_buy_limit(merged_sell[0][1], merged_sell[0][2], 2)
-                else:
-                    _place_buy_limit(round(bid_ref - base_start_offset, digits), "DCA", 2)
-
-        elif directional_sell:
-            if _is_100pct_grid and effective_levels >= 3:
-                # ── 100% CONFIRMED BEAR: 2 SELL_STOPs + 1 SELL_LIMIT ────────────────
-                # Stop-1: closest support breakdown (highest-score SMC level)
-                stop1_px = merged_sell[0][1] if merged_sell else round(bid_ref - base_start_offset, digits)
-                stop1_lb = merged_sell[0][2] if merged_sell else "Anchor"
-                _place_sell_stop(stop1_px, stop1_lb, 0)
-
-                # Stop-2: continuation breakdown — must be at least 0.5×ATR below Stop-1
-                stop2_candidate = None
-                for (_, c_px, c_lb) in merged_sell[1:]:
-                    if c_px <= stop1_px - _min_stop_gap:
-                        stop2_candidate = (c_px, c_lb)
-                        break
-                if stop2_candidate is None:
-                    _atr_step = atr_5m if (atr_5m and atr_5m > 0) else current_price * 0.006
-                    stop2_candidate = (round(stop1_px - _atr_step, digits), "ATR-1")
-                _place_sell_stop(stop2_candidate[0], stop2_candidate[1], 1)
-
-                # Limit-1: DCA spike fade — best structural resistance above price
-                if merged_buy:
-                    _place_sell_limit(merged_buy[0][1], merged_buy[0][2], 2)
-                else:
-                    _place_sell_limit(round(ask_ref + base_start_offset, digits), "DCA", 2)
-
-            else:
-                # ── Unconfirmed directional SELL: 2 SELL_STOPs + 1 SELL_LIMIT (cautious) ──
-                # Stop-1: closest SMC breakdown level below price
-                uc_stop1_px = merged_sell[0][1] if merged_sell else round(bid_ref - base_start_offset, digits)
-                uc_stop1_lb = merged_sell[0][2] if merged_sell else "Anchor"
-                _place_sell_stop(uc_stop1_px, uc_stop1_lb, 0)
-
-                # Stop-2: wider gap (0.8×ATR) — trend unconfirmed so keep stops further apart
-                uc_stop2 = None
-                for (_, c_px, c_lb) in merged_sell[1:]:
-                    if c_px <= uc_stop1_px - _min_stop_gap:
-                        uc_stop2 = (c_px, c_lb)
-                        break
-                if uc_stop2 is None:
-                    _atr_step = atr_5m if (atr_5m and atr_5m > 0) else current_price * 0.006
-                    uc_stop2 = (round(uc_stop1_px - _atr_step, digits), "ATR-1")
-                _place_sell_stop(uc_stop2[0], uc_stop2[1], 1)
-
-                # Limit-1: DCA spike fade — structural resistance above price
-                if merged_buy:
-                    _place_sell_limit(merged_buy[0][1], merged_buy[0][2], 2)
-                else:
-                    _place_sell_limit(round(ask_ref + base_start_offset, digits), "DCA", 2)
+            # 3. Continuation Trap: BUY_STOP breakout at resistance ceiling above price
+            if effective_levels >= 3:
+                stop_px = merged_resistance[0][1] if merged_resistance else round(ask_ref + base_start_offset, digits)
+                stop_lb = merged_resistance[0][2] if merged_resistance else "Anchor"
+                _place_buy_stop(stop_px, stop_lb, 2)
 
         else:
-            # Ranging — Dual mode on stops only (unchanged)
-            buy_slots  = min(effective_levels, len(merged_buy))
-            sell_slots = min(effective_levels, len(merged_sell))
-            for i in range(buy_slots):
-                _place_buy_stop(merged_buy[i][1], merged_buy[i][2], i)
-            for i in range(sell_slots):
-                _place_sell_stop(merged_sell[i][1], merged_sell[i][2], i)
+            # ── RANGING / DUAL MODE ──
+            # Balanced boundary traps: Limit orders near boundaries + breakout stops
+            lim_buy_px = merged_support[0][1] if merged_support else round(bid_ref - base_start_offset, digits)
+            lim_buy_lb = merged_support[0][2] if merged_support else "Anchor"
+            _place_buy_limit(lim_buy_px, lim_buy_lb, 0)
+
+            lim_sell_px = merged_resistance[0][1] if merged_resistance else round(ask_ref + base_start_offset, digits)
+            lim_sell_lb = merged_resistance[0][2] if merged_resistance else "Anchor"
+            _place_sell_limit(lim_sell_px, lim_sell_lb, 1)
+
+            if effective_levels >= 3:
+                stp_buy_px = merged_resistance[0][1] if merged_resistance else round(ask_ref + base_start_offset, digits)
+                stp_buy_lb = merged_resistance[0][2] if merged_resistance else "Anchor"
+                _place_buy_stop(stp_buy_px, stp_buy_lb, 2)
+            if effective_levels >= 4:
+                stp_sell_px = merged_support[0][1] if merged_support else round(bid_ref - base_start_offset, digits)
+                stp_sell_lb = merged_support[0][2] if merged_support else "Anchor"
+                _place_sell_stop(stp_sell_px, stp_sell_lb, 3)
 
 
         if hasattr(self.broker, "purge_duplicate_mt5_orders"):
@@ -1936,17 +1968,31 @@ def record_trade_outcome(self, pnl: float, exit_reason: str, duration: float, ex
         
     cent_mult = 100.0 if is_cent_account else 1.0
     real_pnl = float(pnl) / cent_mult
+    dur_val = round(float(duration), 1)
+    st_time = float(getattr(self, "_cycle_start_time", 0.0) or getattr(self, "cycle_start_time", 0.0) or 0.0)
+    if st_time <= 0.0 or st_time > now_ts:
+        st_time = max(0.0, now_ts - dur_val)
+
+    cid = getattr(self, "current_cycle_id", None)
+    if cid is None or cid <= 0:
+        last_cid = 0
+        if self.cycle_history:
+            last_cid = max((c.get("cycle_id", 0) for c in self.cycle_history if isinstance(c.get("cycle_id"), (int, float))), default=0)
+        cid = int(last_cid) + 1
+        self.current_cycle_id = cid
 
     outcome = {
         "timestamp":    now_ts,
         "exit_time":    now_ts,
+        "start_time":   st_time,
+        "entry_time":   st_time,
         "symbol":       sym_name,
         "pnl":          round(real_pnl, 2),
         "total_pnl":    round(real_pnl, 2),
         "exit_reason":  exit_reason,
-        "duration":     round(float(duration), 1),
+        "duration":     dur_val,
         "is_win":       real_pnl > 0.0,
-        "cycle_id":     getattr(self, "current_cycle_id", len(self.cycle_history) + 1),
+        "cycle_id":     cid,
         "deploy_price": deploy_px,
         "entry_price":  entry_px,
         "exit_price":   exit_price,
@@ -2032,11 +2078,16 @@ def sync_cycle_history_from_trades(self):
             ts_val = float(item.get("exit_time", item.get("timestamp", time.time())))
             st_val = float(item.get("entry_time", item.get("start_time", ts_val - 15.0)))
             
+            deal_sym = str(getattr(self.broker, "symbol", getattr(self, "symbol_code", ""))).upper()
+            item_sym = str(item.get("symbol", deal_sym)).upper()
             merged = False
             for cycle in reversed(self.cycle_history):
-                # Fix #17: Reduce merge window from 5s → 1s to prevent unrelated cycles from
-                # being merged together.
-                if abs(float(cycle.get("exit_time", 0.0)) - ts_val) <= 1.0:
+                c_sym = str(cycle.get("symbol", deal_sym)).upper()
+                time_diff = abs(float(cycle.get("exit_time", 0.0)) - ts_val)
+                sym_match = (not c_sym or not item_sym or c_sym == item_sym or 
+                             ("GOLD" in c_sym and "PAXG" in item_sym) or 
+                             ("PAXG" in c_sym and "GOLD" in item_sym))
+                if time_diff <= 15.0 and sym_match:
                     if not cycle.get("mt5_synced", False):
                         cycle["total_pnl"] = 0.0
                         cycle["fills_count"] = 0
@@ -2057,10 +2108,13 @@ def sync_cycle_history_from_trades(self):
                     break
             
             if not merged:
+                last_cid = max((c.get("cycle_id", 0) for c in self.cycle_history if isinstance(c.get("cycle_id"), (int, float))), default=0)
+                new_cid = int(last_cid) + 1
                 self.cycle_history.append({
-                    "cycle_id": len(self.cycle_history) + 1,
+                    "cycle_id": new_cid,
                     "total_pnl": round(pnl_val, 3),
                     "pnl": round(pnl_val, 3),
+                    "symbol": item_sym,
                     "deploy_price": float(item.get("deploy_price", item.get("entry_price", 0.0))),
                     "entry_price": float(item.get("entry_price", item.get("open_price", 0.0))),
                     "exit_price": float(item.get("exit_price", item.get("close_price", 0.0))),
