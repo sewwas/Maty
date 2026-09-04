@@ -608,15 +608,41 @@ def check_target_profit(self, current_price: float, timestamp: float) -> Optiona
     # ─────────────────────────────────────────────────────────────
     if not exit_triggered:
         sl_limit = float(getattr(self, "stop_loss", 0.0) or 0.0) * cent_multiplier
+
+        # FIX #1: If no explicit stop_loss is configured (default=0), fall back to
+        # the per-symbol max_cycle_sl safety cap from PAIR_SAFETY_BOUNDS.
+        # This prevents unlimited drawdown cycles like the -$10.10 #201 blowout.
+        if sl_limit <= 0:
+            try:
+                from core.auto_reading import PAIR_SAFETY_BOUNDS
+                _bounds = PAIR_SAFETY_BOUNDS.get(sym_u, {})
+                _fallback_sl = float(_bounds.get("max_cycle_sl", 0.0))
+                if _fallback_sl > 0:
+                    sl_limit = _fallback_sl * cent_multiplier
+            except Exception:
+                pass
+
         if sl_limit > 0:
-            # Re-enabling lot scaling to prevent immediate stop out on deeper grids
-            total_vol = sum(float(getattr(p, "size", 0.01)) for p in self.broker.open_positions.values())
-            micro_lots = total_vol / 0.01
-            
-            effective_sl = sl_limit * micro_lots
-            if total_pnl <= -abs(effective_sl):
-                exit_triggered = True
-                exit_reason = "STOP_LOSS"
+            # FIX #2: Minimum hold time guard — do NOT evaluate the standard SL for
+            # the first 30 seconds of a cycle. This prevents wick-hunted flash stops
+            # (e.g. a 1-second or 6-second trade that hits SL on a spread spike).
+            # NOTE: The Extreme Drawdown fallback above is NOT guarded — it remains
+            # an instant hard-stop for truly catastrophic moves only.
+            _MIN_HOLD_SECS = 30.0
+            _cycle_open_time = getattr(self, "_cycle_start_time", timestamp)
+            _hold_elapsed = timestamp - _cycle_open_time if _cycle_open_time > 0 else _MIN_HOLD_SECS
+
+            if _hold_elapsed >= _MIN_HOLD_SECS:
+                # Re-enabling lot scaling to prevent immediate stop out on deeper grids
+                total_vol = sum(float(getattr(p, "size", 0.01)) for p in self.broker.open_positions.values())
+                micro_lots = total_vol / 0.01
+
+                effective_sl = sl_limit * micro_lots
+                if total_pnl <= -abs(effective_sl):
+                    exit_triggered = True
+                    exit_reason = "STOP_LOSS"
+                    print(f"[{self.symbol}] 🛑 [CYCLE SL HIT] PnL ${total_pnl:.2f} <= -${effective_sl:.2f} "
+                          f"(SL cap: ${sl_limit:.2f}/lot × {micro_lots:.1f} lots | hold: {_hold_elapsed:.0f}s)")
 
     # ─────────────────────────────────────────────────────────────
     # Basket Target Profit (Cycle Exit)

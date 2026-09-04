@@ -11,10 +11,10 @@ _ORDERS_PER_SLOT = {"GOLD": 5, "MAJOR": 5, "MINOR": 3, "ALT": 2}
 # Hybrid safety bounds: live ATR drives the actual values; these are hard floor/ceiling guards.
 # To add a new symbol just add a row here — no gap/offset tuning needed, ATR handles it.
 PAIR_SAFETY_BOUNDS = {
-    "XAUUSD":   {"min_gap": 0.03, "max_gap": 0.80,  "min_offset": 0.03, "max_offset": 0.60,  "min_tp": 3.00, "max_tp":  40.0, "base_lot": 0.01, "std_gap": 0.07, "std_offset": 0.07, "lot_mult": 1.25},
-    "PAXGUSDT": {"min_gap": 0.03, "max_gap": 0.80,  "min_offset": 0.03, "max_offset": 0.60,  "min_tp": 3.00, "max_tp":  40.0, "base_lot": 0.01, "std_gap": 0.07, "std_offset": 0.07, "lot_mult": 1.25},
-    "GOLD":     {"min_gap": 0.03, "max_gap": 0.80,  "min_offset": 0.03, "max_offset": 0.60,  "min_tp": 3.00, "max_tp":  40.0, "base_lot": 0.01, "std_gap": 0.07, "std_offset": 0.07, "lot_mult": 1.25},
-    "ETHUSDT":  {"min_gap": 0.5,  "max_gap": 3.0,  "min_offset": 0.5,  "max_offset": 25.0,  "min_tp": 2.00, "max_tp":  60.0, "base_lot": 0.15,  "std_gap": 0.10, "std_offset": 0.08, "lot_mult": 1.25},
+    "XAUUSD":   {"min_gap": 0.03, "max_gap": 0.80,  "min_offset": 0.03, "max_offset": 0.60,  "min_tp": 3.00, "max_tp":  40.0, "base_lot": 0.01, "std_gap": 0.07, "std_offset": 0.07, "lot_mult": 1.25, "max_cycle_sl": 2.50},
+    "PAXGUSDT": {"min_gap": 0.03, "max_gap": 0.80,  "min_offset": 0.03, "max_offset": 0.60,  "min_tp": 3.00, "max_tp":  40.0, "base_lot": 0.01, "std_gap": 0.07, "std_offset": 0.07, "lot_mult": 1.25, "max_cycle_sl": 2.50},
+    "GOLD":     {"min_gap": 0.03, "max_gap": 0.80,  "min_offset": 0.03, "max_offset": 0.60,  "min_tp": 3.00, "max_tp":  40.0, "base_lot": 0.01, "std_gap": 0.07, "std_offset": 0.07, "lot_mult": 1.25, "max_cycle_sl": 2.50},
+    "ETHUSDT":  {"min_gap": 0.5,  "max_gap": 3.0,  "min_offset": 0.5,  "max_offset": 25.0,  "min_tp": 2.00, "max_tp":  60.0, "base_lot": 0.15,  "std_gap": 0.10, "std_offset": 0.08, "lot_mult": 1.25, "max_cycle_sl": 1.50},
 }
 _DEFAULT_SAFETY_BOUNDS = {"min_gap": 0.03, "max_gap": 2.0, "min_offset": 0.03, "max_offset": 1.50, "min_tp": 2.00, "max_tp": 80.0, "base_lot": 0.01}
 
