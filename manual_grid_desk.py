@@ -73,8 +73,10 @@ _brk_mod.mt5 = None
 #  STATE PERSISTENCE
 # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
+_STATE_LOCK = threading.Lock()
+
 def load_state() -> dict:
-    """Loads persisted manual desk state from disk."""
+    """Loads persisted manual desk state from disk with thread safety."""
     default = {
         "grid_config": {
             "center_mode": "Live Price (Auto-Centered)",
@@ -97,34 +99,39 @@ def load_state() -> dict:
         "deployed": False,
         "grid_levels": [],
     }
-    try:
-        if os.path.exists(STATE_FILE):
-            with open(STATE_FILE, "r", encoding="utf-8") as f:
-                content = f.read().strip()
-                if content:
-                    data = json.loads(content)
-                    for k, v in default.items():
-                        if k not in data:
-                            data[k] = v
-                    if "grid_config" in data:
-                        for ck, cv in default["grid_config"].items():
-                            if ck not in data["grid_config"]:
-                                data["grid_config"][ck] = cv
-                    return data
-    except Exception as e:
-        logging.warning(f"Manual state load: {e}")
+    with _STATE_LOCK:
+        try:
+            if os.path.exists(STATE_FILE):
+                with open(STATE_FILE, "r", encoding="utf-8") as f:
+                    content = f.read().strip()
+                    if content:
+                        data = json.loads(content)
+                        for k, v in default.items():
+                            if k not in data:
+                                data[k] = v
+                        if "grid_config" in data:
+                            for ck, cv in default["grid_config"].items():
+                                if ck not in data["grid_config"]:
+                                    data["grid_config"][ck] = cv
+                        return data
+        except Exception as e:
+            logging.warning(f"Manual state load: {e}")
     return default
 
 
 def save_state(state: dict):
-    """Saves manual desk state to disk atomically."""
-    try:
-        tmp_file = f"{STATE_FILE}.tmp"
-        with open(tmp_file, "w", encoding="utf-8") as f:
-            json.dump(state, f, indent=2)
-        os.replace(tmp_file, STATE_FILE)
-    except Exception as e:
-        logging.warning(f"Manual state save: {e}")
+    """Saves manual desk state to disk atomically with thread safety."""
+    with _STATE_LOCK:
+        try:
+            pid = os.getpid()
+            tid = threading.get_ident()
+            tmp_file = f"{STATE_FILE}.{pid}_{tid}_{time.time_ns()}.tmp"
+            with open(tmp_file, "w", encoding="utf-8") as f:
+                json.dump(state, f, indent=2)
+            os.replace(tmp_file, STATE_FILE)
+        except Exception as e:
+            logging.warning(f"Manual state save: {e}")
+
 
 
 # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
@@ -425,19 +432,19 @@ def flatten_all(brk: MT5Broker, state: dict) -> str:
     errors = []
 
     for attempt in range(5):
-        # 1. Fast bulk close on bridge by magic
+        # 1. Fast bulk close on bridge by magic (15.0s timeout to allow multi-position execution)
         try:
             import requests as _req
-            r = _req.get(f"http://127.0.0.1:{MT5_BRIDGE_PORT}/close_all?magic={MANUAL_MAGIC}", timeout=4.0)
+            r = _req.get(f"http://127.0.0.1:{MT5_BRIDGE_PORT}/close_all?magic={MANUAL_MAGIC}", timeout=15.0)
             if r.status_code == 200 and r.json().get("success"):
                 closed_count += int(r.json().get("closed_count", 0))
         except Exception as e:
             errors.append(str(e))
 
-        # 2. Fast bulk cancel on bridge by magic
+        # 2. Fast bulk cancel on bridge by magic (10.0s timeout)
         try:
             import requests as _req
-            _req.get(f"http://127.0.0.1:{MT5_BRIDGE_PORT}/cancel_all?magic={MANUAL_MAGIC}", timeout=4.0)
+            _req.get(f"http://127.0.0.1:{MT5_BRIDGE_PORT}/cancel_all?magic={MANUAL_MAGIC}", timeout=10.0)
         except Exception:
             pass
 
@@ -451,7 +458,7 @@ def flatten_all(brk: MT5Broker, state: dict) -> str:
                 if t > 0:
                     try:
                         import requests as _req
-                        r2 = _req.get(f"http://127.0.0.1:{MT5_BRIDGE_PORT}/position_close?ticket={t}&volume={v}", timeout=2.5)
+                        r2 = _req.get(f"http://127.0.0.1:{MT5_BRIDGE_PORT}/position_close?ticket={t}&volume={v}", timeout=4.0)
                         if r2.status_code == 200 and r2.json().get("success"):
                             closed_count += 1
                             total_pnl += pnl_val
@@ -468,18 +475,23 @@ def flatten_all(brk: MT5Broker, state: dict) -> str:
                 if t > 0:
                     try:
                         import requests as _req
-                        _req.get(f"http://127.0.0.1:{MT5_BRIDGE_PORT}/order_cancel?ticket={t}", timeout=2.5)
+                        _req.get(f"http://127.0.0.1:{MT5_BRIDGE_PORT}/order_cancel?ticket={t}", timeout=4.0)
                     except Exception as e2:
                         errors.append(f"Ticket {t}: {e2}")
         except Exception as e:
             errors.append(str(e))
 
         # 5. Verification check: Are both active positions and pending orders 0?
-        time.sleep(0.15)
+        time.sleep(0.20)
         rem_pos = get_live_positions(brk)
         rem_ord = get_live_pending(brk)
         if len(rem_pos) == 0 and len(rem_ord) == 0:
             break
+
+    # Verification: check if any remain
+    final_rem_pos = get_live_positions(brk)
+    final_rem_ord = get_live_pending(brk)
+    is_fully_clean = (len(final_rem_pos) == 0 and len(final_rem_ord) == 0)
 
     # Clear broker local tracking
     try:
@@ -504,9 +516,10 @@ def flatten_all(brk: MT5Broker, state: dict) -> str:
     state["grid_levels"] = []
     save_state(state)
 
-    if errors and closed_count == 0:
-        return f"⚠️ Flatten warning: {'; '.join(errors[:2])}"
+    if not is_fully_clean:
+        return f"⚠️ Flatten warning ({len(final_rem_pos)} pos, {len(final_rem_ord)} ord remaining): {'; '.join(errors[:2])}"
     return f"✅ 100% Closed & Flattened ({closed_count} pos closed) | Net P&L: ${total_pnl:+.2f}"
+
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1163,6 +1176,7 @@ else:
 
 cur_tp = float(cfg.get("target_profit", 5.0))
 cur_sl = float(cfg.get("stop_loss", 25.0))
+curr_sym = "¢" if display_curr == "USC" else "$"
 dist_tp = max(0.0, cur_tp - floating_pnl)
 
 st.markdown(f'''
@@ -1172,15 +1186,15 @@ st.markdown(f'''
             {mon_status_badge}
         </span>
         <div style="font-size:0.82rem;color:#d4d4d8;">
-            <b>Target Profit:</b> <span style="color:#4ade80;font-family:'JetBrains Mono',monospace;font-weight:700;">+${cur_tp:.2f}</span> · 
-            <b>Stop Loss:</b> <span style="color:#f87171;font-family:'JetBrains Mono',monospace;font-weight:700;">-${cur_sl:.2f}</span> · 
+            <b>Target Profit:</b> <span style="color:#4ade80;font-family:'JetBrains Mono',monospace;font-weight:700;">+{curr_sym}{cur_tp:.2f} {display_curr}</span> · 
+            <b>Stop Loss:</b> <span style="color:#f87171;font-family:'JetBrains Mono',monospace;font-weight:700;">-{curr_sym}{cur_sl:.2f} {display_curr}</span> · 
             <b>Cycle:</b> <span style="color:#38bdf8;font-weight:600;">{'🔄 Auto-Deploy ON' if cfg.get('auto_redeploy', True) else '⏹️ Auto-Deploy OFF'}</span>
         </div>
     </div>
     <div style="display:flex;align-items:center;gap:14px;font-size:0.78rem;font-family:'JetBrains Mono',monospace;">
-        <span style="color:#a1a1aa;">Floating: <b style="color:{'#4ade80' if floating_pnl >= 0 else '#f87171'}">${floating_pnl:+.2f}</b></span>
+        <span style="color:#a1a1aa;">Floating: <b style="color:{'#4ade80' if floating_pnl >= 0 else '#f87171'}">{curr_sym}{floating_pnl:+.2f} {display_curr}</b></span>
         <span style="color:#71717a;">|</span>
-        <span style="color:#a1a1aa;">To Target: <b style="color:#60a5fa">${dist_tp:.2f}</b></span>
+        <span style="color:#a1a1aa;">To Target: <b style="color:#60a5fa">{curr_sym}{dist_tp:.2f} {display_curr}</b></span>
     </div>
 </div>
 ''', unsafe_allow_html=True)
@@ -1295,30 +1309,35 @@ with config_col:
     with col_d:
         lot_mult = st.number_input("Lot Multiplier", value=float(cfg.get("lot_mult", 1.0)), min_value=1.0, max_value=5.0, step=0.1, format="%.2f", help="1.0 = equal lots; > 1.0 increases size per level", key="mgd_lmult")
 
+    curr_label = display_curr if display_curr else "USD"
+    curr_unit = "USC" if curr_label == "USC" else "$"
+
     st.markdown('<hr class="divider">', unsafe_allow_html=True)
-    st.markdown('<div class="config-title">🎯 Risk Controls</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="config-title">🎯 Risk Controls ({curr_unit})</div>', unsafe_allow_html=True)
+    if curr_label == "USC":
+        st.caption("🪙 **Cent Account Active:** Targets & limits are in **US Cents (USC)**. 100 USC = $1.00 USD. E.g. 150 USC ≈ $1.50 USD.")
 
     col_r1, col_r2 = st.columns(2)
     with col_r1:
         target_profit = st.number_input(
-            "Target Profit ($)",
+            f"Target Profit ({curr_unit})",
             value=float(cfg.get("target_profit", 5.0)),
             min_value=0.10,
-            max_value=10000.0,
+            max_value=100000.0,
             step=0.50,
             format="%.2f",
-            help="Auto-flatten all when total floating P&L reaches this profit.",
+            help=f"Auto-flatten all when total floating P&L reaches this profit in {curr_label}.",
             key="mgd_tp",
         )
     with col_r2:
         stop_loss = st.number_input(
-            "Stop Loss ($)",
+            f"Stop Loss ({curr_unit})",
             value=float(cfg.get("stop_loss", 25.0)),
             min_value=0.10,
             max_value=100000.0,
             step=1.0,
             format="%.2f",
-            help="Auto-flatten all when total floating loss hits this amount.",
+            help=f"Auto-flatten all when total floating loss hits this amount in {curr_label}.",
             key="mgd_sl",
         )
 
@@ -1330,7 +1349,7 @@ with config_col:
     )
 
     # Persist config changes
-    cfg.update({
+    new_cfg_vals = {
         "auto_redeploy": auto_redeploy,
         "center_mode":   center_mode,
         "center_price":  center_price_input,
@@ -1346,8 +1365,21 @@ with config_col:
         "lot_mult":      lot_mult,
         "target_profit": target_profit,
         "stop_loss":     stop_loss,
-    })
+    }
+
+    # Detect if any config values actually changed, and auto-persist to disk immediately
+    has_cfg_changed = any(cfg.get(k) != v for k, v in new_cfg_vals.items())
+    cfg.update(new_cfg_vals)
     state["grid_config"] = cfg
+
+    # Immediately update running background monitor in-memory
+    monitor["target_profit"] = float(target_profit)
+    monitor["stop_loss"]     = float(stop_loss)
+
+    # If user changed any input, auto-save state to disk immediately so background thread gets it instantly!
+    if has_cfg_changed:
+        save_state(state)
+
 
     # ── Preview levels for chart ──────────────────────────────────────────────
     preview = compute_grid_levels(
