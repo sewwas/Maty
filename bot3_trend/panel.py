@@ -73,8 +73,8 @@ st.markdown("""
 
 engine = get_engine()
 
-# Process tick cycle
-status = engine.process_tick()
+# Read-only telemetry: Autonomous execution runs strictly in the background daemon
+status = engine.get_telemetry()
 
 # Sidebar: Controls & Settings
 with st.sidebar:
@@ -153,6 +153,17 @@ with col_h2:
 
 st.markdown("---")
 
+# Active Safeguard Banners
+box_info = status.get("asian_box", {})
+if status.get("daily_risk_halt"):
+    st.error("🚨 **DAILY MAX RISK CIRCUIT BREAKER TRIPPED**: Cumulative daily loss limit reached. Auto-trading is paused for today to protect capital.")
+elif status.get("is_sell_locked"):
+    st.warning("⚠️ **SELL CIRCUIT BREAKER ACTIVE**: 2 consecutive SELL stop-losses detected. SELL entries are locked out for 60 minutes to prevent sideways whip-sawing.")
+elif status.get("is_buy_locked"):
+    st.warning("⚠️ **BUY CIRCUIT BREAKER ACTIVE**: 2 consecutive BUY stop-losses detected. BUY entries are locked out for 60 minutes to prevent sideways whip-sawing.")
+elif not box_info.get("valid", False) and box_info.get("range_pips", 0) > 0:
+    st.info(f"⏸️ **ASIAN RANGE STANDBY**: {box_info.get('status')}. Trading is paused today because session volatility is outside optimal breakout parameters (15–120 pips).")
+
 # Top KPI Metric Cards
 m1, m2, m3, m4, m5 = st.columns(5)
 with m1:
@@ -175,30 +186,34 @@ with m2:
     """, unsafe_allow_html=True)
 
 with m3:
-    box = status.get("asian_box", {})
-    high_b = box.get("high", 0.0)
-    low_b = box.get("low", 0.0)
+    high_b = box_info.get("high", 0.0)
+    low_b = box_info.get("low", 0.0)
+    box_valid = box_info.get("valid", False)
+    box_status = box_info.get("status", "STANDBY")
+    status_col = "#4ade80" if box_valid else "#f87171"
     st.markdown(f"""
     <div class="metric-card">
         <div class="metric-title">Asian Session Range</div>
-        <div class="metric-val">${(high_b - low_b):.2f} <span style="font-size:14px; color:#94a3b8;">({box.get('range_pips', 0)} pips)</span></div>
-        <div class="metric-sub" style="color: #38bdf8;">H: ${high_b:.2f} | L: ${low_b:.2f}</div>
+        <div class="metric-val">${(high_b - low_b):.2f} <span style="font-size:13px; color:#94a3b8;">({box_info.get('range_pips', 0)} pips)</span></div>
+        <div class="metric-sub" style="color: {status_col}; font-weight:600;">{box_status}</div>
     </div>
     """, unsafe_allow_html=True)
 
 with m4:
     macro_t = status.get("macro_trend", "NEUTRAL")
     trend_color = "#4ade80" if "BULLISH" in macro_t else ("#f87171" if "BEARISH" in macro_t else "#fbbf24")
+    adx_val = status.get("adx", 20.0)
+    rsi_val = status.get("rsi", 50.0)
     st.markdown(f"""
     <div class="metric-card">
-        <div class="metric-title">Macro Trend (EMA 50/200)</div>
-        <div class="metric-val" style="color: {trend_color}; font-size: 19px;">{macro_t}</div>
-        <div class="metric-sub" style="color: #94a3b8;">ATR(14): ${status.get('atr', 2.5):.2f}</div>
+        <div class="metric-title">Trend & Momentum</div>
+        <div class="metric-val" style="color: {trend_color}; font-size: 17px;">{macro_t}</div>
+        <div class="metric-sub" style="color: #94a3b8;">ADX: {adx_val:.1f} | RSI: {rsi_val:.1f} | ATR: ${status.get('atr', 2.5):.2f}</div>
     </div>
     """, unsafe_allow_html=True)
 
 with m5:
-    today_cnt = engine.state.get("today_trades_count", 0)
+    today_cnt = status.get("today_trades_count", engine.state.get("today_trades_count", 0))
     max_d = int(engine.config.get("max_trades_per_day", 0))
     limit_badge = f"/ {max_d} max" if max_d > 0 else "(Unlimited / No Limit)"
     limit_color = "#94a3b8" if max_d > 0 else "#4ade80"
@@ -275,8 +290,17 @@ if open_pos:
     for p in open_pos:
         t_id = str(p.get("ticket"))
         meta = tracked_meta.get(t_id, {})
-        be_stat = "✅ Active" if meta.get("be_activated") else "⏳ Pending (at 1:1.0 RR)"
-        trail_stat = "🚀 Trailing Active" if meta.get("trailing_activated") else ("💰 50% TP Secured" if meta.get("tp1_hit") else "Waiting for TP1")
+        stage = meta.get("stage", 0)
+        if stage == 4:
+            stage_badge = "🚀 Stage 4: Candle Trail Active"
+        elif stage == 3:
+            stage_badge = "🎯 Stage 3: Runner Active (TP1 Hit)"
+        elif stage == 2:
+            stage_badge = "🔒 Stage 2: +50% Profit Locked"
+        elif stage == 1:
+            stage_badge = "🛡️ Stage 1: Zero Risk (BE Locked)"
+        else:
+            stage_badge = "⏳ Stage 0: Scanning for +0.5R"
         
         pos_rows.append({
             "Ticket": p.get("ticket"),
@@ -286,8 +310,7 @@ if open_pos:
             "Current Price": f"${float(p.get('price_current', 0)):.2f}",
             "Stop Loss": f"${float(p.get('sl', 0)):.2f}",
             "Take Profit": f"${float(p.get('tp', 0)):.2f}",
-            "Breakeven": be_stat,
-            "Runner Status": trail_stat,
+            "Trailing Ladder Status": stage_badge,
             "Floating Profit": f"${float(p.get('profit', 0)):.2f}"
         })
     st.dataframe(pd.DataFrame(pos_rows), width='stretch', hide_index=True)

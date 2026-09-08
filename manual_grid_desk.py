@@ -4,7 +4,7 @@
 â•‘        Standalone Manual Grid Trading App for XAUUSD            â•‘
 â•‘                                                                  â•‘
 â•‘  âš¡ 100% ISOLATED from app.py auto-bot                           â•‘
-â•‘  ðŸª„ Magic Number: 777001  |  Port: 8503                         â•‘
+║  🪄 Magic Number: 777001  |  Port: 8502                         ║
 â•‘  ðŸ“¦ Uses ONLY: core.data, core.mt5_broker                       â•‘
 â•‘  âŒ NO: engine.py, auto_reading.py, grid_risk.py                â•‘
 â•šâ•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
@@ -239,10 +239,10 @@ def compute_grid_levels(
 #  LIVE MT5 DATA HELPERS
 # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
-ALLOWED_MANUAL_MAGICS = (MANUAL_MAGIC, 0, 1008876)
+ALLOWED_MANUAL_MAGICS = (MANUAL_MAGIC, 1008876)
 
 def get_live_positions(brk: MT5Broker) -> list:
-    """Returns open positions for this manual desk (magic 777001, 1008876, or manual 0)."""
+    """Returns open positions for this manual desk (magic 777001 or 1008876)."""
     raw = brk._fetch_live_positions()
     if not raw:
         return []
@@ -250,7 +250,7 @@ def get_live_positions(brk: MT5Broker) -> list:
 
 
 def get_live_pending(brk: MT5Broker) -> list:
-    """Returns pending orders for this manual desk (magic 777001, 1008876, or manual 0)."""
+    """Returns pending orders for this manual desk (magic 777001 or 1008876)."""
     raw = brk._fetch_live_orders()
     if not raw:
         return []
@@ -314,8 +314,8 @@ def get_closed_deal_history(days: int = 30) -> list:
             magic = d.get("magic", 0)
             sym = str(d.get("symbol", "")).upper()
             
-            # Filter: manual desk magics or matching gold/symbol
-            if magic not in ALLOWED_MANUAL_MAGICS and not any(k in sym for k in ("XAU", "GOLD", "PAXG")):
+            # Filter: manual desk magics only (isolated from auto-bots and discretionary trades)
+            if magic not in ALLOWED_MANUAL_MAGICS:
                 continue
                 
             open_d = in_deals.get(pid)
@@ -538,8 +538,8 @@ def flatten_all(brk: MT5Broker, state: dict) -> str:
     curr_sym = "¢" if acct_curr == "USC" else "$"
 
     for attempt in range(5):
-        # 1. Fast bulk close on bridge for manual desk magics (777001, then residual 0)
-        for m_id in [MANUAL_MAGIC, 0]:
+        # 1. Fast bulk close on bridge for manual desk magics (777001)
+        for m_id in [MANUAL_MAGIC]:
             try:
                 import requests as _req
                 r = _req.get(f"http://127.0.0.1:{MT5_BRIDGE_PORT}/close_all?magic={m_id}", timeout=15.0)
@@ -552,7 +552,7 @@ def flatten_all(brk: MT5Broker, state: dict) -> str:
                 errors.append(str(e))
 
         # 2. Fast bulk cancel on bridge for manual desk magics
-        for m_id in [MANUAL_MAGIC, 0]:
+        for m_id in [MANUAL_MAGIC]:
             try:
                 import requests as _req
                 _req.get(f"http://127.0.0.1:{MT5_BRIDGE_PORT}/cancel_all?magic={m_id}", timeout=10.0)
@@ -680,6 +680,8 @@ def get_pnl_monitor():
             "target_profit": 5.0,
             "stop_loss":     25.0,
             "last_pnl":      0.0,
+            "peak_pnl":      0.0,
+            "trail_floor":   0.0,
             "last_msg":      "",
             "triggered":     False,
             "manual_paused": False,
@@ -716,10 +718,32 @@ def get_pnl_monitor():
                             acct_curr = acc_i.get("currency", "USD")
                             curr_sym = "¢" if acct_curr == "USC" else "$"
 
+                            # Track peak floating PnL
+                            current_peak = max(float(shared.get("peak_pnl", 0.0) or 0.0), pnl)
+                            shared["peak_pnl"] = round(current_peak, 2)
+
+                            exit_action = None
+                            exit_msg = ""
+
+                            # ── 1. Target Profit Hit (Strict Full Target) ──
                             if pnl >= tp_target and not shared["triggered"]:
+                                exit_action = "FULL_TP"
+                                exit_msg = f"🎯 TARGET PROFIT HIT: {curr_sym}{pnl:+.2f} {acct_curr} (Target: +{curr_sym}{tp_target:.2f} {acct_curr}) — 100% ASAP Closing ALL Active & Pending Orders!"
+
+                            # ── 2. Basket Trailing Profit Lock (Guaranteed Profit Retention) ──
+                            # If basket reached >= 60% of target, lock trailing profit floor at 50% of peak
+                            elif current_peak >= (tp_target * 0.60) and not shared["triggered"]:
+                                trailing_floor = max(0.50, current_peak * 0.50)
+                                shared["trail_floor"] = round(trailing_floor, 2)
+                                if pnl <= trailing_floor:
+                                    exit_action = "TRAIL_LOCK"
+                                    exit_msg = f"🛡️ TRAILING PROFIT LOCK HIT: {curr_sym}{pnl:+.2f} {acct_curr} (Peak was {curr_sym}{current_peak:.2f}, Floor: {curr_sym}{trailing_floor:.2f}) — Securing locked profit!"
+                            else:
+                                shared["trail_floor"] = 0.0
+
+                            if exit_action and not shared["triggered"]:
                                 shared["triggered"] = True
-                                msg = f"🎯 TARGET PROFIT HIT: {curr_sym}{pnl:+.2f} {acct_curr} (Target: +{curr_sym}{tp_target:.2f} {acct_curr}) — 100% ASAP Closing ALL Active & Pending Orders!"
-                                logging.info(f"[Manual Grid Monitor] {msg}")
+                                logging.info(f"[Manual Grid Monitor] {exit_msg}")
 
                                 # 1. 100% Guaranteed Close All Active Positions + Cancel All Pending Orders ASAP
                                 flat_res = flatten_all(brk, cur_state)
@@ -735,6 +759,7 @@ def get_pnl_monitor():
 
                                 # 2. Check Auto-Redeploy New Grid setting
                                 auto_redeploy = cur_cfg.get("auto_redeploy", True)
+                                action_label = "🎯 TARGET HIT" if exit_action == "FULL_TP" else "🛡️ TRAIL LOCK"
                                 if auto_redeploy:
                                     time.sleep(0.3)  # MT5 order settlement buffer
                                     new_center = get_mt5_live_price(brk)
@@ -756,14 +781,16 @@ def get_pnl_monitor():
                                         cur_state["grid_levels"] = new_levels
                                         cur_state["grid_config"]["center_price"] = new_center
                                         save_state(cur_state)
-                                        shared["last_msg"] = f"🎯 TARGET HIT {curr_sym}{pnl:+.2f}! 100% Closed. 🚀 Auto-deployed NEW GRID ({placed} orders) centered at {curr_sym}{new_center:,.2f}"
+                                        shared["last_msg"] = f"{action_label} {curr_sym}{pnl:+.2f}! 100% Closed. 🚀 Auto-deployed NEW GRID ({placed} orders) centered at {curr_sym}{new_center:,.2f}"
                                         logging.info(f"[Manual Grid Monitor] {shared['last_msg']}")
                                     else:
-                                        shared["last_msg"] = f"🎯 TARGET HIT {curr_sym}{pnl:+.2f}! 100% Closed. Redeploy warnings: {'; '.join(errors[:2])}"
+                                        shared["last_msg"] = f"{action_label} {curr_sym}{pnl:+.2f}! 100% Closed. Redeploy warnings: {'; '.join(errors[:2])}"
                                 else:
-                                    shared["last_msg"] = f"🎯 TARGET HIT {curr_sym}{pnl:+.2f}! {flat_res} · Desk is READY for next grid."
+                                    shared["last_msg"] = f"{action_label} {curr_sym}{pnl:+.2f}! {flat_res} · Desk is READY for next grid."
 
                                 # Re-arm monitor for the new cycle
+                                shared["peak_pnl"] = 0.0
+                                shared["trail_floor"] = 0.0
                                 time.sleep(2.0)
                                 shared["triggered"] = False
                                 shared["active"] = True
@@ -784,16 +811,23 @@ def get_pnl_monitor():
 
                                 shared["last_msg"] = f"🛑 STOP LOSS HIT ${pnl:+.2f}! {flat_res} · Desk is READY for next grid."
 
+                                shared["peak_pnl"] = 0.0
+                                shared["trail_floor"] = 0.0
                                 time.sleep(2.0)
                                 shared["triggered"] = False
                                 if not shared.get("auto_rearm", True):
                                     shared["active"] = False
                             else:
-                                shared["triggered"] = False
+                                if not exit_action:
+                                    shared["triggered"] = False
                         else:
+                            shared["peak_pnl"] = 0.0
+                            shared["trail_floor"] = 0.0
                             shared["triggered"] = False
                     else:
                         shared["last_pnl"] = 0.0
+                        shared["peak_pnl"] = 0.0
+                        shared["trail_floor"] = 0.0
                 except Exception as e:
                     logging.warning(f"[PnL Monitor Error] {e}")
                 time.sleep(1.0)
@@ -1294,6 +1328,8 @@ cur_tp = float(cfg.get("target_profit", 5.0))
 cur_sl = float(cfg.get("stop_loss", 25.0))
 curr_sym = "¢" if display_curr == "USC" else "$"
 dist_tp = max(0.0, cur_tp - floating_pnl)
+trail_floor_val = float(monitor.get("trail_floor", 0.0) or 0.0)
+trail_info_html = f'<span style="color:#71717a;">|</span><span style="color:#fbbf24;">Trail Floor: <b>+{curr_sym}{trail_floor_val:.2f} {display_curr}</b></span>' if trail_floor_val > 0 else ''
 
 st.markdown(f'''
 <div style="background:#141417;border:1px solid #27272a;border-radius:10px;padding:12px 16px;margin:10px 0 14px 0;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;">
@@ -1311,6 +1347,7 @@ st.markdown(f'''
         <span style="color:#a1a1aa;">Floating: <b style="color:{'#4ade80' if floating_pnl >= 0 else '#f87171'}">{curr_sym}{floating_pnl:+.2f} {display_curr}</b></span>
         <span style="color:#71717a;">|</span>
         <span style="color:#a1a1aa;">To Target: <b style="color:#60a5fa">{curr_sym}{dist_tp:.2f} {display_curr}</b></span>
+        {trail_info_html}
     </div>
 </div>
 ''', unsafe_allow_html=True)

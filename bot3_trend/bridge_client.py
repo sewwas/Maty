@@ -24,6 +24,7 @@ class Bot3BridgeClient:
         self.session.trust_env = False  # Avoid proxy intercepting localhost calls
         self._last_known_tick: Dict[str, Any] = {}
         self._last_account_info: Dict[str, Any] = {}
+        self._recent_dispatches: Dict[str, float] = {}
 
     def is_healthy(self) -> bool:
         try:
@@ -180,7 +181,15 @@ class Bot3BridgeClient:
     ) -> Dict[str, Any]:
         """
         Sends BUY, SELL, BUY_STOP, or SELL_STOP to the MT5 Bridge.
+        Includes 15-second duplicate suppression guard.
         """
+        now_ts = time.time()
+        dispatch_key = f"{symbol}_{order_type.upper()}_{round(price, 1)}_{round(volume, 2)}"
+        last_dispatch = self._recent_dispatches.get(dispatch_key, 0.0)
+        if (now_ts - last_dispatch) < 15.0:
+            logger.warning(f"⚠️ Duplicate order attempt blocked: {dispatch_key}")
+            return {"success": False, "error": "Duplicate order blocked by safety guard (within 15s window)"}
+
         try:
             params = {
                 "symbol": symbol,
@@ -194,6 +203,7 @@ class Bot3BridgeClient:
             url = f"{self.bridge_url}/order_send"
             r = self.session.get(url, params=params, timeout=self.timeout)
             if r.status_code == 200:
+                self._recent_dispatches[dispatch_key] = now_ts
                 return r.json()
             return {"success": False, "error": f"HTTP {r.status_code}"}
         except Exception as e:

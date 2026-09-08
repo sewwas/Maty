@@ -12,6 +12,7 @@ import time
 import threading
 import urllib.request
 import MetaTrader5 as mt5
+from typing import Optional, List, Dict, Any
 
 _mt5_ready = False
 _mt5_lock = threading.Lock()
@@ -89,6 +90,39 @@ def resolve_bridge_candidates(sym: str) -> list:
             seen.add(c)
             res.append(c)
     return res
+
+
+def resolve_terminal_path(port: int) -> Optional[str]:
+    """Resolves the MT5 terminal executable path for the given bridge port with fallbacks."""
+    custom = os.getenv("MT5_PATH")
+    if custom and os.path.exists(custom):
+        return custom
+        
+    port_targets = {
+        8003: [
+            r"C:\Program Files\MetaTrader 5_3\terminal64.exe",
+            os.path.expanduser(r"~\AppData\Local\MetaTrader 5_3\terminal64.exe"),
+        ],
+        8002: [
+            r"C:\Program Files\MetaTrader 5_2\terminal64.exe",
+            os.path.expanduser(r"~\AppData\Local\MetaTrader 5_2\terminal64.exe"),
+        ],
+        8001: [
+            r"C:\Program Files\MetaTrader 5\terminal64.exe",
+            os.path.expanduser(r"~\AppData\Local\MetaTrader 5\terminal64.exe"),
+        ],
+    }
+    
+    for target in port_targets.get(port, []):
+        if os.path.exists(target):
+            return target
+            
+    # Default fallback to primary MT5 install
+    std = r"C:\Program Files\MetaTrader 5\terminal64.exe"
+    if os.path.exists(std):
+        return std
+    return None
+
 
 class MT5BridgeHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
@@ -199,17 +233,12 @@ class MT5BridgeHandler(BaseHTTPRequestHandler):
                             "error": f"Account {login_id} is ALREADY linked to MT5 Instance on Port {other_port}. To prevent order collision, each bot must use a separate MT5 account (1 Account Limit per Bot)."
                         }
                     else:
-                        mt5_exe = os.getenv("MT5_PATH")
-                        if not mt5_exe:
-                            if port == 8003:
-                                mt5_exe = r"C:\Program Files\MetaTrader 5_3\terminal64.exe"
-                            elif port == 8002:
-                                mt5_exe = r"C:\Program Files\MetaTrader 5_2\terminal64.exe"
-                            else:
-                                mt5_exe = r"C:\Program Files\MetaTrader 5\terminal64.exe"
-                        
-                        mt5.initialize(path=mt5_exe, login=login_id, password=pwd, server=srv)
-                        ok = mt5.login(login=login_id, password=pwd, server=srv)
+                        mt5_exe = resolve_terminal_path(port)
+                        if mt5_exe:
+                            mt5.initialize(path=mt5_exe, login=login_id, password=pwd, server=srv, timeout=5000)
+                        else:
+                            mt5.initialize(login=login_id, password=pwd, server=srv, timeout=5000)
+                        ok = mt5.login(login=login_id, password=pwd, server=srv, timeout=5000)
                         if ok:
                             save_bridge_config(port, login_id, pwd, srv)
                             print(f"[Bridge {port}] Successfully connected to MT5 Account {login_id} on {srv}")
@@ -346,13 +375,24 @@ class MT5BridgeHandler(BaseHTTPRequestHandler):
                 candidates = resolve_bridge_candidates(sym)
 
                 s_info = None
+                disabled_mode = getattr(mt5, "SYMBOL_TRADE_MODE_DISABLED", 0)
                 for s_try in candidates:
                     try:
                         mt5.symbol_select(s_try, True)
-                        s_info = mt5.symbol_info(s_try)
-                        if s_info:
-                            sym = s_try
-                            break
+                        info = mt5.symbol_info(s_try)
+                        if info and getattr(info, "visible", False):
+                            # Skip read-only / disabled symbols on Cent accounts (e.g. XAUUSD vs XAUUSDc)
+                            trade_mode = getattr(info, "trade_mode", None)
+                            if trade_mode is not None and trade_mode == disabled_mode:
+                                continue
+                            tick = mt5.symbol_info_tick(s_try)
+                            if tick and (tick.ask > 0 or tick.bid > 0):
+                                sym = s_try
+                                s_info = info
+                                break
+                            elif s_info is None:
+                                s_info = info
+                                sym = s_try
                     except Exception:
                         pass
 
@@ -714,20 +754,17 @@ def ensure_mt5(port: int) -> bool:
         _mt5_saved_login = cfg.get("login")
         _mt5_saved_pwd = cfg.get("password")
         _mt5_saved_srv = cfg.get("server", "Exness-MT5Real36")
-        if not _mt5_path:
-            if port == 8003:
-                _mt5_path = r"C:\Program Files\MetaTrader 5_3\terminal64.exe"
-            elif port == 8002:
-                _mt5_path = r"C:\Program Files\MetaTrader 5_2\terminal64.exe"
-            else:
-                _mt5_path = r"C:\Program Files\MetaTrader 5\terminal64.exe"
+        _mt5_path = resolve_terminal_path(port)
 
         init_ok = False
         if _mt5_saved_login and _mt5_saved_pwd:
             is_conflict, other_p = check_other_bridge_conflict(port, _mt5_saved_login)
             if not is_conflict:
                 try:
-                    init_ok = mt5.initialize(path=_mt5_path, login=_mt5_saved_login, password=_mt5_saved_pwd, server=_mt5_saved_srv, timeout=5000)
+                    if _mt5_path:
+                        init_ok = mt5.initialize(path=_mt5_path, login=_mt5_saved_login, password=_mt5_saved_pwd, server=_mt5_saved_srv, timeout=5000)
+                    else:
+                        init_ok = mt5.initialize(login=_mt5_saved_login, password=_mt5_saved_pwd, server=_mt5_saved_srv, timeout=5000)
                     if init_ok:
                         mt5.login(login=_mt5_saved_login, password=_mt5_saved_pwd, server=_mt5_saved_srv, timeout=5000)
                         _mt5_ready = True
@@ -737,12 +774,21 @@ def ensure_mt5(port: int) -> bool:
 
         if not init_ok:
             try:
-                init_ok = mt5.initialize(path=_mt5_path, timeout=5000)
+                if _mt5_path:
+                    init_ok = mt5.initialize(path=_mt5_path, timeout=5000)
+                else:
+                    init_ok = mt5.initialize(timeout=5000)
             except Exception:
                 pass
         if not init_ok:
             try:
                 init_ok = mt5.initialize(timeout=5000)
+            except Exception:
+                pass
+        
+        if init_ok and _mt5_saved_login and _mt5_saved_pwd:
+            try:
+                mt5.login(login=_mt5_saved_login, password=_mt5_saved_pwd, server=_mt5_saved_srv, timeout=5000)
             except Exception:
                 pass
         
@@ -756,14 +802,7 @@ class CustomServer(ThreadingHTTPServer):
 if __name__ == "__main__":
     port = int(sys.argv[1]) if len(sys.argv) > 1 else int(os.getenv("PORT", 8001))
     os.environ["PORT"] = str(port)
-    _mt5_path = os.getenv("MT5_PATH")
-    if not _mt5_path:
-        if port == 8003:
-            _mt5_path = r"C:\Program Files\MetaTrader 5_3\terminal64.exe"
-        elif port == 8002:
-            _mt5_path = r"C:\Program Files\MetaTrader 5_2\terminal64.exe"
-        else:
-            _mt5_path = r"C:\Program Files\MetaTrader 5\terminal64.exe"
+    _mt5_path = resolve_terminal_path(port)
 
     # ── Auto-seed bridge config from environment variables ──────────────────────
     # Set EXNESS_LOGIN_1 / EXNESS_PASSWORD_1 / EXNESS_SERVER_1 for Bot #1 (port 8001)

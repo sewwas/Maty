@@ -33,12 +33,12 @@ class TradeDisabledError(RuntimeError):
 
 
 def is_manual_magic(magic: Optional[Any]) -> bool:
-    """Returns True if the magic number belongs to a manual bot (>= 1,000,000)."""
+    """Returns True if the magic number belongs to a manual bot (777001, 1008876, >= 1,000,000)."""
     if magic is None:
         return False
     try:
         m = int(magic)
-        return m >= 1000000 or str(m).startswith("100")
+        return m >= 1000000 or str(m).startswith("100") or str(m).startswith("777") or m in (777001, 1008876)
     except Exception:
         return False
 
@@ -758,9 +758,9 @@ class MT5Broker:
             
         my_poss = [p for p in poss if getattr(p, "magic", 0) == getattr(self, "magic_number", 0)]
         
-        # Manual bots allow up to 50 active positions. Auto bots are capped at 2.
+        # Manual bots allow up to 50 active positions. Auto bots allow up to 50 (or 2x grid_levels).
         is_manual = is_manual_magic(getattr(self, "magic_number", 0))
-        max_allowed = 50 if is_manual else 2
+        max_allowed = 50 if is_manual else max(50, int(getattr(self, "grid_levels", 10)) * 2)
 
         if len(my_poss) <= max_allowed:
             return 0
@@ -783,7 +783,7 @@ class MT5Broker:
                 "price": price,
                 "deviation": 20,
                 "magic": getattr(p, "magic", 0),
-                "comment": "Max 2 Position Ceiling Purge",
+                "comment": "Max Position Ceiling Purge",
                 "type_time": mt5.ORDER_TIME_GTC,
                 "type_filling": mt5.ORDER_FILLING_IOC,
             }

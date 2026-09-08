@@ -559,13 +559,15 @@ def check_target_profit(self, current_price: float, timestamp: float) -> Optiona
     if not is_cent_account and any(sym_u.endswith(s) for s in ["C", "MICRO"]):
         is_cent_account = True
 
-    cent_multiplier = 100.0 if is_cent_account else 1.0
+    # MT5 natively returns floating PnL and account balance directly in the account currency (USC for cent accounts).
+    # cent_multiplier is set to 1.0 so targets are evaluated in native account units without 100x inflation.
+    cent_multiplier = 1.0
 
     total_volume = sum(float(getattr(p, "size", 0.01)) for p in self.broker.open_positions.values())
-    micro_lots = total_volume / 0.01
+    micro_lots = max(1.0, total_volume / 0.01)
 
-    target_prof = float(getattr(self, "target_profit", 3.0) or 3.0) * cent_multiplier * micro_lots
-    effective_target = max(0.50 * cent_multiplier * micro_lots, target_prof)
+    target_prof = float(getattr(self, "target_profit", 3.0) or 3.0)
+    effective_target = max(0.50, target_prof)
 
     if total_pnl > getattr(self, "max_floating_pnl", -float("inf")):
         self.max_floating_pnl = total_pnl
@@ -657,22 +659,21 @@ def check_target_profit(self, current_price: float, timestamp: float) -> Optiona
 
     min_profit_threshold = 0.50 * cent_multiplier * micro_lots  # Minimum gross profit to close a cycle, mitigating fee attrition
     if not exit_triggered:
-        # Base target per 0.01 lot (e.g. $10 for Gold, $3 for others)
-        base_target = 10.0 if any(x in sym_u for x in ["XAU", "GOLD", "PAXG"]) else 3.0
+        # Base basket target for full cycle (e.g. 5.0 - 8.0 for Gold, 3.0 for others in native account currency)
+        base_target = 8.0 if any(x in sym_u for x in ["XAU", "GOLD", "PAXG"]) else 3.0
         
-        # Scale all targets by the volume multiplier (micro_lots)
-        default_target = (base_target * micro_lots) * cent_multiplier
+        default_target = base_target
         
         raw_ai_target = float(getattr(self, "deploy_target_profit", 0.0) or 0.0)
-        ai_target = (raw_ai_target * micro_lots) * cent_multiplier if raw_ai_target > 0 else 0.0
+        ai_target = raw_ai_target if raw_ai_target > 0 else 0.0
         
         raw_user_target = float(getattr(self, "target_profit", 0.0) or 0.0)
-        user_target = (raw_user_target * micro_lots) * cent_multiplier if raw_user_target > 0 else 0.0
+        user_target = raw_user_target if raw_user_target > 0 else 0.0
         
         cycle_target = ai_target if ai_target > 0 else (user_target if user_target > 0 else default_target)
         
         is_gold = any(x in sym_u for x in ["XAU", "GOLD", "PAXG"])
-        min_gold_target = 8.0 * micro_lots * cent_multiplier
+        min_gold_target = 5.0 if is_cent_account else 8.0
         if is_gold and cycle_target < min_gold_target:
             cycle_target = min_gold_target
 
@@ -680,16 +681,36 @@ def check_target_profit(self, current_price: float, timestamp: float) -> Optiona
         effective_cycle_target = max(cycle_target, min_profit_threshold)
             
         # ── 1. Basket Target Profit (Strict Full Target) ──
-        # When floating profit reaches the full cycle target (e.g. $10+ for Gold), exit immediately.
-        # Early trailing, runner modes, and noise-based trend-reversal cuts are disabled per user
-        # request to "always harvest full profit" and not blindly close on 1-min fluctuations.
+        # When floating profit reaches the full cycle target (e.g. $8+ for Gold), exit immediately.
         if total_pnl >= effective_cycle_target:
             exit_triggered = True
             exit_reason = "TARGET_PROFIT"
             print(f"[{sym_u}] 💰 [CYCLE TP HIT] Basket reached full target of ${effective_cycle_target:.2f} (Total PnL: ${total_pnl:.2f})! Instant Close All.")
 
+        # ── 2. Basket Trailing Profit Lock (Guaranteed Profit Retention) ──
+        # If basket reaches >= 60% of target, track peak PnL and lock in trailing profit floor
+        if not exit_triggered:
+            basket_peak = float(getattr(self, "_basket_peak_pnl", 0.0) or 0.0)
+            if total_pnl > basket_peak:
+                basket_peak = total_pnl
+                self._basket_peak_pnl = basket_peak
+
+            if basket_peak >= (effective_cycle_target * 0.60):
+                # Lock floor at 50% of peak (at least min_profit_threshold)
+                trailing_floor = max(min_profit_threshold, basket_peak * 0.50)
+                if total_pnl <= trailing_floor:
+                    exit_triggered = True
+                    exit_reason = "TRAILING_PROFIT_LOCK"
+                    try:
+                        print(f"[{sym_u}] 🛡️ [BASKET TRAIL HIT] PnL pulled back from peak ${basket_peak:.2f} to floor ${trailing_floor:.2f}! Locking in ${total_pnl:.2f} profit.")
+                    except UnicodeEncodeError:
+                        print(f"[{sym_u}] [BASKET TRAIL HIT] PnL pulled back from peak ${basket_peak:.2f} to floor ${trailing_floor:.2f}! Locking in ${total_pnl:.2f} profit.")
+
     if exit_triggered:
-        print(f"[{self.symbol}] 🎯 [PROFIT TAKING EXIT] {exit_reason} met! Net PnL: ${total_pnl:+.2f} USD")
+        try:
+            print(f"[{self.symbol}] 🎯 [PROFIT TAKING EXIT] {exit_reason} met! Net PnL: ${total_pnl:+.2f} USD")
+        except UnicodeEncodeError:
+            print(f"[{self.symbol}] [PROFIT TAKING EXIT] {exit_reason} met! Net PnL: ${total_pnl:+.2f} USD")
         if hasattr(self.broker, "cancel_all_orders"):
             try: self.broker.cancel_all_orders()
             except Exception as e: import logging; logging.warning(f"Cancel error: {e}")
@@ -702,6 +723,7 @@ def check_target_profit(self, current_price: float, timestamp: float) -> Optiona
         self.max_floating_pnl = -float("inf")
         self._max_open_in_cycle = 0
         self._basket_max_pnl = 0.0
+        self._basket_peak_pnl = 0.0
 
         summary = {
             "cycle_id": getattr(self, "current_cycle_id", 1),
