@@ -1,0 +1,36 @@
+{
+  "symbol": "XAUUSD",
+  "magic_number": 998873,
+  "bridge_url": "http://127.0.0.1:8003",
+  "bridge_port": 8003,
+  "dashboard_port": 8503,
+  "risk_pct_per_trade": 1.0,
+  "max_daily_risk_pct": 3.0,
+  "asian_session": {
+    "start_utc": "00:00",
+    "end_utc": "07:00"
+  },
+  "london_session": {
+    "start_utc": "07:00",
+    "end_utc": "13:00"
+  },
+  "strategy": {
+    "timeframe": "M5",
+    "trend_timeframe": "M15",
+    "fast_ema": 50,
+    "slow_ema": 200,
+    "atr_period": 14,
+    "atr_sl_multiplier": 1.5,
+    "tp1_rr": 1.5,
+    "tp1_close_pct": 50.0,
+    "breakeven_trigger_rr": 1.0,
+    "be_offset_points": 50,
+    "trailing_atr_multiplier": 2.0,
+    "min_asian_range_pips": 15.0,
+    "max_asian_range_pips": 120.0,
+    "buffer_pips": 3.0,
+    "max_spread_pips": 4.5
+  },
+  "auto_trading": true,
+  "sound_alerts": true
+}

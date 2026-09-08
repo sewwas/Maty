@@ -23,13 +23,19 @@ _mt5_path = None
 CONFIG_FILE_TMPL = "bridge_config_{port}.json"
 
 def get_bridge_config(port: int) -> dict:
-    cfg_path = CONFIG_FILE_TMPL.format(port=port)
-    if os.path.exists(cfg_path):
-        try:
-            with open(cfg_path, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception as e:
-            print(f"[Bridge {port}] Error reading config: {e}")
+    candidates = [
+        CONFIG_FILE_TMPL.format(port=port),
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), CONFIG_FILE_TMPL.format(port=port)),
+        rf"C:\bridge_config_{port}.json",
+        f"/root/Maty/bridge_config_{port}.json"
+    ]
+    for cfg_path in candidates:
+        if os.path.exists(cfg_path):
+            try:
+                with open(cfg_path, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except Exception as e:
+                print(f"[Bridge {port}] Error reading config from {cfg_path}: {e}")
     return {}
 
 def save_bridge_config(port: int, login: int, password: str, server: str):
@@ -41,17 +47,20 @@ def save_bridge_config(port: int, login: int, password: str, server: str):
         print(f"[Bridge {port}] Error saving config: {e}")
 
 def check_other_bridge_conflict(current_port: int, target_login: int) -> tuple[bool, int]:
-    other_port = 8002 if current_port == 8001 else 8001
-    try:
-        req = urllib.request.Request(f"http://127.0.0.1:{other_port}/account", headers={'User-Agent': 'PythonBridge'})
-        with urllib.request.urlopen(req, timeout=1.5) as resp:
-            if resp.status == 200:
-                data = json.loads(resp.read().decode('utf-8'))
-                if data.get("connected") and str(data.get("login")) == str(target_login):
-                    return True, other_port
-    except Exception:
-        pass
-    return False, other_port
+    all_ports = [8001, 8002, 8003]
+    for other_port in all_ports:
+        if other_port == current_port:
+            continue
+        try:
+            req = urllib.request.Request(f"http://127.0.0.1:{other_port}/account", headers={'User-Agent': 'PythonBridge'})
+            with urllib.request.urlopen(req, timeout=1.0) as resp:
+                if resp.status == 200:
+                    data = json.loads(resp.read().decode('utf-8'))
+                    if data.get("connected") and str(data.get("login")) == str(target_login):
+                        return True, other_port
+        except Exception:
+            pass
+    return False, 0
 
 
 
@@ -118,8 +127,8 @@ class MT5BridgeHandler(BaseHTTPRequestHandler):
                 }
             else:
                 cfg = get_bridge_config(port)
-                def_log = cfg.get("login", 257515247 if port == 8001 else "Account #2 (Port 8002)")
-                def_srv = cfg.get("server", "Exness-MT5Real36" if port == 8001 else "Exness MT5 #2")
+                def_log = cfg.get("login", 257515247 if port == 8001 else f"Account #{port-8000} (Port {port})")
+                def_srv = cfg.get("server", "Exness-MT5Real36" if port == 8001 else f"Exness MT5 #{port-8000}")
                 term = mt5.terminal_info()
                 res = {
                     "connected": True if term is not None else True,
@@ -192,7 +201,12 @@ class MT5BridgeHandler(BaseHTTPRequestHandler):
                     else:
                         mt5_exe = os.getenv("MT5_PATH")
                         if not mt5_exe:
-                            mt5_exe = r"C:\Program Files\MetaTrader 5_2\terminal64.exe" if port == 8002 else r"C:\Program Files\MetaTrader 5\terminal64.exe"
+                            if port == 8003:
+                                mt5_exe = r"C:\Program Files\MetaTrader 5_3\terminal64.exe"
+                            elif port == 8002:
+                                mt5_exe = r"C:\Program Files\MetaTrader 5_2\terminal64.exe"
+                            else:
+                                mt5_exe = r"C:\Program Files\MetaTrader 5\terminal64.exe"
                         
                         mt5.initialize(path=mt5_exe, login=login_id, password=pwd, server=srv)
                         ok = mt5.login(login=login_id, password=pwd, server=srv)
@@ -701,7 +715,12 @@ def ensure_mt5(port: int) -> bool:
         _mt5_saved_pwd = cfg.get("password")
         _mt5_saved_srv = cfg.get("server", "Exness-MT5Real36")
         if not _mt5_path:
-            _mt5_path = r"C:\Program Files\MetaTrader 5_2\terminal64.exe" if port == 8002 else r"C:\Program Files\MetaTrader 5\terminal64.exe"
+            if port == 8003:
+                _mt5_path = r"C:\Program Files\MetaTrader 5_3\terminal64.exe"
+            elif port == 8002:
+                _mt5_path = r"C:\Program Files\MetaTrader 5_2\terminal64.exe"
+            else:
+                _mt5_path = r"C:\Program Files\MetaTrader 5\terminal64.exe"
 
         init_ok = False
         if _mt5_saved_login and _mt5_saved_pwd:
@@ -739,12 +758,18 @@ if __name__ == "__main__":
     os.environ["PORT"] = str(port)
     _mt5_path = os.getenv("MT5_PATH")
     if not _mt5_path:
-        _mt5_path = r"C:\Program Files\MetaTrader 5_2\terminal64.exe" if port == 8002 else r"C:\Program Files\MetaTrader 5\terminal64.exe"
+        if port == 8003:
+            _mt5_path = r"C:\Program Files\MetaTrader 5_3\terminal64.exe"
+        elif port == 8002:
+            _mt5_path = r"C:\Program Files\MetaTrader 5_2\terminal64.exe"
+        else:
+            _mt5_path = r"C:\Program Files\MetaTrader 5\terminal64.exe"
 
     # ── Auto-seed bridge config from environment variables ──────────────────────
     # Set EXNESS_LOGIN_1 / EXNESS_PASSWORD_1 / EXNESS_SERVER_1 for Bot #1 (port 8001)
     # Set EXNESS_LOGIN_2 / EXNESS_PASSWORD_2 / EXNESS_SERVER_2 for Bot #2 (port 8002)
-    _idx = "1" if port == 8001 else "2"
+    # Set EXNESS_LOGIN_3 / EXNESS_PASSWORD_3 / EXNESS_SERVER_3 for Bot #3 (port 8003)
+    _idx = str(port - 8000) if 8001 <= port <= 8010 else "1"
     _env_login  = os.getenv(f"EXNESS_LOGIN_{_idx}") or os.getenv("EXNESS_LOGIN", "")
     _env_pass   = os.getenv(f"EXNESS_PASSWORD_{_idx}") or os.getenv("EXNESS_PASSWORD", "")
     _env_server = os.getenv(f"EXNESS_SERVER_{_idx}") or os.getenv("EXNESS_SERVER", "Exness-MT5Real36")

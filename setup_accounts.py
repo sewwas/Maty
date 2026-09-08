@@ -94,14 +94,21 @@ def setup_account(bot_num: int, port: int):
 
 
 def check_conflict():
-    cfg1 = load_existing(8001)
-    cfg2 = load_existing(8002)
-    if cfg1 and cfg2:
-        if str(cfg1.get("login")) == str(cfg2.get("login")):
-            print("\n⛔ ERROR: Both bots are configured to use the SAME MT5 account!")
-            print("   Each bot must have a unique account number.")
-            print("   Re-run this script and enter a different account for Bot #2.\n")
-            return False
+    cfgs = {
+        1: load_existing(8001),
+        2: load_existing(8002),
+        3: load_existing(8003)
+    }
+    seen = {}
+    for b_num, cfg in cfgs.items():
+        if cfg and cfg.get("login"):
+            log_id = str(cfg.get("login"))
+            if log_id in seen:
+                print(f"\n⛔ ERROR: Bot #{b_num} and Bot #{seen[log_id]} are configured to use the SAME MT5 account (#{log_id})!")
+                print("   Each bot must have a unique account number to prevent order collision.")
+                print("   Re-run this script and enter separate accounts.\n")
+                return False
+            seen[log_id] = b_num
     return True
 
 
@@ -111,6 +118,7 @@ if __name__ == "__main__":
 
     setup_account(1, 8001)
     setup_account(2, 8002)
+    setup_account(3, 8003)
 
     if not check_conflict():
         sys.exit(1)
@@ -123,6 +131,8 @@ if __name__ == "__main__":
     else:
         print("    bash start_bridges.sh")
     print()
-    print("Then start the Streamlit app:")
-    print("    streamlit run app.py --server.port 8501")
+    print("Web Dashboards:")
+    print("    Bot #1 (Auto Grid):     http://localhost:8501")
+    print("    Bot #2 (Manual Desk):   http://localhost:8502")
+    print("    Bot #3 (Trend Runner):  http://localhost:8503")
     print("══════════════════════════════════════════════════════════\n")

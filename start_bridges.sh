@@ -1,16 +1,11 @@
 #!/usr/bin/env bash
 # ══════════════════════════════════════════════════════════════════════════════
-# Profity AI — Start Both MT5 Bridges (Linux VPS + Wine)
+# Profity AI — Start All 3 MT5 Bridges (Linux VPS + Wine)
 #
 # Architecture:
-#   Wine Prefix 1 (~/.wine_mt5_1)  →  MT5 Account #160142171  →  Bridge :8001
-#   Wine Prefix 2 (~/.wine_mt5_2)  →  MT5 Account #257515247  →  Bridge :8002
-#
-# Usage:
-#   chmod +x start_bridges.sh
-#   ./start_bridges.sh
-#
-# Prerequisites: Run vps_setup.sh ONCE first to install Wine + MT5 in each prefix.
+#   Wine Prefix 1 (~/.wine_mt5_1)  →  MT5 Account #1  →  Bridge :8001  →  Panel :8501 (Auto Grid)
+#   Wine Prefix 2 (~/.wine_mt5_2)  →  MT5 Account #2  →  Bridge :8002  →  Panel :8502 (Manual Desk)
+#   Wine Prefix 3 (~/.wine_mt5_3)  →  MT5 Account #3  →  Bridge :8003  →  Panel :8503 (Trend Runner)
 # ══════════════════════════════════════════════════════════════════════════════
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -19,8 +14,8 @@ LOG_DIR="$SCRIPT_DIR/logs"
 mkdir -p "$LOG_DIR"
 
 # ── Wine Prefix Configuration ─────────────────────────────────────────────────
-# Auto-detect existing Wine prefix and Python
 _DEFAULT_PREFIX="$HOME/.wine"
+
 if [ -d "$HOME/.wine_mt5_1" ]; then
     WINE_PREFIX_1="$HOME/.wine_mt5_1"
 else
@@ -31,6 +26,12 @@ if [ -d "$HOME/.wine_mt5_2" ]; then
     WINE_PREFIX_2="$HOME/.wine_mt5_2"
 else
     WINE_PREFIX_2="$_DEFAULT_PREFIX"
+fi
+
+if [ -d "$HOME/.wine_mt5_3" ]; then
+    WINE_PREFIX_3="$HOME/.wine_mt5_3"
+else
+    WINE_PREFIX_3="$_DEFAULT_PREFIX"
 fi
 
 # Find Wine Python (checks Program Files/Python311 and Python311 in prefix)
@@ -52,29 +53,32 @@ _find_wine_py() {
 
 WINE_PYTHON_1=$(_find_wine_py "$WINE_PREFIX_1" || echo "$WINE_PREFIX_1/drive_c/Program Files/Python311/python.exe")
 WINE_PYTHON_2=$(_find_wine_py "$WINE_PREFIX_2" || echo "$WINE_PREFIX_2/drive_c/Program Files/Python311/python.exe")
+WINE_PYTHON_3=$(_find_wine_py "$WINE_PREFIX_3" || echo "$WINE_PREFIX_3/drive_c/Program Files/Python311/python.exe")
 
 # MT5 terminal paths
 MT5_PATH_1="C:\\Program Files\\MetaTrader 5\\terminal64.exe"
 MT5_PATH_2="C:\\Program Files\\MetaTrader 5_2\\terminal64.exe"
+MT5_PATH_3="C:\\Program Files\\MetaTrader 5_3\\terminal64.exe"
 
 # ── Banner ────────────────────────────────────────────────────────────────────
 echo ""
 echo "╔══════════════════════════════════════════════════════════╗"
-echo "║      Profity AI — Dual MT5 Bridge Launcher (VPS)         ║"
+echo "║      Profity AI — Triple MT5 Bridge Launcher (VPS)       ║"
 echo "╚══════════════════════════════════════════════════════════╝"
 echo ""
 echo "  Wine Prefix 1 : $WINE_PREFIX_1"
 echo "  Wine Prefix 2 : $WINE_PREFIX_2"
-echo "  Wine Python 1 : $WINE_PYTHON_1"
-echo "  Wine Python 2 : $WINE_PYTHON_2"
+echo "  Wine Prefix 3 : $WINE_PREFIX_3"
 echo "  Terminal 1    : $MT5_PATH_1"
 echo "  Terminal 2    : $MT5_PATH_2"
+echo "  Terminal 3    : $MT5_PATH_3"
 echo ""
 
 # ── Kill existing bridge processes ────────────────────────────────────────────
 echo "Stopping any existing bridge processes..."
 pkill -f "wine_mt5_bridge.py 8001" 2>/dev/null || true
 pkill -f "wine_mt5_bridge.py 8002" 2>/dev/null || true
+pkill -f "wine_mt5_bridge.py 8003" 2>/dev/null || true
 sleep 1
 
 # ── Helper: start a bridge inside its Wine prefix ────────────────────────────
@@ -85,7 +89,7 @@ _start_bridge() {
     local mt5_path="$4"
     local log_file="$LOG_DIR/bridge_${port}.log"
 
-    echo "Starting Bridge #$([ "$port" = "8001" ] && echo 1 || echo 2) on port $port..."
+    echo "Starting Bridge on port $port..."
 
     # Build env vars for the bridge process
     local bridge_env=(
@@ -112,10 +116,12 @@ _start_bridge() {
     echo "  PID: $pid  |  Log: $log_file"
 }
 
-# ── Start both bridges ────────────────────────────────────────────────────────
+# ── Start all 3 bridges ───────────────────────────────────────────────────────
 _start_bridge "8001" "$WINE_PREFIX_1" "$WINE_PYTHON_1" "$MT5_PATH_1"
 sleep 2
 _start_bridge "8002" "$WINE_PREFIX_2" "$WINE_PYTHON_2" "$MT5_PATH_2"
+sleep 2
+_start_bridge "8003" "$WINE_PREFIX_3" "$WINE_PYTHON_3" "$MT5_PATH_3"
 
 echo ""
 echo "Waiting 8s for MT5 to initialize..."
@@ -143,15 +149,19 @@ _check_bridge() {
     fi
 }
 
-_check_bridge "8001" "Bot #1 (Fx03 #160142171)"
-_check_bridge "8002" "Bot #2 (Fx02 #257515247)"
+_check_bridge "8001" "Bot #1 (Auto Grid)"
+_check_bridge "8002" "Bot #2 (Manual Desk)"
+_check_bridge "8003" "Bot #3 (Trend Runner)"
 
 echo ""
 echo "══════════════════════════════════════════════════════════"
 echo "Logs:  tail -f $LOG_DIR/bridge_8001.log"
 echo "       tail -f $LOG_DIR/bridge_8002.log"
+echo "       tail -f $LOG_DIR/bridge_8003.log"
 echo ""
-echo "Start the app:"
-echo "  streamlit run $SCRIPT_DIR/app.py --server.port 8501 --server.address 0.0.0.0 &"
+echo "Web Dashboards:"
+echo "  Bot #1 (Auto Grid):    http://\$(hostname -I | awk '{print \$1}'):8501"
+echo "  Bot #2 (Manual Desk):  http://\$(hostname -I | awk '{print \$1}'):8502"
+echo "  Bot #3 (Trend Runner): http://\$(hostname -I | awk '{print \$1}'):8503"
 echo "══════════════════════════════════════════════════════════"
 echo ""

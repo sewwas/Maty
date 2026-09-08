@@ -557,38 +557,23 @@ This section details how Profity AI protects real trading capital against the 3 
 
 ### 🌐 Access URLs & Endpoints
 1. **Web Desktop UI (Wine MT5 Screen)**: 👉 [http://169.58.190.245:8006](http://169.58.190.245:8006)
-2. **Bot #1 Control Dashboard**: 👉 [http://169.58.190.245:8501](http://169.58.190.245:8501)
-3. **Bot #2 Control Dashboard (Separate MT5 / Account)**: 👉 [http://169.58.190.245:8502](http://169.58.190.245:8502)
-
-### 🔄 Full Format VPS & Native Pure Ubuntu Deployment (NO DOCKER)
-To completely format/wipe Docker and deploy directly on **100% Native Pure Ubuntu OS**, run:
-```bash
-bash deploy_native_ubuntu.sh
-```
-Or paste the single command into your VPS terminal:
-```bash
-sudo systemctl stop docker 2>/dev/null || true
-sudo apt purge -y docker.io docker-ce containerd.io 2>/dev/null || true
-sudo apt update -y && DEBIAN_FRONTEND=noninteractive sudo apt install -y wget curl git python3 python3-pip python3-venv xvfb x11vnc novnc websockify lxde wine64 wine32 cabextract && pip3 install --upgrade pip && pip3 install streamlit starlette plotly pandas numpy requests && mkdir -p ~/mt5_setup && cd ~/mt5_setup && wget -q https://download.mql5.com/cdn/web/metaquotes.software.corp/mt5/mt5setup.exe -O mt5setup.exe && pkill Xvfb 2>/dev/null || true && pkill x11vnc 2>/dev/null || true && pkill websockify 2>/dev/null || true && Xvfb :1 -screen 0 1280x800x16 & sleep 2 && DISPLAY=:1 startlxde & sleep 2 && x11vnc -display :1 -forever -shared -nopw -rfbport 5900 & sleep 2 && websockify -D --web=/usr/share/novnc/ 8006 localhost:5900
-```
-
+2. **Bot #1 Control Dashboard (Auto Grid)**: 👉 [http://169.58.190.245:8501](http://169.58.190.245:8501)
+3. **Bot #2 Control Dashboard (Manual Desk)**: 👉 [http://169.58.190.245:8502](http://169.58.190.245:8502)
+4. **Bot #3 Control Dashboard (Trend Runner)**: 👉 [http://169.58.190.245:8503](http://169.58.190.245:8503)
 
 ### 🤖 Supported Deployment Configurations
 
-#### Option A: Single MT5 Terminal (1 Exness Account)
-- Run **1 MT5 terminal** on Port `8501`.
-- Both Bot 1 (`BTCUSD`) and Bot 2 (`XAUUSD`) run concurrently using **Magic Number Isolation** (`998871` vs `998876`).
+#### Option C: Triple MT5 Terminals (3 Accounts / 3 Portfolios on 1 VPS)
+- **MT5 #1 / Bot #1** (`:8501`, Bridge `:8001`): **Auto Grid Bot** (ATR dynamic grid, manages consolidation & range oscillations)
+- **MT5 #2 / Bot #2** (`:8502`, Bridge `:8002`): **Manual Grid Desk** (Tactical discretionary execution & custom levels)
+- **MT5 #3 / Bot #3** (`:8503`, Bridge `:8003`): **Smart Money Trend Runner** (London Open breakout, 50/200 EMA filter, ATR trailing runner, zero Martingale)
+- **Total Combined RAM**: ~500 MB – 650 MB! Completely safe and stable on a standard 1GB–2GB VPS.
 
-#### Option B: Dual Separate MT5 Terminals (2 Different Exness Accounts)
-- Run **2 separate MT5 terminal folders** side-by-side using `/portable` mode:
-  - **MT5 #1 / Bot #1** (Exness Account 1): Port `8501`
-  - **MT5 #2 / Bot #2** (Exness Account 2): Port `8502`
-- Total RAM usage remains under **450 MB** for both MT5 terminals combined!
-
-#### 💡 Your Active Setup Example (Gold Auto vs Manual on 2 Exness Accounts):
-- **Account 1 (`:8501`)**: Gold (`XAUUSD`) — **100% Fully Automatic Grid Bot** (Auto trend detection, dynamic EMA bias, auto trailing SL/TP).
-- **Account 2 (`:8502`)**: Gold (`XAUUSD`) — **Manual / Custom Control Bot** (Manual direction overrides, custom entry triggers, independent risk parameters).
-- **100% Isolated**: Both accounts run Gold simultaneously on Exness servers without interfering with each other!
+#### 💡 Triple Portfolio Hedging:
+- **Range / Flat Markets**: Bot #1 (Grid) banks continuous profits.
+- **Explosive 100+ Pip Trend Runs**: Bot #3 (Trend Runner) catches massive multi-R runners with zero grid drawdown risk.
+- **Custom Moves**: Bot #2 (Manual Desk) lets you trade your own key structural levels.
+- **100% Isolated**: Magic Numbers `998871`, `998872`, and `998873` ensure zero interference.
 
 
 
