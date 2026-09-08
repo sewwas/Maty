@@ -387,16 +387,28 @@ def deploy_grid(brk: MT5Broker, levels: dict, lot_size: float, lot_mult: float =
     Places BUY_STOP orders above center and SELL_STOP orders below center.
     First `flat_levels` orders stay flat at `lot_size` (e.g. 0.01).
     After `flat_levels`, lot multiplier (Martingale scaling) is applied.
-    Validates prices against live market ticks to prevent retcode 10015 (Invalid price).
-    Returns (placed_count, errors_list).
+    
+    GUARANTEES:
+    1. Purges any lingering/stray pending orders before deployment to prevent duplicate stacking.
+    2. Enforces strictly distinct prices (no duplicate price fills across all levels).
     """
     placed, errors = 0, []
     ts = time.time()
 
+    # Pre-deployment purge: ensure no duplicate/stray pending orders exist
+    try:
+        cancel_all_pending(brk)
+        time.sleep(0.15)
+    except Exception:
+        pass
+
     # Query live market prices to guarantee stop orders are valid
     live_p = get_mt5_live_price(brk)
     min_dist = brk.get_min_stop_distance() if hasattr(brk, "get_min_stop_distance") else 0.50
+    gap_step = max(0.20, float(levels.get("step", 2.0)))
 
+    # Guarantee strictly spaced distinct BUY_STOP prices (strictly increasing)
+    last_buy_px = round(live_p + min_dist, 2)
     for i, price in enumerate(levels["buy_stops"]):
         try:
             if i < flat_levels:
@@ -405,7 +417,14 @@ def deploy_grid(brk: MT5Broker, levels: dict, lot_size: float, lot_mult: float =
                 exponent = i - flat_levels + 1
                 calc_lot = lot_size * (lot_mult ** exponent)
             actual_lot = round(calc_lot, 2)
-            target_px = max(price, round(live_p + min_dist, 2)) if (live_p > 0 and price <= live_p) else price
+
+            # Enforce strictly distinct price: each level is strictly above the previous
+            if i == 0:
+                target_px = max(price, last_buy_px)
+            else:
+                target_px = max(price, round(last_buy_px + gap_step, 2))
+            last_buy_px = target_px
+
             order = brk.place_order("BUY_STOP", price=target_px, size=actual_lot, timestamp=ts)
             if order:
                 placed += 1
@@ -414,6 +433,8 @@ def deploy_grid(brk: MT5Broker, levels: dict, lot_size: float, lot_mult: float =
         except Exception as e:
             errors.append(f"BUY_STOP @ {price:.2f} ({actual_lot}L): {e}")
 
+    # Guarantee strictly spaced distinct SELL_STOP prices (strictly decreasing)
+    last_sell_px = round(live_p - min_dist, 2)
     for i, price in enumerate(levels["sell_stops"]):
         try:
             if i < flat_levels:
@@ -422,7 +443,14 @@ def deploy_grid(brk: MT5Broker, levels: dict, lot_size: float, lot_mult: float =
                 exponent = i - flat_levels + 1
                 calc_lot = lot_size * (lot_mult ** exponent)
             actual_lot = round(calc_lot, 2)
-            target_px = min(price, round(live_p - min_dist, 2)) if (live_p > 0 and price >= live_p) else price
+
+            # Enforce strictly distinct price: each level is strictly below the previous
+            if i == 0:
+                target_px = min(price, last_sell_px)
+            else:
+                target_px = min(price, round(last_sell_px - gap_step, 2))
+            last_sell_px = target_px
+
             order = brk.place_order("SELL_STOP", price=target_px, size=actual_lot, timestamp=ts)
             if order:
                 placed += 1
@@ -435,25 +463,33 @@ def deploy_grid(brk: MT5Broker, levels: dict, lot_size: float, lot_mult: float =
 
 
 def cancel_all_pending(brk: MT5Broker) -> str:
-    """Cancels all pending orders for magic 777001 with 100% multi-pass reliability."""
+    """
+    Cancels all pending orders for manual desk.
+    PRIORITY: Cancels NEAREST pending orders to live market price FIRST.
+    This prevents market momentum from accidentally triggering orders during close.
+    """
     cancelled = 0
     errors = []
+    live_p = get_mt5_live_price(brk)
     
     for attempt in range(4):
-        # 1. Fast batch cancel on bridge by magic
-        try:
-            import requests as _req
-            r = _req.get(f"http://127.0.0.1:{MT5_BRIDGE_PORT}/cancel_all?magic={MANUAL_MAGIC}", timeout=4.0)
-            if r.status_code == 200 and r.json().get("success"):
-                cancelled += int(r.json().get("cancelled_count", 0))
-        except Exception as e:
-            errors.append(str(e))
+        # 1. Fast batch cancel on bridge by magic (bridge now cancels nearest first)
+        for m_id in ALLOWED_MANUAL_MAGICS:
+            try:
+                import requests as _req
+                r = _req.get(f"http://127.0.0.1:{MT5_BRIDGE_PORT}/cancel_all?magic={m_id}", timeout=4.0)
+                if r.status_code == 200 and r.json().get("success"):
+                    cancelled += int(r.json().get("cancelled_count", 0))
+            except Exception as e:
+                errors.append(str(e))
 
-        # 2. Ticket-by-ticket sweep for any remaining orders
+        # 2. Ticket-by-ticket sweep sorted by NEAREST PENDING FIRST
         try:
             orders = get_live_pending(brk)
             if not orders:
                 break
+            if live_p > 0:
+                orders.sort(key=lambda o: abs(float(getattr(o, "price_open", 0.0)) - live_p))
             for o in orders:
                 t = getattr(o, "ticket", 0)
                 if t > 0:
@@ -466,7 +502,7 @@ def cancel_all_pending(brk: MT5Broker) -> str:
                         errors.append(f"Ticket {t}: {e2}")
         except Exception as e:
             errors.append(str(e))
-        time.sleep(0.15)
+        time.sleep(0.10)
 
     # Clear broker local tracking
     try:
@@ -477,29 +513,36 @@ def cancel_all_pending(brk: MT5Broker) -> str:
 
     if errors and cancelled == 0:
         return f"⚠️ Cancel error: {'; '.join(errors[:2])}"
-    return f"✅ Cancelled {cancelled} pending order(s)."
+    return f"✅ Cancelled {cancelled} pending order(s) (nearest to market price first)."
 
 
 def close_positions_by_side(brk: MT5Broker, side: str) -> str:
-    """Closes positions of specified side (BUY or SELL) for magic 777001 with multi-pass sweep."""
+    """
+    Closes positions of specified side (BUY or SELL) for magic 777001.
+    PRIORITY: Closes BIGGEST PROFIT & BIGGEST LOT FIRST!
+    """
     closed = 0
     target_side = 0 if side.upper() == "BUY" else 1
     
     for attempt in range(4):
         try:
-            # Fast batch close by side on bridge
-            import requests as _req
-            r = _req.get(f"http://127.0.0.1:{MT5_BRIDGE_PORT}/close_all?magic={MANUAL_MAGIC}&side={side.upper()}", timeout=4.0)
-            if r.status_code == 200 and r.json().get("success"):
-                closed += int(r.json().get("closed_count", 0))
+            for m_id in ALLOWED_MANUAL_MAGICS:
+                import requests as _req
+                r = _req.get(f"http://127.0.0.1:{MT5_BRIDGE_PORT}/close_all?magic={m_id}&side={side.upper()}", timeout=4.0)
+                if r.status_code == 200 and r.json().get("success"):
+                    closed += int(r.json().get("closed_count", 0))
         except Exception:
             pass
 
-        # Ticket-by-ticket sweep
+        # Ticket-by-ticket sweep: sorted by biggest profit & largest lot first
         try:
             positions = [p for p in get_live_positions(brk) if getattr(p, "type", 0) == target_side]
             if not positions:
                 break
+            positions.sort(
+                key=lambda p: (float(getattr(p, "profit", 0.0)), float(getattr(p, "volume", 0.0))),
+                reverse=True
+            )
             for p in positions:
                 t = getattr(p, "ticket", 0)
                 v = getattr(p, "volume", 0.0)
@@ -510,7 +553,7 @@ def close_positions_by_side(brk: MT5Broker, side: str) -> str:
                         closed += 1
         except Exception as e:
             return f"⚠️ Error closing {side}: {e}"
-        time.sleep(0.15)
+        time.sleep(0.10)
 
     try:
         for pid, pos in list(brk.open_positions.items()):
@@ -519,53 +562,107 @@ def close_positions_by_side(brk: MT5Broker, side: str) -> str:
     except Exception:
         pass
 
-    return f"✅ Closed {closed} {side} position(s)."
+    return f"✅ Closed {closed} {side} position(s) (highest profit & largest lot first)."
 
 
 def flatten_all(brk: MT5Broker, state: dict) -> str:
     """
-    Immediately takes profit / flattens by closing all open positions first ASAP,
-    then cancelling all pending orders for this manual desk.
-    Performs multi-pass verification to guarantee 100% of all active and pending orders are closed.
+    INSTITUTIONAL PROFIT-LOCKING FLATTEN SEQUENCE:
+    1. PHASE 1: Instantly cancel ALL pending orders (NEAREST PENDING FIRST).
+       Guarantees no new orders can trigger/fill while closing active positions.
+    2. PHASE 2: Sort and close all active positions by:
+       - Primary: Highest Floating Profit ($) descending (biggest winner first)
+       - Secondary: Largest Volume (Lots) descending (biggest lot first)
+       Instantly locks in peak gains and cuts off maximum market risk.
+    3. PHASE 3: Multi-pass verification sweep to ensure 100% clean state (0 pos, 0 ord).
+    4. PHASE 4: Records detailed audit trail.
     """
     closed_count = 0
+    cancelled_pend = 0
     total_pnl = 0.0
     errors = []
+    audit_steps = []
 
     # Get account currency for precise profit reporting
     acc = get_account_summary(brk)
     acct_curr = acc.get("currency", "USD")
     curr_sym = "¢" if acct_curr == "USC" else "$"
+    live_p = get_mt5_live_price(brk)
 
-    for attempt in range(5):
-        # 1. Fast bulk close on bridge for manual desk magics (777001)
-        for m_id in [MANUAL_MAGIC]:
+    # ──────────────────────────────────────────────────────────────────
+    # PHASE 1: WIPE NEAREST PENDING ORDERS FIRST AT CLOSE INSTANCE
+    # ──────────────────────────────────────────────────────────────────
+    for attempt in range(3):
+        # 1. Bridge bulk cancel with nearest-first priority
+        for m_id in ALLOWED_MANUAL_MAGICS:
             try:
                 import requests as _req
-                r = _req.get(f"http://127.0.0.1:{MT5_BRIDGE_PORT}/close_all?magic={m_id}", timeout=15.0)
+                r_c = _req.get(f"http://127.0.0.1:{MT5_BRIDGE_PORT}/cancel_all?magic={m_id}", timeout=5.0)
+                if r_c.status_code == 200:
+                    cancelled_pend += int(r_c.json().get("cancelled_count", 0))
+            except Exception as e:
+                errors.append(f"Cancel bridge: {e}")
+
+        # 2. Sweep remaining pending orders (strictly nearest first)
+        try:
+            rem_pend = get_live_pending(brk)
+            if not rem_pend:
+                break
+            if live_p > 0:
+                rem_pend.sort(key=lambda o: abs(float(getattr(o, "price_open", 0.0)) - live_p))
+            for po in rem_pend:
+                t = getattr(po, "ticket", 0)
+                if t > 0:
+                    try:
+                        import requests as _req
+                        r2 = _req.get(f"http://127.0.0.1:{MT5_BRIDGE_PORT}/order_cancel?ticket={t}", timeout=2.5)
+                        if r2.status_code == 200 and r2.json().get("success"):
+                            cancelled_pend += 1
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+        time.sleep(0.05)
+
+    audit_steps.append(f"Phase 1: Wiped {cancelled_pend} nearest pending order(s) FIRST")
+
+    # ──────────────────────────────────────────────────────────────────
+    # PHASE 2: CLOSE ACTIVE POSITIONS (BIGGEST PROFIT & BIGGEST LOT FIRST)
+    # ──────────────────────────────────────────────────────────────────
+    for attempt in range(5):
+        # 1. Fast bulk close on bridge with cancel_pending flag & profit-priority sorting
+        for m_id in ALLOWED_MANUAL_MAGICS:
+            try:
+                import requests as _req
+                r = _req.get(f"http://127.0.0.1:{MT5_BRIDGE_PORT}/close_all?magic={m_id}&cancel_pending=1", timeout=15.0)
                 if r.status_code == 200:
                     d = r.json()
                     if d.get("success"):
-                        closed_count += int(d.get("closed_count", 0))
+                        c_cnt = int(d.get("closed_count", 0))
+                        closed_count += c_cnt
                         total_pnl += float(d.get("total_pnl", 0.0))
+                        for a in d.get("audit", []):
+                            audit_steps.append(f"Phase 2 Closed #{a['ticket']} ({a['volume']}L {a['side']}): {curr_sym}{a['pnl']:+.2f}")
             except Exception as e:
                 errors.append(str(e))
 
-        # 2. Fast bulk cancel on bridge for manual desk magics
-        for m_id in [MANUAL_MAGIC]:
-            try:
-                import requests as _req
-                _req.get(f"http://127.0.0.1:{MT5_BRIDGE_PORT}/cancel_all?magic={m_id}", timeout=10.0)
-            except Exception:
-                pass
-
-        # 3. Ticket-by-ticket sweep for remaining open positions
+        # 2. Ticket-by-ticket sweep: sorted strictly by biggest profit & largest lot first
         try:
             positions = get_live_positions(brk)
+            if not positions:
+                break
+
+            # STRICT SORT: Highest profit first, then largest volume first
+            positions.sort(
+                key=lambda p: (float(getattr(p, "profit", 0.0)), float(getattr(p, "volume", 0.0))),
+                reverse=True
+            )
+
             for p in positions:
                 t = getattr(p, "ticket", 0)
                 v = getattr(p, "volume", 0.0)
                 pnl_val = float(getattr(p, "profit", 0.0))
+                p_side = "BUY" if (p.type == 0) else "SELL"
                 if t > 0:
                     try:
                         import requests as _req
@@ -573,26 +670,13 @@ def flatten_all(brk: MT5Broker, state: dict) -> str:
                         if r2.status_code == 200 and r2.json().get("success"):
                             closed_count += 1
                             total_pnl += pnl_val
+                            audit_steps.append(f"Phase 2 Closed #{t} ({v}L {p_side}): {curr_sym}{pnl_val:+.2f}")
                     except Exception as e2:
                         errors.append(f"Pos {t}: {e2}")
         except Exception as e:
             errors.append(str(e))
 
-        # 4. Ticket-by-ticket sweep for remaining pending orders
-        try:
-            orders = get_live_pending(brk)
-            for o in orders:
-                t = getattr(o, "ticket", 0)
-                if t > 0:
-                    try:
-                        import requests as _req
-                        _req.get(f"http://127.0.0.1:{MT5_BRIDGE_PORT}/order_cancel?ticket={t}", timeout=4.0)
-                    except Exception as e2:
-                        errors.append(f"Ticket {t}: {e2}")
-        except Exception as e:
-            errors.append(str(e))
-
-        # 5. Verification check: Are both active positions and pending orders 0?
+        # 3. Check if all positions and orders are 0
         rem_pos = get_live_positions(brk)
         rem_ord = get_live_pending(brk)
         if len(rem_pos) == 0 and len(rem_ord) == 0:
@@ -613,24 +697,33 @@ def flatten_all(brk: MT5Broker, state: dict) -> str:
     except Exception:
         pass
 
-    # Record trade history (only record actual position closures, never zero-count dummies)
+    # Record trade history & audit state
+    ts_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     if closed_count > 0:
-        ts_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         record = {
             "time":      ts_str,
             "action":    "FLATTEN ALL",
             "count":     closed_count,
             "total_pnl": round(total_pnl, 2),
+            "audit":     audit_steps,
         }
         state["trade_history"].insert(0, record)
         state["trade_history"] = state["trade_history"][:MAX_HISTORY_ROWS]
+    
+    state["last_audit"] = {
+        "time": ts_str,
+        "closed_count": closed_count,
+        "cancelled_pending": cancelled_pend,
+        "total_pnl": round(total_pnl, 2),
+        "steps": audit_steps[:10],
+    }
     state["deployed"] = False
     state["grid_levels"] = []
     save_state(state)
 
     if not is_fully_clean:
         return f"⚠️ Flatten warning ({len(final_rem_pos)} pos, {len(final_rem_ord)} ord remaining): {'; '.join(errors[:2])}"
-    return f"✅ 100% Closed & Flattened ({closed_count} pos closed) | Net P&L: {curr_sym}{total_pnl:+.2f} {acct_curr}"
+    return f"✅ 100% Profit-Priority Closed ({closed_count} pos, {cancelled_pend} pend cancelled) | Net P&L: {curr_sym}{total_pnl:+.2f} {acct_curr}"
 
 
 
@@ -1758,7 +1851,34 @@ with pend_col:
 
 st.markdown("---")
 
-hist_header_left, hist_header_right = st.columns([3, 1])
+# ── UI — EXECUTION AUDIT TRAIL ──────────────────────────────────────────────
+last_aud = state.get("last_audit")
+if last_aud and last_aud.get("steps"):
+    aud_time = last_aud.get("time", "")
+    aud_cnt = last_aud.get("closed_count", 0)
+    aud_pend = last_aud.get("cancelled_pending", 0)
+    aud_pnl = last_aud.get("total_pnl", 0.0)
+    pnl_c = "#4ade80" if aud_pnl >= 0 else "#f87171"
+    steps_html = "".join([f'<li style="margin-bottom:3px;font-family:\'JetBrains Mono\',monospace;font-size:0.75rem;color:#d4d4d8;">{s}</li>' for s in last_aud.get("steps", [])])
+    st.markdown(f'''
+    <div style="background:#131316;border:1px solid #27272a;border-radius:10px;padding:12px 18px;margin-bottom:14px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+            <div style="font-size:0.80rem;font-weight:700;color:#c084fc;text-transform:uppercase;letter-spacing:0.6px;display:flex;align-items:center;gap:8px;">
+                <span>🛡️ Close Execution Audit Trail</span>
+                <span style="font-size:0.70rem;color:#71717a;font-weight:400;">({aud_time})</span>
+            </div>
+            <div style="font-family:\'JetBrains Mono\',monospace;font-size:0.82rem;font-weight:700;color:{pnl_c};">
+                Net Locked: {aud_pnl:+.2f} USD ({aud_cnt} Pos Closed, {aud_pend} Pending Cancelled)
+            </div>
+        </div>
+        <div style="font-size:0.75rem;color:#a1a1aa;margin-bottom:6px;">
+            Execution Sequence: <span style="color:#60a5fa;font-weight:600;">1. Nearest Pending Wiped FIRST</span> ➔ <span style="color:#4ade80;font-weight:600;">2. Biggest Profit & Lot Closed FIRST</span> ➔ <span style="color:#fbbf24;font-weight:600;">3. 100% Verification</span>
+        </div>
+        <ul style="margin:0;padding-left:18px;">
+            {steps_html}
+        </ul>
+    </div>
+    ''', unsafe_allow_html=True)
 with hist_header_left:
     st.markdown('<div class="table-header">📋 Trade History (MT5 Deals)</div>', unsafe_allow_html=True)
 with hist_header_right:

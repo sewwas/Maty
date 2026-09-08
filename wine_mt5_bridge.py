@@ -548,7 +548,27 @@ class MT5BridgeHandler(BaseHTTPRequestHandler):
                 sym = params.get("symbol", "")
                 side_filter = params.get("side", "").upper()
                 magic_filter = params.get("magic")
+                cancel_pend = params.get("cancel_pending", "").lower() in ("1", "true", "yes")
                 
+                # Optional: Wipe nearest pending orders first at close instance
+                cancelled_pending = 0
+                if cancel_pend:
+                    try:
+                        all_o = mt5.orders_get()
+                        if all_o:
+                            pend_list = [o for o in all_o if not (magic_filter and str(getattr(o, "magic", "")) != str(magic_filter))]
+                            if pend_list:
+                                t_s = mt5.symbol_info_tick(pend_list[0].symbol)
+                                c_p = ((t_s.bid + t_s.ask) / 2.0) if (t_s and t_s.bid > 0 and t_s.ask > 0) else 0.0
+                                if c_p > 0:
+                                    pend_list.sort(key=lambda o: abs(float(getattr(o, "price_open", 0.0)) - c_p))
+                                for po in pend_list:
+                                    rc = mt5.order_send({"action": mt5.TRADE_ACTION_REMOVE, "order": po.ticket})
+                                    if rc and rc.retcode in (0, 10009, 10008, 10004):
+                                        cancelled_pending += 1
+                    except Exception:
+                        pass
+
                 poss = []
                 if sym:
                     cands = resolve_bridge_candidates(sym)
@@ -563,33 +583,51 @@ class MT5BridgeHandler(BaseHTTPRequestHandler):
                         if sym:
                             c_base = sym.replace("USDT", "").replace("USDC", "").replace("USD", "").upper()
                             poss = [p for p in poss if c_base in str(p.symbol).upper() or any(k in str(p.symbol).upper() for k in ["XAU", "GOLD"] if any(x in sym.upper() for x in ["XAU", "GOLD", "PAXG"]))]
+
                 closed_count = 0
                 total_pnl = 0.0
                 closed_tickets = []
+                audit_log = []
                 res = {
                     "success": True,
                     "closed_count": 0,
                     "total_pnl": 0.0,
-                    "closed_tickets": []
+                    "closed_tickets": [],
+                    "cancelled_pending": cancelled_pending,
+                    "audit": []
                 }
                 if poss:
-                    # Pre-fetch all ticks first so the close loop runs with zero I/O delay
-                    tick_cache = {}
-                    info_cache = {}
-                    for pos in poss:
-                        if pos.symbol not in tick_cache:
-                            tick_cache[pos.symbol] = mt5.symbol_info_tick(pos.symbol)
-                        if pos.symbol not in info_cache:
-                            info_cache[pos.symbol] = mt5.symbol_info(pos.symbol)
+                    # 1. Filter matching positions
+                    target_poss = []
                     for pos in list(poss):
                         if magic_filter and str(getattr(pos, "magic", "")) != str(magic_filter):
                             continue
                         pos_side = "BUY" if (pos.type == 0 or pos.type == getattr(mt5, "POSITION_TYPE_BUY", 0)) else "SELL"
                         if side_filter and side_filter != pos_side:
                             continue
-                        close_type = mt5.ORDER_TYPE_SELL if pos.type == getattr(mt5, "POSITION_TYPE_BUY", 0) else mt5.ORDER_TYPE_BUY
+                        target_poss.append(pos)
+
+                    # 2. PRIORITY SORT: Biggest Profit & Biggest Lot First!
+                    # Primary key: profit descending (highest profit first)
+                    # Secondary key: volume descending (biggest lot first)
+                    target_poss.sort(
+                        key=lambda p: (float(getattr(p, "profit", 0.0)), float(getattr(p, "volume", 0.0))),
+                        reverse=True
+                    )
+
+                    # Pre-fetch ticks
+                    tick_cache = {}
+                    info_cache = {}
+                    for pos in target_poss:
+                        if pos.symbol not in tick_cache:
+                            tick_cache[pos.symbol] = mt5.symbol_info_tick(pos.symbol)
+                        if pos.symbol not in info_cache:
+                            info_cache[pos.symbol] = mt5.symbol_info(pos.symbol)
+
+                    for pos in target_poss:
+                        close_type = mt5.ORDER_TYPE_SELL if (pos.type == 0 or pos.type == getattr(mt5, "POSITION_TYPE_BUY", 0)) else mt5.ORDER_TYPE_BUY
                         
-                        # Fetch fresh live tick right before each close deal to eliminate 10015 invalid price errors
+                        # Fresh live tick right before each close deal
                         t_live = mt5.symbol_info_tick(pos.symbol)
                         if t_live and getattr(t_live, "bid", 0) > 0 and getattr(t_live, "ask", 0) > 0:
                             price = t_live.bid if close_type == mt5.ORDER_TYPE_SELL else t_live.ask
@@ -603,6 +641,8 @@ class MT5BridgeHandler(BaseHTTPRequestHandler):
                         if filling_mode & 1: best_filling = mt5.ORDER_FILLING_FOK
                         elif filling_mode & 4: best_filling = mt5.ORDER_FILLING_RETURN
 
+                        p_pnl = float(getattr(pos, "profit", 0.0))
+                        p_vol = float(getattr(pos, "volume", 0.0))
                         req = {
                             "action":       mt5.TRADE_ACTION_DEAL,
                             "symbol":       pos.symbol,
@@ -631,13 +671,21 @@ class MT5BridgeHandler(BaseHTTPRequestHandler):
                                     break
                         if is_closed:
                             closed_count += 1
-                            total_pnl += float(getattr(pos, "profit", 0.0))
+                            total_pnl += p_pnl
                             closed_tickets.append(int(pos.ticket))
+                            audit_log.append({
+                                "ticket": int(pos.ticket),
+                                "side": "BUY" if close_type == mt5.ORDER_TYPE_SELL else "SELL",
+                                "volume": p_vol,
+                                "pnl": round(p_pnl, 2)
+                            })
                     res = {
                         "success": True,
                         "closed_count": closed_count,
                         "total_pnl": round(total_pnl, 2),
-                        "closed_tickets": closed_tickets
+                        "closed_tickets": closed_tickets,
+                        "cancelled_pending": cancelled_pending,
+                        "audit": audit_log
                     }
             except Exception as e:
                 res = {"success": False, "error": str(e)}
@@ -668,11 +716,28 @@ class MT5BridgeHandler(BaseHTTPRequestHandler):
                         if sym:
                             c_base = sym.replace("USDT", "").replace("USDC", "").replace("USD", "").upper()
                             orders = [o for o in orders if c_base in str(o.symbol).upper() or any(k in str(o.symbol).upper() for k in ["XAU", "GOLD"] if any(x in sym.upper() for x in ["XAU", "GOLD", "PAXG"]))]
+
                 cancelled_count = 0
                 if orders:
-                    for o in list(orders):
-                        if magic_filter and str(getattr(o, "magic", "")) != str(magic_filter):
-                            continue
+                    # 1. Filter by magic
+                    target_orders = [
+                        o for o in list(orders)
+                        if not (magic_filter and str(getattr(o, "magic", "")) != str(magic_filter))
+                    ]
+                    # 2. PRIORITY SORT: Nearest Pending First!
+                    curr_p = 0.0
+                    try:
+                        s_name = sym if sym else (target_orders[0].symbol if target_orders else "XAUUSD")
+                        t_live = mt5.symbol_info_tick(s_name)
+                        if t_live and getattr(t_live, "bid", 0) > 0 and getattr(t_live, "ask", 0) > 0:
+                            curr_p = (t_live.bid + t_live.ask) / 2.0
+                    except Exception:
+                        pass
+
+                    if curr_p > 0:
+                        target_orders.sort(key=lambda o: abs(float(getattr(o, "price_open", 0.0)) - curr_p))
+
+                    for o in target_orders:
                         req = {"action": mt5.TRADE_ACTION_REMOVE, "order": o.ticket}
                         res_c = mt5.order_send(req)
                         if res_c and res_c.retcode in (0, 10009, 10008, 10004):
