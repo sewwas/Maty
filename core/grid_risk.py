@@ -1367,12 +1367,17 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
         dyn_tp_factor = max(3.0, float(effective_levels * 1.0))
         calculated_dynamic_tp = gap_val * dyn_tp_factor
 
+        # Guarantee minimum 1.8x R:R over stop loss so every win outpaces average loss
+        rr_min_tp = min_sl_dist * 1.80
+
         if any(x in sym_name for x in ["XAU", "GOLD", "PAXG"]):
-            min_tp_dist = max(current_price * 0.0025, min(current_price * 0.0075, calculated_dynamic_tp, atr_5m * 2.5))
+            # On Gold / PAXG: Enforce minimum $12-$20 distance (0.3% - 0.5% move), at least 3x ATR
+            min_tp_dist = max(12.0, current_price * 0.0030, atr_5m * 3.0, calculated_dynamic_tp, rr_min_tp)
         elif "ETH" in sym_name:
-            min_tp_dist = max(current_price * 0.0025, min(current_price * 0.0075, calculated_dynamic_tp, atr_5m * 2.5))
+            # On ETH: Enforce minimum $15-$25 distance (0.5% - 1.0% move), at least 3x ATR
+            min_tp_dist = max(15.0, current_price * 0.0050, atr_5m * 3.0, calculated_dynamic_tp, rr_min_tp)
         else:
-            min_tp_dist = max(calculated_dynamic_tp, b_min_stop * 5.0)
+            min_tp_dist = max(calculated_dynamic_tp, b_min_stop * 5.0, rr_min_tp)
 
         side_cfg = str(getattr(self, "pending_order_side_mode", "AUTO_ADAPTIVE")).upper()
         _auto_eval_decided = False
@@ -1634,11 +1639,11 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
             if placed_count + len(_open_pos) >= effective_levels: return
             _mult = 1.0 if _is_hedged_override else self.order_size_multiplier
             sz  = self.calculate_level_size(self.order_size, _mult, level_idx)
-            # Smart TP: target nearest structural support below entry
+            # Smart TP: target extended structural support near our target distance (min 90% of dir_tp_dist)
             smart_tp = round(px - dir_tp_dist, digits)
-            valid_tps = [c_px for (_, c_px, _) in merged_support if c_px <= px - min_tp_dist and c_px >= px - (dir_tp_dist * 2.0)]
+            valid_tps = [c_px for (_, c_px, _) in merged_support if c_px <= px - (dir_tp_dist * 0.85) and c_px >= px - (dir_tp_dist * 2.2)]
             if valid_tps:
-                smart_tp = max(valid_tps)
+                smart_tp = min(valid_tps, key=lambda c: abs(c - (px - dir_tp_dist)))
             # Smart SL: protected above nearest structural resistance over entry
             smart_sl = round(px + min_sl_dist, digits)
             valid_sls = [c_px for (_, c_px, _) in merged_resistance if c_px >= px + min_sl_dist and c_px <= px + (min_sl_dist * 2.5)]
@@ -1658,11 +1663,11 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
             if placed_count + len(_open_pos) >= effective_levels: return
             _mult = 1.0 if _is_hedged_override else self.order_size_multiplier
             sz  = self.calculate_level_size(self.order_size, _mult, level_idx)
-            # Smart TP: target nearest structural resistance above entry
+            # Smart TP: target extended structural resistance near our target distance (min 90% of dir_tp_dist)
             smart_tp = round(px + dir_tp_dist, digits)
-            valid_tps = [c_px for (_, c_px, _) in merged_resistance if c_px >= px + min_tp_dist and c_px <= px + (dir_tp_dist * 2.0)]
+            valid_tps = [c_px for (_, c_px, _) in merged_resistance if c_px >= px + (dir_tp_dist * 0.85) and c_px <= px + (dir_tp_dist * 2.2)]
             if valid_tps:
-                smart_tp = min(valid_tps)
+                smart_tp = min(valid_tps, key=lambda c: abs(c - (px + dir_tp_dist)))
             # Smart SL: protected below nearest structural support under entry
             smart_sl = round(px - min_sl_dist, digits)
             valid_sls = [c_px for (_, c_px, _) in merged_support if c_px <= px - min_sl_dist and c_px >= px - (min_sl_dist * 2.5)]
@@ -1683,9 +1688,9 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
             _mult = 1.0 if _is_hedged_override else self.order_size_multiplier
             sz  = self.calculate_level_size(self.order_size, _mult, level_idx)
             smart_tp = round(px - dir_tp_dist, digits)
-            valid_tps = [c_px for (_, c_px, _) in merged_support if c_px <= px - min_tp_dist and c_px >= px - (dir_tp_dist * 2.0)]
+            valid_tps = [c_px for (_, c_px, _) in merged_support if c_px <= px - (dir_tp_dist * 0.85) and c_px >= px - (dir_tp_dist * 2.2)]
             if valid_tps:
-                smart_tp = max(valid_tps)
+                smart_tp = min(valid_tps, key=lambda c: abs(c - (px - dir_tp_dist)))
             smart_sl = round(px + min_sl_dist, digits)
             valid_sls = [c_px for (_, c_px, _) in merged_resistance if c_px >= px + min_sl_dist and c_px <= px + (min_sl_dist * 2.5)]
             if valid_sls:
@@ -1705,9 +1710,9 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
             _mult = 1.0 if _is_hedged_override else self.order_size_multiplier
             sz  = self.calculate_level_size(self.order_size, _mult, level_idx)
             smart_tp = round(px + dir_tp_dist, digits)
-            valid_tps = [c_px for (_, c_px, _) in merged_resistance if c_px >= px + min_tp_dist and c_px <= px + (dir_tp_dist * 2.0)]
+            valid_tps = [c_px for (_, c_px, _) in merged_resistance if c_px >= px + (dir_tp_dist * 0.85) and c_px <= px + (dir_tp_dist * 2.2)]
             if valid_tps:
-                smart_tp = min(valid_tps)
+                smart_tp = min(valid_tps, key=lambda c: abs(c - (px + dir_tp_dist)))
             smart_sl = round(px - min_sl_dist, digits)
             valid_sls = [c_px for (_, c_px, _) in merged_support if c_px <= px - min_sl_dist and c_px >= px - (min_sl_dist * 2.5)]
             if valid_sls:

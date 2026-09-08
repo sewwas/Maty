@@ -1803,8 +1803,9 @@ with tab_desk:
                 dep_px = float(tr.get("deploy_price", tr.get("entry_price", tr.get("open_price", 0.0))))
                 ex_px  = float(tr.get("exit_price",  tr.get("close_price",  tr.get("price", 0.0))))
                 fl_cnt = int(tr.get("fills_count",   tr.get("trades_count",  tr.get("size", 1))))
+                base_cid = max((int(c.get("cycle_id", 0)) for c in cycles_list if isinstance(c.get("cycle_id"), (int, float)) or str(c.get("cycle_id", "")).isdigit()), default=len(cycles_list))
                 cycles_list.append({
-                    "cycle_id":    len(cycles_list) + 1,
+                    "cycle_id":    base_cid + 1,
                     "symbol":      tr.get("symbol", sym_code),
                     "pnl":         pnl_tr,
                     "total_pnl":   pnl_tr,
@@ -2272,9 +2273,9 @@ with tab_manual:
                         existing_records.add((ts_rnd, pnl_rnd))
                         dep_px = float(tr.get("deploy_price", tr.get("entry_price", tr.get("open_price", 0.0))))
                         ex_px  = float(tr.get("exit_price",  tr.get("close_price",  tr.get("price", 0.0))))
-                        fl_cnt = int(tr.get("fills_count",   tr.get("trades_count",  tr.get("size", 1))))
+                        base_m_cid = max((int(c.get("cycle_id", 0)) for c in m_cycles_list if isinstance(c.get("cycle_id"), (int, float)) or str(c.get("cycle_id", "")).isdigit()), default=len(m_cycles_list))
                         m_cycles_list.append({
-                            "cycle_id":    len(m_cycles_list) + 1,
+                            "cycle_id":    base_m_cid + 1,
                             "symbol":      tr.get("symbol", m_sym_code),
                             "pnl":         pnl_tr,
                             "total_pnl":   pnl_tr,
