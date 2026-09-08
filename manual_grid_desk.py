@@ -90,6 +90,7 @@ def load_state() -> dict:
             "gap_value": 2.0,
             "gap_pct": 0.07,
             "lot_size": 0.01,
+            "flat_levels": 3,
             "lot_mult": 1.0,
             "target_profit": 5.0,
             "stop_loss": 25.0,
@@ -287,17 +288,106 @@ def get_account_summary(brk: MT5Broker) -> dict:
     return {"login": 0, "server": "", "balance": 0.0, "equity": 0.0, "leverage": 0, "currency": "USD"}
 
 
+def get_closed_deal_history(days: int = 30) -> list:
+    """
+    Fetches real closed trade deals directly from MT5 bridge /history endpoint.
+    Pairs entry (IN) and exit (OUT) deals by position_id to reconstruct exact trade details:
+    Time, Ticket, Symbol, Side (BUY/SELL), Lots, Entry Price, Exit Price, Net P&L, Reason/Comment.
+    """
+    try:
+        import requests as _req
+        url = f"http://127.0.0.1:{MT5_BRIDGE_PORT}/history?days={days}"
+        r = _req.get(url, timeout=3.5)
+        if r.status_code != 200:
+            return []
+        data = r.json()
+        deals = data.get("deals", [])
+        if not deals:
+            return []
+            
+        in_deals = {d.get("position_id"): d for d in deals if d.get("entry") == 0}
+        out_deals = [d for d in deals if d.get("entry") in (1, 2)]
+        
+        records = []
+        for d in out_deals:
+            pid = d.get("position_id")
+            magic = d.get("magic", 0)
+            sym = str(d.get("symbol", "")).upper()
+            
+            # Filter: manual desk magics or matching gold/symbol
+            if magic not in ALLOWED_MANUAL_MAGICS and not any(k in sym for k in ("XAU", "GOLD", "PAXG")):
+                continue
+                
+            open_d = in_deals.get(pid)
+            
+            # Determine original side:
+            # If open deal exists: open_d type 0 = BUY, 1 = SELL.
+            # If exit deal alone: deal type 1 (SELL) closed a BUY; type 0 (BUY) closed a SELL.
+            if open_d:
+                side = "BUY" if open_d.get("type") == 0 else "SELL"
+                open_px = float(open_d.get("price", 0.0))
+            else:
+                side = "BUY" if d.get("type") == 1 else "SELL"
+                open_px = 0.0
+                
+            close_px = float(d.get("price", 0.0))
+            vol = float(d.get("volume", 0.0))
+            profit = float(d.get("profit", 0.0))
+            swap = float(d.get("swap", 0.0))
+            comm = float(d.get("commission", 0.0))
+            net_pnl = profit + swap + comm
+            ticket = d.get("ticket") or d.get("order") or pid
+            
+            # If open price was not found in open deals, calculate implied open price
+            if open_px <= 0.0 and vol > 0:
+                pts_diff = profit / (vol * 100.0)
+                if side == "BUY":
+                    est_open = close_px - pts_diff
+                else:
+                    est_open = close_px + pts_diff
+                if est_open > 0:
+                    open_px = est_open
+
+            t_sec = float(d.get("time", 0))
+            ts_str = datetime.datetime.fromtimestamp(t_sec).strftime("%Y-%m-%d %H:%M:%S") if t_sec else "—"
+            comment = str(d.get("comment", "")).strip()
+            
+            records.append({
+                "time": ts_str,
+                "ticket": ticket,
+                "position_id": pid,
+                "symbol": d.get("symbol", EXNESS_SYMBOL),
+                "action": side,
+                "lots": f"{vol:.2f}",
+                "entry": f"{open_px:.2f}" if open_px > 0 else "—",
+                "exit": f"{close_px:.2f}",
+                "profit": profit,
+                "swap": swap,
+                "commission": comm,
+                "net_pnl": round(net_pnl, 2),
+                "comment": comment,
+                "_raw_time": t_sec,
+            })
+            
+        records.sort(key=lambda x: x["_raw_time"], reverse=True)
+        return records
+    except Exception as e:
+        print(f"Notice: get_closed_deal_history error: {e}")
+        return []
+
+
 
 
 # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 #  GRID ACTIONS (deploy / flatten / cancel)
 # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
-def deploy_grid(brk: MT5Broker, levels: dict, lot_size: float, lot_mult: float = 1.0) -> tuple:
+def deploy_grid(brk: MT5Broker, levels: dict, lot_size: float, lot_mult: float = 1.0, flat_levels: int = 3) -> tuple:
     """
     Places BUY_STOP orders above center and SELL_STOP orders below center.
+    First `flat_levels` orders stay flat at `lot_size` (e.g. 0.01).
+    After `flat_levels`, lot multiplier (Martingale scaling) is applied.
     Validates prices against live market ticks to prevent retcode 10015 (Invalid price).
-    Applies lot multiplier per level (Martingale scaling).
     Returns (placed_count, errors_list).
     """
     placed, errors = 0, []
@@ -307,10 +397,14 @@ def deploy_grid(brk: MT5Broker, levels: dict, lot_size: float, lot_mult: float =
     live_p = get_mt5_live_price(brk)
     min_dist = brk.get_min_stop_distance() if hasattr(brk, "get_min_stop_distance") else 0.50
 
-    current_lot = lot_size
-    for price in levels["buy_stops"]:
+    for i, price in enumerate(levels["buy_stops"]):
         try:
-            actual_lot = round(current_lot, 2)
+            if i < flat_levels:
+                calc_lot = lot_size
+            else:
+                exponent = i - flat_levels + 1
+                calc_lot = lot_size * (lot_mult ** exponent)
+            actual_lot = round(calc_lot, 2)
             target_px = max(price, round(live_p + min_dist, 2)) if (live_p > 0 and price <= live_p) else price
             order = brk.place_order("BUY_STOP", price=target_px, size=actual_lot, timestamp=ts)
             if order:
@@ -319,12 +413,15 @@ def deploy_grid(brk: MT5Broker, levels: dict, lot_size: float, lot_mult: float =
                 errors.append(f"BUY_STOP @ {target_px:.2f}: Broker returned no order")
         except Exception as e:
             errors.append(f"BUY_STOP @ {price:.2f} ({actual_lot}L): {e}")
-        current_lot *= lot_mult
 
-    current_lot = lot_size
-    for price in levels["sell_stops"]:
+    for i, price in enumerate(levels["sell_stops"]):
         try:
-            actual_lot = round(current_lot, 2)
+            if i < flat_levels:
+                calc_lot = lot_size
+            else:
+                exponent = i - flat_levels + 1
+                calc_lot = lot_size * (lot_mult ** exponent)
+            actual_lot = round(calc_lot, 2)
             target_px = min(price, round(live_p - min_dist, 2)) if (live_p > 0 and price >= live_p) else price
             order = brk.place_order("SELL_STOP", price=target_px, size=actual_lot, timestamp=ts)
             if order:
@@ -333,7 +430,6 @@ def deploy_grid(brk: MT5Broker, levels: dict, lot_size: float, lot_mult: float =
                 errors.append(f"SELL_STOP @ {target_px:.2f}: Broker returned no order")
         except Exception as e:
             errors.append(f"SELL_STOP @ {price:.2f} ({actual_lot}L): {e}")
-        current_lot *= lot_mult
 
     return placed, errors
 
@@ -517,16 +613,17 @@ def flatten_all(brk: MT5Broker, state: dict) -> str:
     except Exception:
         pass
 
-    # Record trade history
-    ts_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    record = {
-        "time":      ts_str,
-        "action":    "FLATTEN ALL",
-        "count":     closed_count,
-        "total_pnl": round(total_pnl, 2),
-    }
-    state["trade_history"].insert(0, record)
-    state["trade_history"] = state["trade_history"][:MAX_HISTORY_ROWS]
+    # Record trade history (only record actual position closures, never zero-count dummies)
+    if closed_count > 0:
+        ts_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        record = {
+            "time":      ts_str,
+            "action":    "FLATTEN ALL",
+            "count":     closed_count,
+            "total_pnl": round(total_pnl, 2),
+        }
+        state["trade_history"].insert(0, record)
+        state["trade_history"] = state["trade_history"][:MAX_HISTORY_ROWS]
     state["deployed"] = False
     state["grid_levels"] = []
     save_state(state)
@@ -652,7 +749,8 @@ def get_pnl_monitor():
                                     )
                                     n_lot = float(cur_cfg.get("lot_size", 0.01))
                                     n_mult = float(cur_cfg.get("lot_mult", 1.0))
-                                    placed, errors = deploy_grid(brk, new_levels, n_lot, n_mult)
+                                    n_flat = int(cur_cfg.get("flat_levels", 3))
+                                    placed, errors = deploy_grid(brk, new_levels, n_lot, n_mult, n_flat)
                                     if placed > 0:
                                         cur_state["deployed"] = True
                                         cur_state["grid_levels"] = new_levels
@@ -1321,11 +1419,13 @@ with config_col:
             usd_equiv = current_price * (gap_val / 100.0)
             st.caption(f"≈ ${usd_equiv:.2f} per level")
 
-    col_c, col_d = st.columns(2)
+    col_c, col_d, col_e = st.columns(3)
     with col_c:
-        lot_size = st.number_input("Base Lot", value=float(cfg.get("lot_size", 0.01)), min_value=0.01, max_value=100.0, step=0.01, format="%.2f", help="Starting lot size for level 1", key="mgd_lot")
+        lot_size = st.number_input("Base Lot", value=float(cfg.get("lot_size", 0.01)), min_value=0.01, max_value=100.0, step=0.01, format="%.2f", help="Starting lot size for flat initial stops", key="mgd_lot")
     with col_d:
-        lot_mult = st.number_input("Lot Multiplier", value=float(cfg.get("lot_mult", 1.0)), min_value=1.0, max_value=5.0, step=0.1, format="%.2f", help="1.0 = equal lots; > 1.0 increases size per level", key="mgd_lmult")
+        flat_levels = st.number_input("Flat Stops (0.01)", value=int(cfg.get("flat_levels", 3)), min_value=1, max_value=20, step=1, help="First N stops stay flat at Base Lot before Martingale starts (e.g. 3 = first 3 stops are 0.01, stop 4+ applies multiplier)", key="mgd_flat_levels")
+    with col_e:
+        lot_mult = st.number_input("Lot Multiplier", value=float(cfg.get("lot_mult", 1.0)), min_value=1.0, max_value=5.0, step=0.1, format="%.2f", help="1.0 = equal lots; > 1.0 applies martingale scaling starting after flat stops", key="mgd_lmult")
 
     curr_label = display_curr if display_curr else "USD"
     curr_unit = "USC" if curr_label == "USC" else "$"
@@ -1380,6 +1480,7 @@ with config_col:
         "gap_value":     gap_val if gap_mode == "USD ($)" else float(cfg.get("gap_value", 2.0)),
         "gap_pct":       gap_val if gap_mode == "Percentage (%)" else float(cfg.get("gap_pct", 0.07)),
         "lot_size":      lot_size,
+        "flat_levels":   int(flat_levels),
         "lot_mult":      lot_mult,
         "target_profit": target_profit,
         "stop_loss":     stop_loss,
@@ -1421,7 +1522,10 @@ with config_col:
     # Buy levels: index 0 is closest to center
     for i, p in reversed(list(enumerate(preview["buy_stops"]))):
         dist = abs(p - center_price_input)
-        calc_lot = round(lot_size * (lot_mult ** i), 2)
+        if i < flat_levels:
+            calc_lot = lot_size
+        else:
+            calc_lot = round(lot_size * (lot_mult ** (i - flat_levels + 1)), 2)
         level_tag = f"L{i+1}"
         level_html += f'<div class="grid-level-row grid-level-buy">▲ BUY {level_tag} ${p:,.2f} <span style="color:#60a5fa;font-size:0.72rem">({calc_lot:.2f}L)</span> <span style="color:#52525b;font-size:0.72rem">+{dist:.2f}</span></div>'
     
@@ -1431,7 +1535,10 @@ with config_col:
     # Sell levels: index 0 is closest to center
     for i, p in enumerate(preview["sell_stops"]):
         dist = abs(p - center_price_input)
-        calc_lot = round(lot_size * (lot_mult ** i), 2)
+        if i < flat_levels:
+            calc_lot = lot_size
+        else:
+            calc_lot = round(lot_size * (lot_mult ** (i - flat_levels + 1)), 2)
         level_tag = f"L{i+1}"
         level_html += f'<div class="grid-level-row grid-level-sell">▼ SELL {level_tag} ${p:,.2f} <span style="color:#f87171;font-size:0.72rem">({calc_lot:.2f}L)</span> <span style="color:#52525b;font-size:0.72rem">-{dist:.2f}</span></div>'
     st.markdown(f'<div class="data-table">{level_html}</div>', unsafe_allow_html=True)
@@ -1458,7 +1565,7 @@ with config_col:
                 offset_val=offset_val,
                 offset_mode=offset_mode,
             )
-            placed, errors = deploy_grid(brk, levels, lot_size, lot_mult)
+            placed, errors = deploy_grid(brk, levels, lot_size, lot_mult, int(flat_levels))
             if placed == 0:
                 first_err = errors[0] if errors else "Broker rejected order placement"
                 st.session_state.mgd_action_msg = f"❌ Deployment failed (0 orders placed): {first_err}"
@@ -1613,53 +1720,71 @@ with pend_col:
 # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 st.markdown("---")
-st.markdown('<div class="table-header">ðŸ“‹ Trade History</div>', unsafe_allow_html=True)
 
-# ── Always reload trade history fresh from disk ──────────────────────────────
-# The background P&L monitor daemon calls flatten_all → save_state on its own
-# copy of state. The UI's in-memory `state` is a session-state snapshot that
-# never receives those updates unless we explicitly re-read the file here.
+hist_header_left, hist_header_right = st.columns([3, 1])
+with hist_header_left:
+    st.markdown('<div class="table-header">📋 Trade History (MT5 Deals)</div>', unsafe_allow_html=True)
+with hist_header_right:
+    hist_days = st.selectbox("History Period", [7, 14, 30, 90, 180], index=2, label_visibility="collapsed", key="trade_hist_period")
+
+# ── Fetch real closed deals directly from MT5 terminal history via bridge ────
+real_deals = get_closed_deal_history(days=hist_days)
+
+# ── Clean up state["trade_history"] on disk to purge zero-count dummy records ──
 _fresh_state = load_state()
 _disk_hist = _fresh_state.get("trade_history", [])
+_cleaned_hist = [h for h in _disk_hist if h.get("count", 0) > 0 or abs(h.get("total_pnl", 0.0)) > 0.001]
+if len(_cleaned_hist) != len(_disk_hist):
+    _fresh_state["trade_history"] = _cleaned_hist
+    save_state(_fresh_state)
+state["trade_history"] = _cleaned_hist
 
-# Merge disk records into session state (avoid duplicates)
-_seen = {(h.get("time"), h.get("total_pnl")) for h in state.get("trade_history", [])}
-for _h in _disk_hist:
-    _key = (_h.get("time"), _h.get("total_pnl"))
-    if _key not in _seen:
-        state["trade_history"].insert(0, _h)
-        _seen.add(_key)
-state["trade_history"] = state["trade_history"][:MAX_HISTORY_ROWS]
-hist = state["trade_history"]
+acct_curr = acc.get("currency", "USD")
+curr_sym = "¢" if "C" in acct_curr.upper() else "$"
 
-# Also pull from broker's closed_trades (in-memory, populated during this session)
-broker_history = list(getattr(brk, "closed_trades", []))
-if broker_history:
-    # Convert broker records to display format
-    for rec in broker_history[-MAX_HISTORY_ROWS:]:
-        ts_str = datetime.datetime.fromtimestamp(
-            float(rec.get("exit_time", time.time()))
-        ).strftime("%Y-%m-%d %H:%M:%S")
-        hist_rec = {
-            "time":      ts_str,
-            "action":    rec.get("type", "CLOSE"),
-            "entry":     f"{float(rec.get('entry_price', 0.0)):.2f}",
-            "exit":      f"{float(rec.get('exit_price', 0.0)):.2f}",
-            "lots":      f"{float(rec.get('size', 0.0)):.2f}",
-            "total_pnl": round(float(rec.get("pnl", 0.0)), 2),
-        }
-        if not any(h.get("time") == ts_str and h.get("total_pnl") == hist_rec["total_pnl"] for h in hist):
-            hist.insert(0, hist_rec)
+if real_deals:
+    # Summary Metrics Strip
+    total_deals = len(real_deals)
+    total_realized_pnl = sum(r["net_pnl"] for r in real_deals)
+    wins = sum(1 for r in real_deals if r["net_pnl"] > 0)
+    losses = sum(1 for r in real_deals if r["net_pnl"] < 0)
+    win_rate = (wins / total_deals * 100) if total_deals else 0.0
+    pnl_color = "#4ade80" if total_realized_pnl > 0 else ("#f87171" if total_realized_pnl < 0 else "#a1a1aa")
+    pnl_sign = "+" if total_realized_pnl >= 0 else ""
+    
+    st.markdown(f"""
+    <div style="display:flex;gap:16px;margin-bottom:12px;background:#18181b;padding:10px 16px;border-radius:8px;border:1px solid #27272a;font-size:0.80rem;">
+        <div><span style="color:#71717a;">Total Closed:</span> <strong style="color:#f4f4f5;">{total_deals}</strong></div>
+        <div style="color:#3f3f46;">|</div>
+        <div><span style="color:#71717a;">Realized P&L:</span> <strong style="color:{pnl_color};">{pnl_sign}{total_realized_pnl:.2f} {curr_sym} {acct_curr}</strong></div>
+        <div style="color:#3f3f46;">|</div>
+        <div><span style="color:#71717a;">Win Rate:</span> <strong style="color:#f4f4f5;">{win_rate:.0f}%</strong> <span style="color:#71717a;">({wins}W / {losses}L)</span></div>
+    </div>
+    """, unsafe_allow_html=True)
 
-hist = hist[:MAX_HISTORY_ROWS]
-state["trade_history"] = hist
-
-if hist:
-    df_hist = pd.DataFrame(hist)
-    st.dataframe(df_hist, width='stretch', hide_index=True, height=250)
+    rows = []
+    for r in real_deals[:MAX_HISTORY_ROWS]:
+        pnl_val = r["net_pnl"]
+        sign = "+" if pnl_val >= 0 else ""
+        rows.append({
+            "Time":        r["time"],
+            "Ticket":      r["ticket"],
+            "Symbol":      r["symbol"],
+            "Side":        r["action"],
+            "Lots":        r["lots"],
+            "Entry":       r["entry"],
+            "Exit":        r["exit"],
+            f"P&L ({curr_sym})": f"{sign}{pnl_val:.2f} {curr_sym}",
+            "Comment":     r["comment"] or "Closed",
+        })
+    df_hist = pd.DataFrame(rows)
+    st.dataframe(df_hist, width='stretch', hide_index=True, height=260)
+elif _cleaned_hist:
+    df_hist = pd.DataFrame(_cleaned_hist)
+    st.dataframe(df_hist, width='stretch', hide_index=True, height=200)
 else:
     st.markdown(
-        '<div style="padding:20px;text-align:center;color:#52525b;font-size:0.82rem;">No trade history yet. Deploy a grid and let it run!</div>',
+        '<div style="padding:20px;text-align:center;color:#52525b;font-size:0.82rem;">No closed trade history found in MT5 for selected period. Deploy a grid and let it run!</div>',
         unsafe_allow_html=True,
     )
 
