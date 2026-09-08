@@ -316,10 +316,12 @@ class TrendRunnerEngine:
         # Check cooldown (minimum 10 minutes between consecutive entries)
         last_trade_time = float(self.state.get("last_trade_timestamp", 0))
         cooldown_ok = (now_ts - last_trade_time) > 600.0  # 10 minute cooldown
-
         if self.config.get("auto_trading", True) and is_window_active and spread_ok and cooldown_ok:
-            # Check maximum trades per day safeguard
-            if self.state.get("today_trades_count", 0) < 3 and len(open_positions) == 0:
+            # Check daily trade limit (0 = Unlimited confirmed setups)
+            max_daily_trades = int(self.config.get("max_trades_per_day", 0))
+            daily_limit_ok = (max_daily_trades == 0) or (self.state.get("today_trades_count", 0) < max_daily_trades)
+
+            if daily_limit_ok and len(open_positions) == 0:
                 asian_high = asian_box.get("high", 0.0)
                 asian_low = asian_box.get("low", 0.0)
 

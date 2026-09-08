@@ -6,6 +6,7 @@
   "dashboard_port": 8503,
   "risk_pct_per_trade": 1.0,
   "max_daily_risk_pct": 3.0,
+  "max_trades_per_day": 0,
   "asian_session": {
     "start_utc": "00:00",
     "end_utc": "07:00"

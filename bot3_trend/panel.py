@@ -104,6 +104,21 @@ with st.sidebar:
         engine.config.setdefault("strategy", {})["trailing_atr_multiplier"] = trail_mult
         engine.save_config()
 
+    current_max = int(engine.config.get("max_trades_per_day", 0))
+    trade_opts = [0, 3, 5, 10, 20]
+    sel_idx = trade_opts.index(current_max) if current_max in trade_opts else 0
+    max_trades_sel = st.selectbox(
+        "Daily Executions Limit",
+        trade_opts,
+        index=sel_idx,
+        format_func=lambda x: "Unlimited (No Limit)" if x == 0 else f"{x} Trades Max",
+        help="0 = No limits. Bot executes every confirmed breakout setup."
+    )
+    if max_trades_sel != current_max:
+        engine.config["max_trades_per_day"] = max_trades_sel
+        engine.save_config()
+        st.rerun()
+
     st.markdown("---")
     st.markdown("#### 🚨 Emergency Controls")
     col_c1, col_c2 = st.columns(2)
@@ -184,10 +199,13 @@ with m4:
 
 with m5:
     today_cnt = engine.state.get("today_trades_count", 0)
+    max_d = int(engine.config.get("max_trades_per_day", 0))
+    limit_badge = f"/ {max_d} max" if max_d > 0 else "(Unlimited / No Limit)"
+    limit_color = "#94a3b8" if max_d > 0 else "#4ade80"
     st.markdown(f"""
     <div class="metric-card">
         <div class="metric-title">Today's Executions</div>
-        <div class="metric-val">{today_cnt} <span style="font-size:14px; color:#94a3b8;">/ 3 max</span></div>
+        <div class="metric-val">{today_cnt} <span style="font-size:12px; color:{limit_color}; font-weight:600;">{limit_badge}</span></div>
         <div class="metric-sub" style="color: #4ade80;">Active Trades: {len(status.get('open_positions', []))}</div>
     </div>
     """, unsafe_allow_html=True)
