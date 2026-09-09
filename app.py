@@ -425,23 +425,9 @@ os.environ["WINE_BRIDGE_PORT"] = wine_bridge_port
 
 # ── Query BOTH bridges for account info ───────────────────────────────────
 def _query_bridge(port_str: str) -> Optional[dict]:
-    try:
-        from core.mt5_broker import MT5_AVAILABLE, mt5
-        if MT5_AVAILABLE and mt5 is not None and port_str == os.environ.get("WINE_BRIDGE_PORT", "8001"):
-            acc = mt5.account_info()
-            if acc:
-                return {
-                    "connected": True,
-                    "login": acc.login,
-                    "server": acc.server,
-                    "balance": acc.balance,
-                    "equity": acc.equity,
-                    "leverage": acc.leverage,
-                    "currency": acc.currency
-                }
-    except Exception:
-        pass
-
+    # REST-only: each bridge port is an independent MT5 terminal — never use
+    # native mt5.account_info() here because it returns the SAME logged-in
+    # session for every port, making all bots show the same account number.
     try:
         import requests
         r = requests.get(f"http://127.0.0.1:{port_str}/account", timeout=2.0)
@@ -455,6 +441,7 @@ def _query_bridge(port_str: str) -> Optional[dict]:
 
 wine_acc  = _query_bridge("8001")   # Bot #1
 wine_acc2 = _query_bridge("8002")   # Bot #2
+wine_acc3 = _query_bridge("8003")   # Bot #3 (Manual Desk)
 
 # Active bridge for THIS instance
 wine_acc_active = wine_acc if wine_bridge_port == "8001" else wine_acc2
@@ -513,6 +500,7 @@ def _acc_display(bridge_data: Optional[dict], bot_label: str, port_str: str) -> 
 
 acc1 = _acc_display(wine_acc,  "Bot #1", "8001")
 acc2 = _acc_display(wine_acc2, "Bot #2", "8002")
+acc3 = _acc_display(wine_acc3, "Bot #3", "8003")
 
 # For backward compat: set equity_val, acc_num, etc. for the active instance
 if wine_acc_active:
@@ -563,7 +551,7 @@ def _acc_badge(a: dict) -> str:
     eq_str = f"${a['equity']:,.2f}" if a['equity'] > 0 else "—"
     return f"""<div style="display:flex;flex-direction:column;gap:2px;"><div style="display:flex;align-items:center;gap:6px;"><span style="width:8px;height:8px;border-radius:50%;background:{color};display:inline-block;"></span><span style="font-weight:700;color:#fff;font-size:0.82rem;">{a['label']}</span><span style="color:#71717a;font-size:0.75rem;">(Port {a['port']})</span></div><div style="font-family:'JetBrains Mono',monospace;font-size:0.78rem;color:#a1a1aa;">#{a['num']} &nbsp;|&nbsp; {a['server']}</div><div style="font-size:0.76rem;color:#71717a;">Equity: <span style="color:{color};font-weight:600;">{eq_str} {a['currency']}</span> &nbsp;·&nbsp; {a['status']}</div></div>"""
 
-header_html = f"""<div class="top-header" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;padding:12px 20px;background:#18181b;border:1px solid #27272a;border-radius:8px;margin-bottom:12px;"><div style="display:flex;align-items:center;gap:10px;"><span class="brand-title" style="font-size:1.2rem;font-weight:800;letter-spacing:-0.5px;color:#ffffff;">Profity AI</span><span class="brand-badge" style="background:#27272a;color:#a1a1aa;font-size:0.70rem;font-weight:600;padding:3px 8px;border-radius:4px;text-transform:uppercase;">Institutional Master Pool</span><span class="brand-badge" style="background:#1a2e1a;color:#22c55e;font-size:0.70rem;font-weight:600;padding:3px 8px;border-radius:4px;">⚡ 24/7 VPS</span></div><div style="display:flex;gap:24px;align-items:center;"><div style="border-left:2px solid #27272a;padding-left:20px;">{_acc_badge(acc1)}</div><div style="border-left:2px solid #27272a;padding-left:20px;">{_acc_badge(acc2)}</div></div></div>"""
+header_html = f"""<div class="top-header" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;padding:12px 20px;background:#18181b;border:1px solid #27272a;border-radius:8px;margin-bottom:12px;"><div style="display:flex;align-items:center;gap:10px;"><span class="brand-title" style="font-size:1.2rem;font-weight:800;letter-spacing:-0.5px;color:#ffffff;">Profity AI</span><span class="brand-badge" style="background:#27272a;color:#a1a1aa;font-size:0.70rem;font-weight:600;padding:3px 8px;border-radius:4px;text-transform:uppercase;">Institutional Master Pool</span><span class="brand-badge" style="background:#1a2e1a;color:#22c55e;font-size:0.70rem;font-weight:600;padding:3px 8px;border-radius:4px;">⚡ 24/7 VPS</span></div><div style="display:flex;gap:24px;align-items:center;"><div style="border-left:2px solid #27272a;padding-left:20px;">{_acc_badge(acc1)}</div><div style="border-left:2px solid #27272a;padding-left:20px;">{_acc_badge(acc2)}</div><div style="border-left:2px solid #27272a;padding-left:20px;">{_acc_badge(acc3)}</div></div></div>"""
 
 st.markdown(header_html, unsafe_allow_html=True)
 
