@@ -550,24 +550,7 @@ class MT5BridgeHandler(BaseHTTPRequestHandler):
                 magic_filter = params.get("magic")
                 cancel_pend = params.get("cancel_pending", "").lower() in ("1", "true", "yes")
                 
-                # Optional: Wipe nearest pending orders first at close instance
                 cancelled_pending = 0
-                if cancel_pend:
-                    try:
-                        all_o = mt5.orders_get()
-                        if all_o:
-                            pend_list = [o for o in all_o if not (magic_filter and str(getattr(o, "magic", "")) != str(magic_filter))]
-                            if pend_list:
-                                t_s = mt5.symbol_info_tick(pend_list[0].symbol)
-                                c_p = ((t_s.bid + t_s.ask) / 2.0) if (t_s and t_s.bid > 0 and t_s.ask > 0) else 0.0
-                                if c_p > 0:
-                                    pend_list.sort(key=lambda o: abs(float(getattr(o, "price_open", 0.0)) - c_p))
-                                for po in pend_list:
-                                    rc = mt5.order_send({"action": mt5.TRADE_ACTION_REMOVE, "order": po.ticket})
-                                    if rc and rc.retcode in (0, 10009, 10008, 10004):
-                                        cancelled_pending += 1
-                    except Exception:
-                        pass
 
                 poss = []
                 if sym:
@@ -684,6 +667,19 @@ class MT5BridgeHandler(BaseHTTPRequestHandler):
                                 "volume": p_vol,
                                 "pnl": round(p_pnl, 2)
                             })
+                    # 3. AFTER ACTIVE POSITIONS ARE 100% CLOSED: Clean up pending orders
+                    if cancel_pend:
+                        try:
+                            all_o = mt5.orders_get()
+                            if all_o:
+                                pend_list = [o for o in all_o if not (magic_filter and str(getattr(o, "magic", "")) != str(magic_filter))]
+                                for po in pend_list:
+                                    rc = mt5.order_send({"action": mt5.TRADE_ACTION_REMOVE, "order": po.ticket})
+                                    if rc and rc.retcode in (0, 10009, 10008, 10004):
+                                        cancelled_pending += 1
+                        except Exception:
+                            pass
+
                     res = {
                         "success": True,
                         "closed_count": closed_count,

@@ -733,13 +733,15 @@ def check_target_profit(self, current_price: float, timestamp: float) -> Optiona
             print(f"[{self.symbol}] 🎯 [PROFIT TAKING EXIT] {exit_reason} met! Net PnL: ${total_pnl:+.2f} USD")
         except UnicodeEncodeError:
             print(f"[{self.symbol}] [PROFIT TAKING EXIT] {exit_reason} met! Net PnL: ${total_pnl:+.2f} USD")
-        if hasattr(self.broker, "cancel_all_orders"):
-            try: self.broker.cancel_all_orders()
-            except Exception as e: import logging; logging.warning(f"Cancel error: {e}")
-            
+        # 1. Close active market positions FIRST (lock in live profit before any slippage)
         if hasattr(self.broker, "close_all_positions"):
             try: self.broker.close_all_positions()
             except Exception as e: import logging; logging.warning(f"Close error: {e}")
+
+        # 2. Cancel pending orders SECOND (after active positions are secured)
+        if hasattr(self.broker, "cancel_all_orders"):
+            try: self.broker.cancel_all_orders()
+            except Exception as e: import logging; logging.warning(f"Cancel error: {e}")
 
         self.in_runner_mode = False
         self.max_floating_pnl = -float("inf")
@@ -847,10 +849,10 @@ def process_engine_tick(self, previous_price: float, current_price: float, times
             if not getattr(self, "weekend_shutdown_triggered", False):
                 self.weekend_shutdown_triggered = True
                 print(f"[{self.symbol}] 🛑 [WEEKEND MARKET SHUTDOWN] Friday UTC threshold crossed. Purging grid orders & closing open positions.")
-                if hasattr(self.broker, "cancel_all_orders"):
-                    self.broker.cancel_all_orders()
                 if hasattr(self.broker, "close_all_positions"):
                     self.broker.close_all_positions()
+                if hasattr(self.broker, "cancel_all_orders"):
+                    self.broker.cancel_all_orders()
                 self.deployed = False
             return None
         else:

@@ -663,18 +663,8 @@ def flatten_all(brk: MT5Broker, state: dict) -> str:
     rem_ord = get_live_pending(brk)
 
     if rem_pos or rem_ord:
-        # Concurrent cleanup of any stragglers without blocking
+        # Concurrent cleanup: CLOSE ACTIVE POSITIONS FIRST to lock in profit, then cancel orders
         with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
-            cancel_futures = []
-            for o in rem_ord:
-                t = getattr(o, "ticket", 0)
-                if t > 0:
-                    cancel_futures.append(
-                        executor.submit(
-                            lambda t_id: _FAST_SESSION.get(f"http://127.0.0.1:{MT5_BRIDGE_PORT}/order_cancel?ticket={t_id}", timeout=2.0),
-                            t
-                        )
-                    )
             close_futures = []
             rem_pos.sort(key=_pos_priority_key)
             for p in rem_pos:
@@ -689,19 +679,32 @@ def flatten_all(brk: MT5Broker, state: dict) -> str:
                         )
                     )
 
-            for f in concurrent.futures.as_completed(cancel_futures):
-                try:
-                    res = f.result()
-                    if res.status_code == 200 and res.json().get("success"):
-                        cancelled_pend += 1
-                except Exception:
-                    pass
-
+            # Wait for all active position closes FIRST
             for f in concurrent.futures.as_completed(close_futures):
                 try:
                     res = f.result()
                     if res.status_code == 200 and res.json().get("success"):
                         closed_count += 1
+                except Exception:
+                    pass
+
+            # SECOND: Cancel pending orders
+            cancel_futures = []
+            for o in rem_ord:
+                t = getattr(o, "ticket", 0)
+                if t > 0:
+                    cancel_futures.append(
+                        executor.submit(
+                            lambda t_id: _FAST_SESSION.get(f"http://127.0.0.1:{MT5_BRIDGE_PORT}/order_cancel?ticket={t_id}", timeout=2.0),
+                            t
+                        )
+                    )
+
+            for f in concurrent.futures.as_completed(cancel_futures):
+                try:
+                    res = f.result()
+                    if res.status_code == 200 and res.json().get("success"):
+                        cancelled_pend += 1
                 except Exception:
                     pass
 
@@ -893,7 +896,9 @@ def get_pnl_monitor():
                             # ── 2. Basket Trailing Profit Lock (Guaranteed Profit Retention) ──
                             # If basket reached >= 60% of target, lock trailing profit floor at 50% of peak
                             elif current_peak >= (tp_target * 0.60) and not shared["triggered"]:
-                                trailing_floor = max(0.50 if acct_curr != "USC" else 5.0, current_peak * 0.50)
+                                # Floor protects 50% of peak; capped at 80% of peak so it NEVER triggers immediately upon touching peak
+                                min_floor = max(0.10 if acct_curr != "USC" else 0.50, tp_target * 0.20)
+                                trailing_floor = min(max(min_floor, current_peak * 0.50), current_peak * 0.80)
                                 shared["trail_floor"] = round(trailing_floor, 2)
                                 if pnl <= trailing_floor:
                                     exit_action = "TRAIL_LOCK"
