@@ -637,6 +637,9 @@ def flatten_all(brk: MT5Broker, state: dict) -> str:
     # ──────────────────────────────────────────────────────────────────
     # PASS 1: ATOMIC ZERO-LATENCY CLOSE (WIPES PENDINGS + CLOSES POSITIONS)
     # ──────────────────────────────────────────────────────────────────
+    # Direct explicit sweep: cancel all pending trap orders immediately
+    cancel_all_pending(brk)
+
     for m_id in ALLOWED_MANUAL_MAGICS:
         try:
             r = _FAST_SESSION.get(
@@ -908,64 +911,68 @@ def get_pnl_monitor():
 
                             if exit_action and not shared["triggered"]:
                                 shared["triggered"] = True
-                                logging.info(f"[Manual Grid Monitor] {exit_msg}")
+                                try:
+                                    logging.info(f"[Manual Grid Monitor] {exit_msg}")
 
-                                # 1. 100% Zero-Latency Close All Active Positions + Cancel All Pending Orders ASAP
-                                flat_res = flatten_all(brk, cur_state)
+                                    # 1. 100% Zero-Latency Close All Active Positions + Cancel All Pending Orders ASAP
+                                    flat_res = flatten_all(brk, cur_state)
 
-                                # 2. Check Auto-Redeploy New Grid setting
-                                auto_redeploy = cur_cfg.get("auto_redeploy", True)
-                                action_label = "🎯 TARGET HIT" if exit_action == "FULL_TP" else "🛡️ TRAIL LOCK"
-                                if auto_redeploy:
-                                    time.sleep(0.15)  # Brief MT5 order settlement buffer
-                                    new_center = get_mt5_live_price(brk)
-                                    new_levels = compute_grid_levels(
-                                        new_center,
-                                        float(cur_cfg.get("gap_value", 2.0)),
-                                        int(cur_cfg.get("levels_above", 3)),
-                                        int(cur_cfg.get("levels_below", 3)),
-                                        gap_mode=cur_cfg.get("gap_mode", "USD ($)"),
-                                        offset_val=float(cur_cfg.get("offset_value", 1.5)),
-                                        offset_mode=cur_cfg.get("offset_mode", "USD ($)"),
-                                    )
-                                    n_lot = float(cur_cfg.get("lot_size", 0.01))
-                                    n_mult = float(cur_cfg.get("lot_mult", 1.0))
-                                    n_flat = int(cur_cfg.get("flat_levels", 3))
-                                    placed, errors = deploy_grid(brk, new_levels, n_lot, n_mult, n_flat)
-                                    if placed > 0:
-                                        cur_state["deployed"] = True
-                                        cur_state["grid_levels"] = new_levels
-                                        cur_state["grid_config"]["center_price"] = new_center
-                                        save_state(cur_state)
-                                        shared["last_msg"] = f"{action_label} {curr_sym}{pnl:+.2f} {acct_curr}! 100% Closed. 🚀 Auto-deployed NEW GRID ({placed} orders) centered at ${new_center:,.2f}"
-                                        logging.info(f"[Manual Grid Monitor] {shared['last_msg']}")
+                                    # 2. Check Auto-Redeploy New Grid setting
+                                    auto_redeploy = cur_cfg.get("auto_redeploy", True)
+                                    action_label = "🎯 TARGET HIT" if exit_action == "FULL_TP" else "🛡️ TRAIL LOCK"
+                                    if auto_redeploy:
+                                        time.sleep(0.15)  # Brief MT5 order settlement buffer
+                                        new_center = get_mt5_live_price(brk)
+                                        new_levels = compute_grid_levels(
+                                            new_center,
+                                            float(cur_cfg.get("gap_value", 2.0)),
+                                            int(cur_cfg.get("levels_above", 3)),
+                                            int(cur_cfg.get("levels_below", 3)),
+                                            gap_mode=cur_cfg.get("gap_mode", "USD ($)"),
+                                            offset_val=float(cur_cfg.get("offset_value", 1.5)),
+                                            offset_mode=cur_cfg.get("offset_mode", "USD ($)"),
+                                        )
+                                        n_lot = float(cur_cfg.get("lot_size", 0.01))
+                                        n_mult = float(cur_cfg.get("lot_mult", 1.0))
+                                        n_flat = int(cur_cfg.get("flat_levels", 3))
+                                        placed, errors = deploy_grid(brk, new_levels, n_lot, n_mult, n_flat)
+                                        if placed > 0:
+                                            cur_state["deployed"] = True
+                                            cur_state["grid_levels"] = new_levels
+                                            cur_state["grid_config"]["center_price"] = new_center
+                                            save_state(cur_state)
+                                            shared["last_msg"] = f"{action_label} {curr_sym}{pnl:+.2f} {acct_curr}! 100% Closed. 🚀 Auto-deployed NEW GRID ({placed} orders) centered at ${new_center:,.2f}"
+                                            logging.info(f"[Manual Grid Monitor] {shared['last_msg']}")
+                                        else:
+                                            shared["last_msg"] = f"{action_label} {curr_sym}{pnl:+.2f} {acct_curr}! 100% Closed. Redeploy warnings: {'; '.join(errors[:2])}"
                                     else:
-                                        shared["last_msg"] = f"{action_label} {curr_sym}{pnl:+.2f} {acct_curr}! 100% Closed. Redeploy warnings: {'; '.join(errors[:2])}"
-                                else:
-                                    shared["last_msg"] = f"{action_label} {curr_sym}{pnl:+.2f} {acct_curr}! {flat_res} · Desk is READY for next grid."
+                                        shared["last_msg"] = f"{action_label} {curr_sym}{pnl:+.2f} {acct_curr}! {flat_res} · Desk is READY for next grid."
 
-                                # Re-arm monitor for the new cycle
-                                shared["peak_pnl"] = 0.0
-                                shared["trail_floor"] = 0.0
-                                time.sleep(1.0)
-                                shared["triggered"] = False
-                                shared["active"] = True
+                                    # Re-arm monitor for the new cycle
+                                    shared["peak_pnl"] = 0.0
+                                    shared["trail_floor"] = 0.0
+                                    time.sleep(1.0)
+                                finally:
+                                    shared["triggered"] = False
+                                    shared["active"] = True
 
                             elif pnl <= -abs(sl_limit) and not shared["triggered"]:
                                 shared["triggered"] = True
-                                msg = f"🛑 STOP LOSS HIT: {curr_sym}{pnl:+.2f} {acct_curr} (SL: -{curr_sym}{sl_limit:.2f} {acct_curr}) — Auto-Flattening 100% all orders!"
-                                logging.info(f"[Manual Grid Monitor] {msg}")
+                                try:
+                                    msg = f"🛑 STOP LOSS HIT: {curr_sym}{pnl:+.2f} {acct_curr} (SL: -{curr_sym}{sl_limit:.2f} {acct_curr}) — Auto-Flattening 100% all orders!"
+                                    logging.info(f"[Manual Grid Monitor] {msg}")
 
-                                flat_res = flatten_all(brk, cur_state)
+                                    flat_res = flatten_all(brk, cur_state)
 
-                                shared["last_msg"] = f"🛑 STOP LOSS HIT {curr_sym}{pnl:+.2f} {acct_curr}! {flat_res} · Desk is READY for next grid."
+                                    shared["last_msg"] = f"🛑 STOP LOSS HIT {curr_sym}{pnl:+.2f} {acct_curr}! {flat_res} · Desk is READY for next grid."
 
-                                shared["peak_pnl"] = 0.0
-                                shared["trail_floor"] = 0.0
-                                time.sleep(1.0)
-                                shared["triggered"] = False
-                                if not shared.get("auto_rearm", True):
-                                    shared["active"] = False
+                                    shared["peak_pnl"] = 0.0
+                                    shared["trail_floor"] = 0.0
+                                    time.sleep(1.0)
+                                finally:
+                                    shared["triggered"] = False
+                                    if not shared.get("auto_rearm", True):
+                                        shared["active"] = False
                             else:
                                 if not exit_action:
                                     shared["triggered"] = False
@@ -987,6 +994,12 @@ def get_pnl_monitor():
         t.start()
         _MONITOR_SHARED = shared
         return _MONITOR_SHARED
+
+# Auto-start monitor daemon immediately on process boot (24/7 background operation)
+try:
+    _MONITOR_SHARED = get_pnl_monitor()
+except Exception as _e:
+    logging.warning(f"[Manual Grid Init] Could not auto-boot pnl monitor: {_e}")
 
 
 def build_chart(df: pd.DataFrame, grid_levels: dict, center_price: float, current_price: float) -> go.Figure:
