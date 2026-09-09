@@ -360,9 +360,11 @@ class TrendRunnerEngine:
             closed_deals = self.bridge.get_closed_deals(days=1)
             if closed_deals:
                 today_iso = self.state.get("date", datetime.date.today().isoformat())
+                reset_ts = float(self.state.get("circuit_breaker_reset_ts", 0.0))
                 today_deals = [
                     d for d in closed_deals
-                    if today_iso in str(d.get("close_time", "")) or float(d.get("_close_timestamp", 0)) > (now_ts - 86400)
+                    if (today_iso in str(d.get("close_time", "")) or float(d.get("_close_timestamp", 0)) > (now_ts - 86400))
+                    and float(d.get("_close_timestamp", 0)) >= reset_ts
                 ]
 
                 if today_deals:
@@ -400,15 +402,27 @@ class TrendRunnerEngine:
                         self.state["buy_lockout_until"] = now_ts + 3600.0
                         self.log(f"⚠️ CIRCUIT BREAKER: {buy_losses} consecutive BUY stop losses. BUY entries locked out for 60m.")
 
-                    # Check Daily Max Risk % Limit
+                    # Check Daily Max Risk % Limit (0 or negative disables check)
                     max_risk_pct = float(self.config.get("max_daily_risk_pct", 3.0))
-                    if balance > 0 and today_pnl < 0:
+                    if max_risk_pct > 0 and balance > 0 and today_pnl < 0:
                         realized_loss_pct = (abs(today_pnl) / balance) * 100.0
                         if realized_loss_pct >= max_risk_pct and not self.state.get("daily_risk_halt"):
                             self.state["daily_risk_halt"] = True
                             self.log(f"🚨 DAILY MAX RISK LIMIT REACHED: -{realized_loss_pct:.2f}% >= {max_risk_pct:.1f}%. Halting trading for today.")
         except Exception as e:
             logger.debug(f"Daily stats check error: {e}")
+
+    def reset_circuit_breaker(self):
+        """Manually clear all daily risk halts and directional loss lockouts."""
+        with self._execution_lock:
+            self.state["daily_risk_halt"] = False
+            self.state["consecutive_sell_losses"] = 0
+            self.state["consecutive_buy_losses"] = 0
+            self.state["sell_lockout_until"] = 0.0
+            self.state["buy_lockout_until"] = 0.0
+            self.state["circuit_breaker_reset_ts"] = time.time()
+            self.save_state()
+            self.log("🔄 User manually reset all Circuit Breakers & Daily Risk Halt.")
 
     # ── Main Engine Tick ──────────────────────────────────────────────────────
     def process_tick(self) -> Dict[str, Any]:

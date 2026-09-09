@@ -156,11 +156,29 @@ st.markdown("---")
 # Active Safeguard Banners
 box_info = status.get("asian_box", {})
 if status.get("daily_risk_halt"):
-    st.error("🚨 **DAILY MAX RISK CIRCUIT BREAKER TRIPPED**: Cumulative daily loss limit reached. Auto-trading is paused for today to protect capital.")
+    c_b1, c_b2 = st.columns([5, 1])
+    with c_b1:
+        st.error("🚨 **DAILY MAX RISK CIRCUIT BREAKER TRIPPED**: Cumulative daily loss limit reached. Auto-trading is paused for today to protect capital.")
+    with c_b2:
+        if st.button("🔄 Reset Breaker", key="btn_reset_breaker", use_container_width=True):
+            engine.reset_circuit_breaker()
+            st.rerun()
 elif status.get("is_sell_locked"):
-    st.warning("⚠️ **SELL CIRCUIT BREAKER ACTIVE**: 2 consecutive SELL stop-losses detected. SELL entries are locked out for 60 minutes to prevent sideways whip-sawing.")
+    c_b1, c_b2 = st.columns([5, 1])
+    with c_b1:
+        st.warning("⚠️ **SELL CIRCUIT BREAKER ACTIVE**: 2 consecutive SELL stop-losses detected. SELL entries are locked out for 60 minutes to prevent sideways whip-sawing.")
+    with c_b2:
+        if st.button("🔄 Clear Lock", key="btn_clear_sell_lock", use_container_width=True):
+            engine.reset_circuit_breaker()
+            st.rerun()
 elif status.get("is_buy_locked"):
-    st.warning("⚠️ **BUY CIRCUIT BREAKER ACTIVE**: 2 consecutive BUY stop-losses detected. BUY entries are locked out for 60 minutes to prevent sideways whip-sawing.")
+    c_b1, c_b2 = st.columns([5, 1])
+    with c_b1:
+        st.warning("⚠️ **BUY CIRCUIT BREAKER ACTIVE**: 2 consecutive BUY stop-losses detected. BUY entries are locked out for 60 minutes to prevent sideways whip-sawing.")
+    with c_b2:
+        if st.button("🔄 Clear Lock", key="btn_clear_buy_lock", use_container_width=True):
+            engine.reset_circuit_breaker()
+            st.rerun()
 elif not box_info.get("valid", False) and box_info.get("range_pips", 0) > 0:
     st.info(f"⏸️ **ASIAN RANGE STANDBY**: {box_info.get('status')}. Trading is paused today because session volatility is outside optimal breakout parameters (15–120 pips).")
 
