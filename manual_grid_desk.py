@@ -95,6 +95,8 @@ def load_state() -> dict:
             "target_profit": 5.0,
             "stop_loss": 25.0,
             "auto_redeploy": True,
+            "oco_enabled": True,
+            "max_straggler_loss": 2.0,
         },
         "trade_history": [],
         "deployed": False,
@@ -516,6 +518,48 @@ def cancel_all_pending(brk: MT5Broker) -> str:
     return f"✅ Cancelled {cancelled} pending order(s) (nearest to market price first)."
 
 
+def cancel_pending_by_side(brk: MT5Broker, side: str) -> int:
+    """Cancels pending trap orders of specified side (BUY or SELL) for magic 777001."""
+    cancelled = 0
+    # In MT5: BUY_LIMIT=2, BUY_STOP=4; SELL_LIMIT=3, SELL_STOP=5
+    target_types = (2, 4) if side.upper() == "BUY" else (3, 5)
+    try:
+        orders = get_live_pending(brk)
+        for o in orders:
+            o_type = getattr(o, "type", -1)
+            if o_type in target_types:
+                t = getattr(o, "ticket", 0)
+                if t > 0:
+                    import requests as _req
+                    r = _req.get(f"http://127.0.0.1:{MT5_BRIDGE_PORT}/order_cancel?ticket={t}", timeout=2.5)
+                    if r.status_code == 200 and r.json().get("success"):
+                        cancelled += 1
+    except Exception as e:
+        logging.warning(f"cancel_pending_by_side error: {e}")
+    return cancelled
+
+
+def close_single_ticket(brk: MT5Broker, ticket: int, volume: float) -> bool:
+    """Closes a specific MT5 position ticket immediately."""
+    try:
+        import requests as _req
+        r = _req.get(f"http://127.0.0.1:{MT5_BRIDGE_PORT}/position_close?ticket={ticket}&volume={volume}", timeout=3.0)
+        return bool(r.status_code == 200 and r.json().get("success"))
+    except Exception as e:
+        logging.warning(f"close_single_ticket error {ticket}: {e}")
+        return False
+
+
+def _pos_priority_key(p):
+    """Dual-Priority Key: Winners by profit descending; Losers by lot size & loss descending."""
+    pnl = float(getattr(p, "profit", 0.0))
+    vol = float(getattr(p, "volume", 0.0))
+    if pnl >= 0:
+        return (0, -pnl, -vol)
+    else:
+        return (1, -vol, pnl)
+
+
 def close_positions_by_side(brk: MT5Broker, side: str) -> str:
     """
     Closes positions of specified side (BUY or SELL) for magic 777001.
@@ -534,15 +578,12 @@ def close_positions_by_side(brk: MT5Broker, side: str) -> str:
         except Exception:
             pass
 
-        # Ticket-by-ticket sweep: sorted by biggest profit & largest lot first
+        # Ticket-by-ticket sweep: sorted by dual-priority key
         try:
             positions = [p for p in get_live_positions(brk) if getattr(p, "type", 0) == target_side]
             if not positions:
                 break
-            positions.sort(
-                key=lambda p: (float(getattr(p, "profit", 0.0)), float(getattr(p, "volume", 0.0))),
-                reverse=True
-            )
+            positions.sort(key=_pos_priority_key)
             for p in positions:
                 t = getattr(p, "ticket", 0)
                 v = getattr(p, "volume", 0.0)
@@ -652,11 +693,8 @@ def flatten_all(brk: MT5Broker, state: dict) -> str:
             if not positions:
                 break
 
-            # STRICT SORT: Highest profit first, then largest volume first
-            positions.sort(
-                key=lambda p: (float(getattr(p, "profit", 0.0)), float(getattr(p, "volume", 0.0))),
-                reverse=True
-            )
+            # STRICT DUAL-PRIORITY SORT: Winners by profit desc, losers by lot/loss desc
+            positions.sort(key=_pos_priority_key)
 
             for p in positions:
                 t = getattr(p, "ticket", 0)
@@ -814,6 +852,37 @@ def get_pnl_monitor():
                             # Track peak floating PnL (in account currency units matching UI config)
                             current_peak = max(float(shared.get("peak_pnl", 0.0) or 0.0), pnl)
                             shared["peak_pnl"] = round(current_peak, 2)
+
+                            # ── 0. Directional Breakout Guard & Straggler Cut (OCO) ──
+                            oco_enabled = cur_cfg.get("oco_enabled", True)
+                            if oco_enabled and not shared["triggered"]:
+                                buy_pos = [p for p in positions if getattr(p, "type", 0) == 0]
+                                sell_pos = [p for p in positions if getattr(p, "type", 0) == 1]
+                                max_straggler = float(cur_cfg.get("max_straggler_loss", 2.0))
+
+                                # Scenario A: Strong BUY Breakout (>= 2 BUYs active)
+                                if len(buy_pos) >= 2 and sell_pos:
+                                    cancel_pending_by_side(brk, "SELL")
+                                    for sp in sell_pos:
+                                        s_pnl = float(getattr(sp, "profit", 0.0))
+                                        if s_pnl <= -abs(max_straggler) or len(buy_pos) >= 3:
+                                            t_sp = getattr(sp, "ticket", 0)
+                                            v_sp = getattr(sp, "volume", 0.0)
+                                            if close_single_ticket(brk, t_sp, v_sp):
+                                                shared["last_msg"] = f"🛡️ Breakout Guard: Cut counter SELL #{t_sp} ({curr_sym}{s_pnl:+.2f}) to protect {len(buy_pos)} winning BUYs!"
+                                                logging.info(f"[Breakout Guard] {shared['last_msg']}")
+
+                                # Scenario B: Strong SELL Breakout (>= 2 SELLs active)
+                                elif len(sell_pos) >= 2 and buy_pos:
+                                    cancel_pending_by_side(brk, "BUY")
+                                    for bp in buy_pos:
+                                        b_pnl = float(getattr(bp, "profit", 0.0))
+                                        if b_pnl <= -abs(max_straggler) or len(sell_pos) >= 3:
+                                            t_bp = getattr(bp, "ticket", 0)
+                                            v_bp = getattr(bp, "volume", 0.0)
+                                            if close_single_ticket(brk, t_bp, v_bp):
+                                                shared["last_msg"] = f"🛡️ Breakout Guard: Cut counter BUY #{t_bp} ({curr_sym}{b_pnl:+.2f}) to protect {len(sell_pos)} winning SELLs!"
+                                                logging.info(f"[Breakout Guard] {shared['last_msg']}")
 
                             exit_action = None
                             exit_msg = ""
@@ -1596,24 +1665,46 @@ with config_col:
         key="mgd_auto_redeploy",
     )
 
+    col_g1, col_g2 = st.columns(2)
+    with col_g1:
+        oco_enabled = st.toggle(
+            "🛡️ Breakout Guard (OCO)",
+            value=bool(cfg.get("oco_enabled", True)),
+            help="When 2+ levels trigger in one direction (trend breakout): cancels opposing pending traps and cuts opposing straggler positions before they accumulate large losses.",
+            key="mgd_oco_enabled",
+        )
+    with col_g2:
+        max_straggler_loss = st.number_input(
+            f"Max Counter Loss ({curr_unit})",
+            value=float(cfg.get("max_straggler_loss", 2.0)),
+            min_value=0.50,
+            max_value=50.0,
+            step=0.50,
+            format="%.2f",
+            help="Maximum allowed loss for a counter-trend straggler position before Breakout Guard cuts it.",
+            key="mgd_max_straggler",
+        )
+
     # Persist config changes
     new_cfg_vals = {
-        "auto_redeploy": auto_redeploy,
-        "center_mode":   center_mode,
-        "center_price":  center_price_input,
-        "levels_above":  int(levels_above),
-        "levels_below":  int(levels_below),
-        "offset_mode":   offset_mode,
-        "offset_value":  offset_val if offset_mode == "USD ($)" else float(cfg.get("offset_value", 1.50)),
-        "offset_pct":    offset_val if offset_mode == "Percentage (%)" else float(cfg.get("offset_pct", 0.05)),
-        "gap_mode":      gap_mode,
-        "gap_value":     gap_val if gap_mode == "USD ($)" else float(cfg.get("gap_value", 2.0)),
-        "gap_pct":       gap_val if gap_mode == "Percentage (%)" else float(cfg.get("gap_pct", 0.07)),
-        "lot_size":      lot_size,
-        "flat_levels":   int(flat_levels),
-        "lot_mult":      lot_mult,
-        "target_profit": target_profit,
-        "stop_loss":     stop_loss,
+        "auto_redeploy":      auto_redeploy,
+        "oco_enabled":        oco_enabled,
+        "max_straggler_loss": max_straggler_loss,
+        "center_mode":        center_mode,
+        "center_price":       center_price_input,
+        "levels_above":       int(levels_above),
+        "levels_below":       int(levels_below),
+        "offset_mode":        offset_mode,
+        "offset_value":       offset_val if offset_mode == "USD ($)" else float(cfg.get("offset_value", 1.50)),
+        "offset_pct":         offset_val if offset_mode == "Percentage (%)" else float(cfg.get("offset_pct", 0.05)),
+        "gap_mode":           gap_mode,
+        "gap_value":          gap_val if gap_mode == "USD ($)" else float(cfg.get("gap_value", 2.0)),
+        "gap_pct":            gap_val if gap_mode == "Percentage (%)" else float(cfg.get("gap_pct", 0.07)),
+        "lot_size":           lot_size,
+        "flat_levels":        int(flat_levels),
+        "lot_mult":           lot_mult,
+        "target_profit":      target_profit,
+        "stop_loss":          stop_loss,
     }
 
     # Detect if any config values actually changed, and auto-persist to disk immediately

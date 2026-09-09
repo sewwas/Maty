@@ -607,13 +607,18 @@ class MT5BridgeHandler(BaseHTTPRequestHandler):
                             continue
                         target_poss.append(pos)
 
-                    # 2. PRIORITY SORT: Biggest Profit & Biggest Lot First!
-                    # Primary key: profit descending (highest profit first)
-                    # Secondary key: volume descending (biggest lot first)
-                    target_poss.sort(
-                        key=lambda p: (float(getattr(p, "profit", 0.0)), float(getattr(p, "volume", 0.0))),
-                        reverse=True
-                    )
+                    # 2. DUAL-PRIORITY SORT:
+                    # Winners (pnl >= 0): Highest Profit ($) descending -> locks peak cash first
+                    # Losers (pnl < 0): Largest Lot Size & Largest Loss descending -> cuts biggest risk first
+                    def _sort_pos_key(p):
+                        pnl = float(getattr(p, "profit", 0.0))
+                        vol = float(getattr(p, "volume", 0.0))
+                        if pnl >= 0:
+                            return (0, -pnl, -vol)
+                        else:
+                            return (1, -vol, pnl)
+
+                    target_poss.sort(key=_sort_pos_key)
 
                     # Pre-fetch ticks
                     tick_cache = {}
@@ -650,7 +655,7 @@ class MT5BridgeHandler(BaseHTTPRequestHandler):
                             "type":         close_type,
                             "position":     pos.ticket,
                             "price":        price,
-                            "deviation":    100,
+                            "deviation":    300,
                             "magic":        getattr(pos, "magic", 0),
                             "comment":      "Maty BulkClose",
                             "type_filling": best_filling
