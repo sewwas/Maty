@@ -811,34 +811,26 @@ def get_pnl_monitor():
                             acct_curr = acc_i.get("currency", "USD")
                             curr_sym = "¢" if acct_curr == "USC" else "$"
 
-                            # ── Normalize PnL to USD so SL/TP values mean the same
-                            # on both cent accounts (USC) and real USD accounts.
-                            # MT5 cent accounts return profit in USC (1/100 of USD).
-                            # Dividing by 100 makes SL=150 always mean $150 USD.
-                            _is_cent = acct_curr in ("USC", "USX", "EUC", "GBPC")
-                            pnl_usd = pnl / 100.0 if _is_cent else pnl
-
-                            # Track peak floating PnL (in USD terms)
-                            current_peak = max(float(shared.get("peak_pnl", 0.0) or 0.0), pnl_usd)
+                            # Track peak floating PnL (in account currency units matching UI config)
+                            current_peak = max(float(shared.get("peak_pnl", 0.0) or 0.0), pnl)
                             shared["peak_pnl"] = round(current_peak, 2)
 
                             exit_action = None
                             exit_msg = ""
 
                             # ── 1. Target Profit Hit (Strict Full Target) ──
-                            # All comparisons use pnl_usd so SL/TP values are always real USD
-                            if pnl_usd >= tp_target and not shared["triggered"]:
+                            if pnl >= tp_target and not shared["triggered"]:
                                 exit_action = "FULL_TP"
-                                exit_msg = f"🎯 TARGET PROFIT HIT: ${pnl_usd:+.2f} USD (Target: +${tp_target:.2f} USD) — 100% ASAP Closing ALL Active & Pending Orders!"
+                                exit_msg = f"🎯 TARGET PROFIT HIT: {curr_sym}{pnl:+.2f} {acct_curr} (Target: +{curr_sym}{tp_target:.2f} {acct_curr}) — 100% ASAP Closing ALL Active & Pending Orders!"
 
                             # ── 2. Basket Trailing Profit Lock (Guaranteed Profit Retention) ──
                             # If basket reached >= 60% of target, lock trailing profit floor at 50% of peak
                             elif current_peak >= (tp_target * 0.60) and not shared["triggered"]:
-                                trailing_floor = max(0.50, current_peak * 0.50)
+                                trailing_floor = max(0.50 if acct_curr != "USC" else 5.0, current_peak * 0.50)
                                 shared["trail_floor"] = round(trailing_floor, 2)
-                                if pnl_usd <= trailing_floor:
+                                if pnl <= trailing_floor:
                                     exit_action = "TRAIL_LOCK"
-                                    exit_msg = f"🛡️ TRAILING PROFIT LOCK HIT: ${pnl_usd:+.2f} USD (Peak was ${current_peak:.2f}, Floor: ${trailing_floor:.2f}) — Securing locked profit!"
+                                    exit_msg = f"🛡️ TRAILING PROFIT LOCK HIT: {curr_sym}{pnl:+.2f} {acct_curr} (Peak was {curr_sym}{current_peak:.2f}, Floor: {curr_sym}{trailing_floor:.2f}) — Securing locked profit!"
                             else:
                                 shared["trail_floor"] = 0.0
 
@@ -882,12 +874,12 @@ def get_pnl_monitor():
                                         cur_state["grid_levels"] = new_levels
                                         cur_state["grid_config"]["center_price"] = new_center
                                         save_state(cur_state)
-                                        shared["last_msg"] = f"{action_label} ${pnl_usd:+.2f} USD! 100% Closed. 🚀 Auto-deployed NEW GRID ({placed} orders) centered at ${new_center:,.2f}"
+                                        shared["last_msg"] = f"{action_label} {curr_sym}{pnl:+.2f} {acct_curr}! 100% Closed. 🚀 Auto-deployed NEW GRID ({placed} orders) centered at ${new_center:,.2f}"
                                         logging.info(f"[Manual Grid Monitor] {shared['last_msg']}")
                                     else:
-                                        shared["last_msg"] = f"{action_label} ${pnl_usd:+.2f} USD! 100% Closed. Redeploy warnings: {'; '.join(errors[:2])}"
+                                        shared["last_msg"] = f"{action_label} {curr_sym}{pnl:+.2f} {acct_curr}! 100% Closed. Redeploy warnings: {'; '.join(errors[:2])}"
                                 else:
-                                    shared["last_msg"] = f"{action_label} ${pnl_usd:+.2f} USD! {flat_res} · Desk is READY for next grid."
+                                    shared["last_msg"] = f"{action_label} {curr_sym}{pnl:+.2f} {acct_curr}! {flat_res} · Desk is READY for next grid."
 
                                 # Re-arm monitor for the new cycle
                                 shared["peak_pnl"] = 0.0
@@ -896,9 +888,9 @@ def get_pnl_monitor():
                                 shared["triggered"] = False
                                 shared["active"] = True
 
-                            elif pnl_usd <= -abs(sl_limit) and not shared["triggered"]:
+                            elif pnl <= -abs(sl_limit) and not shared["triggered"]:
                                 shared["triggered"] = True
-                                msg = f"🛑 STOP LOSS HIT: ${pnl_usd:+.2f} USD (SL: -${sl_limit:.2f} USD) — Auto-Flattening 100% all orders!"
+                                msg = f"🛑 STOP LOSS HIT: {curr_sym}{pnl:+.2f} {acct_curr} (SL: -{curr_sym}{sl_limit:.2f} {acct_curr}) — Auto-Flattening 100% all orders!"
                                 logging.info(f"[Manual Grid Monitor] {msg}")
 
                                 flat_res = flatten_all(brk, cur_state)
@@ -910,7 +902,7 @@ def get_pnl_monitor():
                                     flatten_all(brk, cur_state)
                                     time.sleep(0.2)
 
-                                shared["last_msg"] = f"🛑 STOP LOSS HIT ${pnl_usd:+.2f} USD! {flat_res} · Desk is READY for next grid."
+                                shared["last_msg"] = f"🛑 STOP LOSS HIT {curr_sym}{pnl:+.2f} {acct_curr}! {flat_res} · Desk is READY for next grid."
 
                                 shared["peak_pnl"] = 0.0
                                 shared["trail_floor"] = 0.0
@@ -1887,6 +1879,7 @@ if last_aud and last_aud.get("steps"):
         </ul>
     </div>
     ''', unsafe_allow_html=True)
+hist_header_left, hist_header_right = st.columns([3, 1])
 with hist_header_left:
     st.markdown('<div class="table-header">📋 Trade History (MT5 Deals)</div>', unsafe_allow_html=True)
 with hist_header_right:
