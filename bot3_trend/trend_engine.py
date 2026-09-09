@@ -358,57 +358,61 @@ class TrendRunnerEngine:
 
         try:
             closed_deals = self.bridge.get_closed_deals(days=1)
-            if closed_deals:
-                today_iso = self.state.get("date", datetime.date.today().isoformat())
-                reset_ts = float(self.state.get("circuit_breaker_reset_ts", 0.0))
-                today_deals = [
-                    d for d in closed_deals
-                    if (today_iso in str(d.get("close_time", "")) or float(d.get("_close_timestamp", 0)) > (now_ts - 86400))
-                    and float(d.get("_close_timestamp", 0)) >= reset_ts
-                ]
+            now_utc = datetime.datetime.now(datetime.timezone.utc)
+            start_of_today_ts = datetime.datetime(now_utc.year, now_utc.month, now_utc.day, tzinfo=datetime.timezone.utc).timestamp()
+            reset_ts = float(self.state.get("circuit_breaker_reset_ts", 0.0))
+            cutoff_ts = max(start_of_today_ts, reset_ts)
 
-                if today_deals:
-                    self.state["today_trades_count"] = len(today_deals)
-                    today_pnl = sum(float(d.get("net_pnl", 0.0)) for d in today_deals)
-                    self.state["today_pnl"] = round(today_pnl, 2)
+            today_deals = [
+                d for d in closed_deals
+                if float(d.get("_close_timestamp", 0)) >= cutoff_ts
+            ]
 
-                    # Check consecutive losses on newest deals
-                    sorted_deals = sorted(today_deals, key=lambda x: float(x.get("_close_timestamp", 0)))
-                    sell_losses = 0
-                    buy_losses = 0
-                    for d in reversed(sorted_deals):
-                        side = d.get("side", "")
-                        pnl = float(d.get("net_pnl", 0.0))
-                        if side == "SELL":
-                            if pnl < -0.01:
-                                sell_losses += 1
-                            else:
-                                break
-                        elif side == "BUY":
-                            if pnl < -0.01:
-                                buy_losses += 1
-                            else:
-                                break
+            self.state["today_trades_count"] = len(today_deals)
+            today_pnl = sum(float(d.get("net_pnl", 0.0)) for d in today_deals)
+            self.state["today_pnl"] = round(today_pnl, 2)
 
-                    self.state["consecutive_sell_losses"] = sell_losses
-                    self.state["consecutive_buy_losses"] = buy_losses
+            if today_deals:
+                # Check consecutive losses on newest deals
+                sorted_deals = sorted(today_deals, key=lambda x: float(x.get("_close_timestamp", 0)))
+                sell_losses = 0
+                buy_losses = 0
+                for d in reversed(sorted_deals):
+                    side = d.get("side", "")
+                    pnl = float(d.get("net_pnl", 0.0))
+                    if side == "SELL":
+                        if pnl < -0.01:
+                            sell_losses += 1
+                        else:
+                            break
+                    elif side == "BUY":
+                        if pnl < -0.01:
+                            buy_losses += 1
+                        else:
+                            break
 
-                    # If 2 consecutive losses in same direction, lockout for 60 min
-                    if sell_losses >= 2 and float(self.state.get("sell_lockout_until", 0.0)) < now_ts:
-                        self.state["sell_lockout_until"] = now_ts + 3600.0
-                        self.log(f"⚠️ CIRCUIT BREAKER: {sell_losses} consecutive SELL stop losses. SELL entries locked out for 60m.")
+                self.state["consecutive_sell_losses"] = sell_losses
+                self.state["consecutive_buy_losses"] = buy_losses
 
-                    if buy_losses >= 2 and float(self.state.get("buy_lockout_until", 0.0)) < now_ts:
-                        self.state["buy_lockout_until"] = now_ts + 3600.0
-                        self.log(f"⚠️ CIRCUIT BREAKER: {buy_losses} consecutive BUY stop losses. BUY entries locked out for 60m.")
+                # If 2 consecutive losses in same direction, lockout for 60 min
+                if sell_losses >= 2 and float(self.state.get("sell_lockout_until", 0.0)) < now_ts:
+                    self.state["sell_lockout_until"] = now_ts + 3600.0
+                    self.log(f"⚠️ CIRCUIT BREAKER: {sell_losses} consecutive SELL stop losses. SELL entries locked out for 60m.")
 
-                    # Check Daily Max Risk % Limit (0 or negative disables check)
-                    max_risk_pct = float(self.config.get("max_daily_risk_pct", 3.0))
-                    if max_risk_pct > 0 and balance > 0 and today_pnl < 0:
-                        realized_loss_pct = (abs(today_pnl) / balance) * 100.0
-                        if realized_loss_pct >= max_risk_pct and not self.state.get("daily_risk_halt"):
-                            self.state["daily_risk_halt"] = True
-                            self.log(f"🚨 DAILY MAX RISK LIMIT REACHED: -{realized_loss_pct:.2f}% >= {max_risk_pct:.1f}%. Halting trading for today.")
+                if buy_losses >= 2 and float(self.state.get("buy_lockout_until", 0.0)) < now_ts:
+                    self.state["buy_lockout_until"] = now_ts + 3600.0
+                    self.log(f"⚠️ CIRCUIT BREAKER: {buy_losses} consecutive BUY stop losses. BUY entries locked out for 60m.")
+
+                # Check Daily Max Risk % Limit (0 or negative disables check)
+                max_risk_pct = float(self.config.get("max_daily_risk_pct", 3.0))
+                if max_risk_pct > 0 and balance > 0 and today_pnl < 0:
+                    realized_loss_pct = (abs(today_pnl) / balance) * 100.0
+                    if realized_loss_pct >= max_risk_pct and not self.state.get("daily_risk_halt"):
+                        self.state["daily_risk_halt"] = True
+                        self.log(f"🚨 DAILY MAX RISK LIMIT REACHED: -{realized_loss_pct:.2f}% >= {max_risk_pct:.1f}%. Halting trading for today.")
+            else:
+                self.state["consecutive_sell_losses"] = 0
+                self.state["consecutive_buy_losses"] = 0
         except Exception as e:
             logger.debug(f"Daily stats check error: {e}")
 
@@ -872,7 +876,7 @@ def get_engine() -> TrendRunnerEngine:
 
 
 if __name__ == "__main__":
-    print("=== Testing Bot #3 TrendRunnerEngine ===")
+    print("=== Starting Bot #3 TrendRunnerEngine Standalone Service ===")
     engine = get_engine()
     status = engine.process_tick()
     macro = str(status['macro_trend']).encode("ascii", "ignore").decode("ascii")
@@ -880,4 +884,9 @@ if __name__ == "__main__":
     print(f"Session: {status['session']} | Asian Box: {status['asian_box']}")
     print(f"ADX: {status.get('adx')} | RSI: {status.get('rsi')}")
     print(f"Account Balance: ${status['balance']:.2f} | Open Trades: {len(status['open_positions'])}")
-    print("Engine Test Completed Successfully!")
+    print("⚡ Bot #3 Trend Engine is now running 24/7 in standalone mode.")
+    try:
+        while True:
+            time.sleep(1.0)
+    except (KeyboardInterrupt, SystemExit):
+        print("Bot #3 Engine Stopped.")

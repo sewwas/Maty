@@ -293,11 +293,10 @@ class Bot3BridgeClient:
         if not raw_deals:
             return []
 
-        # Filter strictly for Bot #3 magic number (or deal if matching position magic)
+        # Filter strictly for Bot #3 magic number (zero leakage from other bots)
         bot_deals = [d for d in raw_deals if int(d.get("magic", 0)) == self.magic_number]
         if not bot_deals:
-            # Fallback if bridge already filtered
-            bot_deals = raw_deals
+            return []
 
         in_deals = {d.get("position_id"): d for d in bot_deals if d.get("entry") == 0}
         out_deals = [d for d in bot_deals if d.get("entry") in (1, 2)]
