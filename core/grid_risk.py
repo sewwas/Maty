@@ -148,23 +148,28 @@ def enforce_profit_lock(self, current_price: float, timestamp: float) -> int:
     actions = 0
     
     if is_gold:
-        breakeven_trigger_dist = max(5.00, atr * 2.0)
-        breakeven_buffer = max(1.50, min(current_price * 0.0004, atr * 0.6))
-        min_room_from_price = 3.50
+        breakeven_trigger_dist = max(18.00, atr * 2.5)
+        breakeven_buffer = max(2.50, min(current_price * 0.0006, atr * 0.6))
+        min_room_from_price = 10.00
     elif "BTC" in sym_name:
-        breakeven_trigger_dist = max(120.0, atr * 2.0)
-        breakeven_buffer = max(30.0, atr * 0.4)
-        min_room_from_price = 80.0
+        breakeven_trigger_dist = max(350.0, atr * 2.5)
+        breakeven_buffer = max(50.0, atr * 0.5)
+        min_room_from_price = 150.0
     elif "ETH" in sym_name:
-        breakeven_trigger_dist = max(10.0, atr * 2.0)
-        breakeven_buffer = max(2.5, atr * 0.4)
-        min_room_from_price = 6.0
+        breakeven_trigger_dist = max(25.0, atr * 2.5)
+        breakeven_buffer = max(4.0, atr * 0.5)
+        min_room_from_price = 15.0
     else:
-        breakeven_trigger_dist = atr * 1.8
-        breakeven_buffer = min(current_price * 0.0003, atr * 0.5)
-        min_room_from_price = atr * 0.8
+        breakeven_trigger_dist = atr * 2.5
+        breakeven_buffer = min(current_price * 0.0005, atr * 0.5)
+        min_room_from_price = atr * 1.5
     
     for pos_id, pos_obj in list(self.broker.open_positions.items()):
+        # Minimum 45-second breathing room before moving SL to breakeven
+        pos_open_time = float(getattr(pos_obj, "entry_time", getattr(pos_obj, "time_setup", 0.0)) or 0.0)
+        if pos_open_time > 0 and (timestamp - pos_open_time) < 45.0:
+            continue
+
         pos_type = str(getattr(pos_obj, "type", "")).upper()
         entry = float(getattr(pos_obj, "entry_price", getattr(pos_obj, "price_open", current_price)) or current_price)
         cur_sl = float(getattr(pos_obj, "sl", 0.0) or 0.0)
@@ -1392,13 +1397,13 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
 
         is_gold = any(x in sym_name for x in ["XAU", "GOLD", "PAXG"])
         if is_gold:
-            min_sl_dist = max(7.50, current_price * 0.0018, atr_5m * 2.0)
+            min_sl_dist = max(25.00, current_price * 0.0050, atr_5m * 3.0)
         elif "BTC" in sym_name:
-            min_sl_dist = max(150.0, current_price * 0.0020, atr_5m * 2.0)
+            min_sl_dist = max(500.0, current_price * 0.0060, atr_5m * 3.0)
         elif "ETH" in sym_name:
-            min_sl_dist = max(10.0, current_price * 0.0030, atr_5m * 2.0)
+            min_sl_dist = max(35.0, current_price * 0.0120, atr_5m * 3.0)
         else:
-            min_sl_dist = max(current_price * 0.001, atr_5m * 1.5)
+            min_sl_dist = max(current_price * 0.005, atr_5m * 2.5)
 
         acc_eq = self.broker.get_equity() if hasattr(self.broker, "get_equity") else 1000.0
         _cfg_levels = getattr(self, "grid_levels", 5) or 5  # Hard ceiling from bot config
@@ -1691,11 +1696,11 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
             valid_tps = [c_px for (_, c_px, _) in merged_support if c_px <= px - (dir_tp_dist * 0.85) and c_px >= px - (dir_tp_dist * 2.2)]
             if valid_tps:
                 smart_tp = min(valid_tps, key=lambda c: abs(c - (px - dir_tp_dist)))
-            # Smart SL: protected above nearest structural resistance over entry
+            # Smart SL: protected above nearest structural resistance over entry (furthest candidate for maximum room)
             smart_sl = round(px + min_sl_dist, digits)
             valid_sls = [c_px for (_, c_px, _) in merged_resistance if c_px >= px + min_sl_dist and c_px <= px + (min_sl_dist * 2.5)]
             if valid_sls:
-                smart_sl = min(valid_sls)
+                smart_sl = max(valid_sls)
             try:
                 r = self.broker.place_order("SELL_LIMIT", px, sz, timestamp, tp=smart_tp, sl=smart_sl)
                 if r:
@@ -1715,11 +1720,11 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
             valid_tps = [c_px for (_, c_px, _) in merged_resistance if c_px >= px + (dir_tp_dist * 0.85) and c_px <= px + (dir_tp_dist * 2.2)]
             if valid_tps:
                 smart_tp = min(valid_tps, key=lambda c: abs(c - (px + dir_tp_dist)))
-            # Smart SL: protected below nearest structural support under entry
+            # Smart SL: protected below nearest structural support under entry (deepest support for maximum room)
             smart_sl = round(px - min_sl_dist, digits)
             valid_sls = [c_px for (_, c_px, _) in merged_support if c_px <= px - min_sl_dist and c_px >= px - (min_sl_dist * 2.5)]
             if valid_sls:
-                smart_sl = max(valid_sls)
+                smart_sl = min(valid_sls)
             try:
                 r = self.broker.place_order("BUY_LIMIT", px, sz, timestamp, tp=smart_tp, sl=smart_sl)
                 if r:
@@ -1741,7 +1746,7 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
             smart_sl = round(px + min_sl_dist, digits)
             valid_sls = [c_px for (_, c_px, _) in merged_resistance if c_px >= px + min_sl_dist and c_px <= px + (min_sl_dist * 2.5)]
             if valid_sls:
-                smart_sl = min(valid_sls)
+                smart_sl = max(valid_sls)
             try:
                 r = self.broker.place_order("SELL_STOP", px, sz, timestamp, tp=smart_tp, sl=smart_sl)
                 if r:
@@ -1763,7 +1768,7 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
             smart_sl = round(px - min_sl_dist, digits)
             valid_sls = [c_px for (_, c_px, _) in merged_support if c_px <= px - min_sl_dist and c_px >= px - (min_sl_dist * 2.5)]
             if valid_sls:
-                smart_sl = max(valid_sls)
+                smart_sl = min(valid_sls)
             try:
                 r = self.broker.place_order("BUY_STOP", px, sz, timestamp, tp=smart_tp, sl=smart_sl)
                 if r:
@@ -2405,21 +2410,34 @@ def trail_stop_loss_5m_structure(self, current_price: float, timestamp: float) -
     _trail_atr_mult  = 0.8 if _is_100pct_trail else 1.5
 
     if is_gold:
-        min_sl_distance  = max(6.50, min(15.00, atr_5m * (1.2 if _is_100pct_trail else 2.0)))
-        breakeven_buffer = 1.50 if _is_100pct_trail else 2.50   # Confirmed → lock sooner
+        min_sl_distance  = max(20.00, min(45.00, atr_5m * (2.0 if _is_100pct_trail else 3.0)))
+        breakeven_buffer = 3.00 if _is_100pct_trail else 5.00
+        min_profit_to_trail = 10.00
+        min_required_trail_gap = max(15.00, atr_5m * 2.0)
     elif "BTC" in sym_name:
-        min_sl_distance  = max(80.0 if _is_100pct_trail else 150.0, atr_5m * _trail_atr_mult)
-        breakeven_buffer = 25.0 if _is_100pct_trail else 50.0
+        min_sl_distance  = max(350.0 if _is_100pct_trail else 550.0, atr_5m * _trail_atr_mult * 2.0)
+        breakeven_buffer = 50.0 if _is_100pct_trail else 100.0
+        min_profit_to_trail = 250.0
+        min_required_trail_gap = max(300.0, atr_5m * 2.0)
     elif "ETH" in sym_name:
-        min_sl_distance  = max(5.0 if _is_100pct_trail else 10.0, atr_5m * _trail_atr_mult)
-        breakeven_buffer = 1.5 if _is_100pct_trail else 3.0
+        min_sl_distance  = max(25.0 if _is_100pct_trail else 40.0, atr_5m * _trail_atr_mult * 2.0)
+        breakeven_buffer = 4.0 if _is_100pct_trail else 8.0
+        min_profit_to_trail = 15.00
+        min_required_trail_gap = max(20.00, atr_5m * 2.0)
     else:
-        min_sl_distance  = max(0.0003 if _is_100pct_trail else 0.0005, atr_5m * _trail_atr_mult)
-        breakeven_buffer = 0.0001 if _is_100pct_trail else 0.0002
+        min_sl_distance  = max(0.0010 if _is_100pct_trail else 0.0020, atr_5m * _trail_atr_mult * 2.0)
+        breakeven_buffer = 0.0003 if _is_100pct_trail else 0.0005
+        min_profit_to_trail = atr_5m * 1.5
+        min_required_trail_gap = atr_5m * 1.5
 
     modified_count = 0
 
     for pos_id, pos_obj in list(self.broker.open_positions.items()):
+        # Minimum 60-second breathing room before trailing SL
+        pos_open_time = float(getattr(pos_obj, "entry_time", getattr(pos_obj, "time_setup", 0.0)) or 0.0)
+        if pos_open_time > 0 and (now_ts - pos_open_time) < 60.0:
+            continue
+
         pos_type = str(getattr(pos_obj, "type", "")).upper()
         entry_px = float(getattr(pos_obj, "entry_price", getattr(pos_obj, "price_open", current_price)) or current_price)
         cur_sl = float(getattr(pos_obj, "sl", 0.0) or 0.0)
@@ -2427,10 +2445,9 @@ def trail_stop_loss_5m_structure(self, current_price: float, timestamp: float) -
         if "BUY" in pos_type:
             # ── BUY POSITION SL LOGIC ──
             floating_profit = current_price - entry_px
-
-            # Phase 1 (Breakeven Lock) REMOVED by user request.
-            # Phase 2: Structure Trail — Actively trail behind 5m swing structure
-            # (Trend confirmation gate removed to allow smarter dynamic profit locking)
+            # Only trail positions that are safely in profit — never choke a nascent or recovering trade
+            if floating_profit < min_profit_to_trail:
+                continue
 
             # Calculate structure-based SL: swing low minus anti-hunt buffer
             structure_sl = round(recent_swing_low - (atr_5m * 0.5), digits)
@@ -2442,7 +2459,6 @@ def trail_stop_loss_5m_structure(self, current_price: float, timestamp: float) -
             # SL must be better (higher) than current SL — never move backwards
             if target_sl > cur_sl and target_sl < current_price:
                 # Final safety: SL must not be closer than min_required_trail_gap to current price
-                min_required_trail_gap = max(5.00, atr_5m * 1.5) if is_gold else atr_5m
                 if (current_price - target_sl) >= min_required_trail_gap:
                     try:
                         if self.broker.modify_position_sl_tp(pos_id, sl=target_sl):
@@ -2455,10 +2471,9 @@ def trail_stop_loss_5m_structure(self, current_price: float, timestamp: float) -
         elif "SELL" in pos_type:
             # ── SELL POSITION SL LOGIC ──
             floating_profit = entry_px - current_price
-
-            # Phase 1 (Breakeven Lock) REMOVED by user request.
-            # Phase 2: Structure Trail — Actively trail above 5m swing structure
-            # (Trend confirmation gate removed to match BUY logic and ensure we ride downtrends smoothly)
+            # Only trail positions that are safely in profit — never choke a nascent or recovering trade
+            if floating_profit < min_profit_to_trail:
+                continue
 
             # Calculate structure-based SL: swing high plus anti-hunt buffer
             structure_sl = round(recent_swing_high + (atr_5m * 0.5), digits)
@@ -2470,7 +2485,6 @@ def trail_stop_loss_5m_structure(self, current_price: float, timestamp: float) -
             # SL must be better (lower) than current SL — never move backwards
             if (cur_sl == 0.0 or target_sl < cur_sl) and target_sl > current_price:
                 # Final safety: SL must not be closer than min_required_trail_gap
-                min_required_trail_gap = max(5.00, atr_5m * 1.5) if is_gold else atr_5m
                 if (target_sl - current_price) >= min_required_trail_gap:
                     try:
                         if self.broker.modify_position_sl_tp(pos_id, sl=target_sl):

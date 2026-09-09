@@ -632,13 +632,12 @@ class MT5BridgeHandler(BaseHTTPRequestHandler):
                     for pos in target_poss:
                         close_type = mt5.ORDER_TYPE_SELL if (pos.type == 0 or pos.type == getattr(mt5, "POSITION_TYPE_BUY", 0)) else mt5.ORDER_TYPE_BUY
                         
-                        # Fresh live tick right before each close deal
-                        t_live = mt5.symbol_info_tick(pos.symbol)
-                        if t_live and getattr(t_live, "bid", 0) > 0 and getattr(t_live, "ask", 0) > 0:
-                            price = t_live.bid if close_type == mt5.ORDER_TYPE_SELL else t_live.ask
-                        else:
-                            tick = tick_cache.get(pos.symbol)
-                            price = (tick.bid if close_type == mt5.ORDER_TYPE_SELL else tick.ask) if tick else getattr(pos, "price_current", 0.0)
+                        # Use cached tick for immediate zero-latency dispatch; re-query only if cache is missing
+                        tick = tick_cache.get(pos.symbol)
+                        if not tick or getattr(tick, "bid", 0) <= 0:
+                            tick = mt5.symbol_info_tick(pos.symbol)
+                            if tick: tick_cache[pos.symbol] = tick
+                        price = (tick.bid if close_type == mt5.ORDER_TYPE_SELL else tick.ask) if tick else getattr(pos, "price_current", 0.0)
 
                         symbol_info = info_cache.get(pos.symbol)
                         filling_mode = getattr(symbol_info, "filling_mode", 0) if symbol_info else 0
@@ -655,7 +654,7 @@ class MT5BridgeHandler(BaseHTTPRequestHandler):
                             "type":         close_type,
                             "position":     pos.ticket,
                             "price":        price,
-                            "deviation":    300,
+                            "deviation":    500,
                             "magic":        getattr(pos, "magic", 0),
                             "comment":      "Maty BulkClose",
                             "type_filling": best_filling
@@ -670,6 +669,7 @@ class MT5BridgeHandler(BaseHTTPRequestHandler):
                                 t_fresh2 = mt5.symbol_info_tick(pos.symbol)
                                 if t_fresh2 and getattr(t_fresh2, "bid", 0) > 0:
                                     req["price"] = t_fresh2.bid if close_type == mt5.ORDER_TYPE_SELL else t_fresh2.ask
+                                    tick_cache[pos.symbol] = t_fresh2
                                 res_cl = mt5.order_send(req)
                                 if res_cl and res_cl.retcode in (0, 10009, 10008, 10004):
                                     is_closed = True

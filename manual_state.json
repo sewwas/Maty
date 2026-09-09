@@ -1,7 +1,7 @@
 {
   "grid_config": {
     "center_mode": "Live Price (Auto-Centered)",
-    "center_price": 4400.28,
+    "center_price": 4422.48,
     "levels_above": 3,
     "levels_below": 3,
     "offset_mode": "USD ($)",
@@ -15,7 +15,9 @@
     "target_profit": 5.0,
     "stop_loss": 25.0,
     "auto_redeploy": true,
-    "flat_levels": 3
+    "flat_levels": 3,
+    "oco_enabled": true,
+    "max_straggler_loss": 2.0
   },
   "trade_history": [],
   "deployed": false,

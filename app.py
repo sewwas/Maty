@@ -1776,6 +1776,7 @@ with tab_desk:
         # Always also merge broker.closed_trades — MT5-synced deals that aren't yet
         # in cycle_history (e.g. after a restart) must show in the portal too.
         if hasattr(brk, "closed_trades") and brk.closed_trades:
+            basket_exit_times = [float(c.get("exit_time", c.get("timestamp", 0.0))) for c in cycles_list if int(c.get("fills_count", c.get("trades_count", 1))) > 1]
             existing_records = {(round(float(c.get("exit_time", c.get("timestamp", 0))), 1), round(float(c.get("pnl", c.get("total_pnl", 0))), 2)) for c in cycles_list}
             for idx_tr, tr in enumerate(brk.closed_trades):
                 pnl_tr = float(tr.get("pnl", 0.0))
@@ -1786,6 +1787,9 @@ with tab_desk:
                 
                 # Check for duplicates using both timestamp and PnL to prevent hiding concurrent individual positions
                 if (ts_rnd, pnl_rnd) in existing_records:
+                    continue
+                # If this deal closed at the same timestamp as an existing basket cycle, it is an internal leg of that basket
+                if any(abs(ts_tr - b_ts) <= 12.0 for b_ts in basket_exit_times):
                     continue
                 existing_records.add((ts_rnd, pnl_rnd))
                 dep_px = float(tr.get("deploy_price", tr.get("entry_price", tr.get("open_price", 0.0))))
@@ -1810,9 +1814,7 @@ with tab_desk:
                     "is_win":       pnl_tr > 0.0
                 })
 
-
-
-        # Time-window deduplication: merge records within 15s and $0.10 PnL of each other.
+        # Time-window deduplication: merge records within 15s.
         # Keeps the richer record (more fills = basket entry wins over individual MT5 deal).
         deduped_list = []
         for idx, item in enumerate(cycles_list):
@@ -1831,16 +1833,21 @@ with tab_desk:
                 ex_ts  = float(existing.get("exit_time", 0.0))
                 ex_pnl = float(existing.get("pnl", 0.0))
                 ex_sym = existing.get("symbol", "")
-                if (ex_sym == rec["symbol"]
-                        and abs(ex_ts - ts_val) <= 15.0
-                        and abs(ex_pnl - pnl_val) < 0.10):
-                    # Keep the richer record (more fills = basket)
-                    ex_fills = int(existing.get("fills_count", existing.get("trades_count", 1)))
-                    rc_fills = int(rec.get("fills_count", rec.get("trades_count", 1)))
-                    if rc_fills > ex_fills:
-                        existing.update(rec)  # Replace with the basket record
-                    is_dup = True
-                    break
+                ex_fills = int(existing.get("fills_count", existing.get("trades_count", 1)))
+                rc_fills = int(rec.get("fills_count", rec.get("trades_count", 1)))
+
+                if ex_sym == rec["symbol"] and abs(ex_ts - ts_val) <= 15.0:
+                    # If one is a multi-fill basket and the other is a single deal, keep the basket
+                    if ex_fills > 1 and rc_fills <= 1:
+                        is_dup = True
+                        break
+                    elif rc_fills > ex_fills:
+                        existing.update(rec)
+                        is_dup = True
+                        break
+                    elif abs(ex_pnl - pnl_val) < 0.10:
+                        is_dup = True
+                        break
             if not is_dup:
                 deduped_list.append(rec)
 
