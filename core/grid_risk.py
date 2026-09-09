@@ -140,14 +140,29 @@ def enforce_profit_lock(self, current_price: float, timestamp: float) -> int:
 
     sym_name = str(getattr(self.broker, "symbol", getattr(self, "symbol_code", "BTCUSDT"))).upper()
     digits = 4 if any(x in sym_name for x in ["DOGE", "GBP", "EUR"]) else (3 if any(x in sym_name for x in ["XAU", "GOLD", "PAXG"]) else 2)
+    is_gold = any(x in sym_name for x in ["XAU", "GOLD", "PAXG"])
     
     state = compute_basket_state(self, current_price, timestamp)
     atr = state["atr_5m"]
     
     actions = 0
     
-    breakeven_trigger_dist = atr * 1.5
-    breakeven_buffer = min(current_price * 0.0002, atr * 0.5)
+    if is_gold:
+        breakeven_trigger_dist = max(5.00, atr * 2.0)
+        breakeven_buffer = max(1.50, min(current_price * 0.0004, atr * 0.6))
+        min_room_from_price = 3.50
+    elif "BTC" in sym_name:
+        breakeven_trigger_dist = max(120.0, atr * 2.0)
+        breakeven_buffer = max(30.0, atr * 0.4)
+        min_room_from_price = 80.0
+    elif "ETH" in sym_name:
+        breakeven_trigger_dist = max(10.0, atr * 2.0)
+        breakeven_buffer = max(2.5, atr * 0.4)
+        min_room_from_price = 6.0
+    else:
+        breakeven_trigger_dist = atr * 1.8
+        breakeven_buffer = min(current_price * 0.0003, atr * 0.5)
+        min_room_from_price = atr * 0.8
     
     for pos_id, pos_obj in list(self.broker.open_positions.items()):
         pos_type = str(getattr(pos_obj, "type", "")).upper()
@@ -158,25 +173,27 @@ def enforce_profit_lock(self, current_price: float, timestamp: float) -> int:
         if "BUY" in pos_type:
             if current_price >= entry + breakeven_trigger_dist:
                 new_sl = round(entry + breakeven_buffer, digits)
-                if (cur_sl == 0.0 or cur_sl < new_sl) and new_sl < current_price:
-                    try:
-                        if self.broker.modify_position_sl_tp(pos_id, sl=new_sl, tp=cur_tp if cur_tp > 0 else None):
-                            setattr(pos_obj, "sl", new_sl)
-                            actions += 1
-                            print(f"[{sym_name}] 🛡️ [BREAKEVEN] BUY #{pos_id} SL moved to {new_sl}")
-                    except Exception as e:
-                        pass
+                if (current_price - new_sl) >= min_room_from_price:
+                    if (cur_sl == 0.0 or cur_sl < new_sl) and new_sl < current_price:
+                        try:
+                            if self.broker.modify_position_sl_tp(pos_id, sl=new_sl, tp=cur_tp if cur_tp > 0 else None):
+                                setattr(pos_obj, "sl", new_sl)
+                                actions += 1
+                                print(f"[{sym_name}] 🛡️ [BREAKEVEN] BUY #{pos_id} SL moved to {new_sl}")
+                        except Exception as e:
+                            pass
         elif "SELL" in pos_type:
             if current_price <= entry - breakeven_trigger_dist:
                 new_sl = round(entry - breakeven_buffer, digits)
-                if (cur_sl == 0.0 or cur_sl > new_sl) and new_sl > current_price:
-                    try:
-                        if self.broker.modify_position_sl_tp(pos_id, sl=new_sl, tp=cur_tp if cur_tp > 0 else None):
-                            setattr(pos_obj, "sl", new_sl)
-                            actions += 1
-                            print(f"[{sym_name}] 🛡️ [BREAKEVEN] SELL #{pos_id} SL moved to {new_sl}")
-                    except Exception as e:
-                        pass
+                if (new_sl - current_price) >= min_room_from_price:
+                    if (cur_sl == 0.0 or cur_sl > new_sl) and new_sl > current_price:
+                        try:
+                            if self.broker.modify_position_sl_tp(pos_id, sl=new_sl, tp=cur_tp if cur_tp > 0 else None):
+                                setattr(pos_obj, "sl", new_sl)
+                                actions += 1
+                                print(f"[{sym_name}] 🛡️ [BREAKEVEN] SELL #{pos_id} SL moved to {new_sl}")
+                        except Exception as e:
+                            pass
                         
     return actions
 
@@ -1373,7 +1390,15 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
         if atr_5m is None or atr_5m <= 0:
             atr_5m = current_price * 0.002
 
-        min_sl_dist = max(current_price * 0.001, atr_5m * 1.5)
+        is_gold = any(x in sym_name for x in ["XAU", "GOLD", "PAXG"])
+        if is_gold:
+            min_sl_dist = max(7.50, current_price * 0.0018, atr_5m * 2.0)
+        elif "BTC" in sym_name:
+            min_sl_dist = max(150.0, current_price * 0.0020, atr_5m * 2.0)
+        elif "ETH" in sym_name:
+            min_sl_dist = max(10.0, current_price * 0.0030, atr_5m * 2.0)
+        else:
+            min_sl_dist = max(current_price * 0.001, atr_5m * 1.5)
 
         acc_eq = self.broker.get_equity() if hasattr(self.broker, "get_equity") else 1000.0
         _cfg_levels = getattr(self, "grid_levels", 5) or 5  # Hard ceiling from bot config
@@ -1383,18 +1408,18 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
         else:
             effective_levels = _cfg_levels
 
-        if any(x in sym_name for x in ["XAU", "GOLD", "PAXG"]):
+        if is_gold:
             effective_levels = min(effective_levels, 3)
 
         dyn_tp_factor = max(3.0, float(effective_levels * 1.0))
         calculated_dynamic_tp = gap_val * dyn_tp_factor
 
-        # Guarantee minimum 1.8x R:R over stop loss so every win outpaces average loss
-        rr_min_tp = min_sl_dist * 1.80
+        # Guarantee minimum 1.5x R:R over stop loss so every win outpaces average loss
+        rr_min_tp = min_sl_dist * 1.50
 
-        if any(x in sym_name for x in ["XAU", "GOLD", "PAXG"]):
-            # On Gold / PAXG: Enforce minimum $12-$20 distance (0.3% - 0.5% move), at least 3x ATR
-            min_tp_dist = max(12.0, current_price * 0.0030, atr_5m * 3.0, calculated_dynamic_tp, rr_min_tp)
+        if is_gold:
+            # On Gold / PAXG: Enforce minimum $10-$20 distance (0.25% - 0.5% move), at least 2.5x ATR
+            min_tp_dist = max(10.0, current_price * 0.0025, atr_5m * 2.5, calculated_dynamic_tp, rr_min_tp)
         elif "ETH" in sym_name:
             # On ETH: Enforce minimum $15-$25 distance (0.5% - 1.0% move), at least 3x ATR
             min_tp_dist = max(15.0, current_price * 0.0050, atr_5m * 3.0, calculated_dynamic_tp, rr_min_tp)
@@ -2380,8 +2405,8 @@ def trail_stop_loss_5m_structure(self, current_price: float, timestamp: float) -
     _trail_atr_mult  = 0.8 if _is_100pct_trail else 1.5
 
     if is_gold:
-        min_sl_distance  = max(4.00, min(8.00, atr_5m * _trail_atr_mult))
-        breakeven_buffer = 0.50 if _is_100pct_trail else 1.00   # Confirmed → lock sooner
+        min_sl_distance  = max(6.50, min(15.00, atr_5m * (1.2 if _is_100pct_trail else 2.0)))
+        breakeven_buffer = 1.50 if _is_100pct_trail else 2.50   # Confirmed → lock sooner
     elif "BTC" in sym_name:
         min_sl_distance  = max(80.0 if _is_100pct_trail else 150.0, atr_5m * _trail_atr_mult)
         breakeven_buffer = 25.0 if _is_100pct_trail else 50.0
@@ -2416,8 +2441,9 @@ def trail_stop_loss_5m_structure(self, current_price: float, timestamp: float) -
 
             # SL must be better (higher) than current SL — never move backwards
             if target_sl > cur_sl and target_sl < current_price:
-                # Final safety: SL must not be closer than 1× ATR to current price
-                if (current_price - target_sl) >= atr_5m:
+                # Final safety: SL must not be closer than min_required_trail_gap to current price
+                min_required_trail_gap = max(5.00, atr_5m * 1.5) if is_gold else atr_5m
+                if (current_price - target_sl) >= min_required_trail_gap:
                     try:
                         if self.broker.modify_position_sl_tp(pos_id, sl=target_sl):
                             setattr(pos_obj, "sl", target_sl)
@@ -2443,8 +2469,9 @@ def trail_stop_loss_5m_structure(self, current_price: float, timestamp: float) -
 
             # SL must be better (lower) than current SL — never move backwards
             if (cur_sl == 0.0 or target_sl < cur_sl) and target_sl > current_price:
-                # Final safety: SL must not be closer than 1× ATR
-                if (target_sl - current_price) >= atr_5m:
+                # Final safety: SL must not be closer than min_required_trail_gap
+                min_required_trail_gap = max(5.00, atr_5m * 1.5) if is_gold else atr_5m
+                if (target_sl - current_price) >= min_required_trail_gap:
                     try:
                         if self.broker.modify_position_sl_tp(pos_id, sl=target_sl):
                             setattr(pos_obj, "sl", target_sl)
