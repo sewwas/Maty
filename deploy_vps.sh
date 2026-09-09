@@ -15,24 +15,32 @@ echo "=================================================================="
 echo "  RESTARTING BOT & DASHBOARD SERVICES"
 echo "=================================================================="
 
+PYTHON_BIN=$(command -v python3 || echo "/usr/bin/python3")
+STREAMLIT_BIN=$(command -v streamlit || echo "/usr/local/bin/streamlit")
+
 pkill -f 'bot3_trend/trend_engine.py' 2>/dev/null || true
 pkill -f 'bot3_trend/panel.py' 2>/dev/null || true
 pkill -f 'manual_grid_desk.py' 2>/dev/null || true
+pkill -f 'streamlit run /root/Maty/app.py' 2>/dev/null || true
 sleep 2
 
 mkdir -p $APP_DIR/logs
 
+echo "Starting Bot #1 Auto Grid Dashboard (Port 8501)..."
+nohup $STREAMLIT_BIN run /root/Maty/app.py --server.port 8501 --server.address 0.0.0.0 --server.headless true > /root/Maty/logs/streamlit_8501.log 2>&1 &
+echo "Bot #1 Dashboard started."
+
+echo "Starting Bot #2 Manual Grid Desk (Port 8502)..."
+nohup $STREAMLIT_BIN run /root/Maty/manual_grid_desk.py --server.port 8502 --server.address 0.0.0.0 --server.headless true > /root/Maty/logs/streamlit_8502.log 2>&1 &
+echo "Bot #2 Desk started."
+
 echo "Starting Bot #3 Trend Engine..."
-nohup /root/Maty/.venv/bin/python /root/Maty/bot3_trend/trend_engine.py > /root/Maty/logs/bot3_engine.log 2>&1 &
+nohup $PYTHON_BIN /root/Maty/bot3_trend/trend_engine.py > /root/Maty/logs/bot3_engine.log 2>&1 &
 echo "Bot #3 Engine started."
 
 echo "Starting Bot #3 Web Dashboard (Port 8503)..."
-nohup /root/Maty/.venv/bin/streamlit run /root/Maty/bot3_trend/panel.py --server.port 8503 --server.address 0.0.0.0 --server.headless true > /root/Maty/logs/streamlit_8503.log 2>&1 &
+nohup $STREAMLIT_BIN run /root/Maty/bot3_trend/panel.py --server.port 8503 --server.address 0.0.0.0 --server.headless true > /root/Maty/logs/streamlit_8503.log 2>&1 &
 echo "Bot #3 Panel started."
-
-echo "Starting Bot #2 Manual Grid Desk (Port 8502)..."
-nohup /root/Maty/.venv/bin/streamlit run /root/Maty/manual_grid_desk.py --server.port 8502 --server.address 0.0.0.0 --server.headless true > /root/Maty/logs/streamlit_8502.log 2>&1 &
-echo "Bot #2 Desk started."
 
 sleep 3
 
