@@ -618,7 +618,8 @@ def check_target_profit(self, current_price: float, timestamp: float) -> Optiona
         # Extreme Drawdown (Catastrophic Fallback Protection)
         if not exit_triggered:
             max_cycle_dd = float(getattr(self, "max_cycle_drawdown", 30.0) or 30.0) * cent_multiplier
-            extreme_dd = max_cycle_dd * 3.0
+            hard_cap = 25.0 * cent_multiplier if is_cent_account else 25.0
+            extreme_dd = min(hard_cap, max_cycle_dd)
             if total_pnl <= -abs(extreme_dd):
                 exit_triggered = True
                 exit_reason = "STOP_LOSS"
@@ -667,7 +668,8 @@ def check_target_profit(self, current_price: float, timestamp: float) -> Optiona
                 total_vol = sum(float(getattr(p, "size", 0.01)) for p in self.broker.open_positions.values())
                 micro_lots = total_vol / 0.01
 
-                effective_sl = sl_limit * micro_lots
+                hard_cap = 25.0 * cent_multiplier if is_cent_account else 25.0
+                effective_sl = min(sl_limit * micro_lots, hard_cap)
                 if total_pnl <= -abs(effective_sl):
                     exit_triggered = True
                     exit_reason = "STOP_LOSS"
@@ -1399,7 +1401,7 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
 
         is_gold = any(x in sym_name for x in ["XAU", "GOLD", "PAXG"])
         if is_gold:
-            min_sl_dist = max(25.00, current_price * 0.0050, atr_5m * 3.0)
+            min_sl_dist = max(10.00, current_price * 0.0025, atr_5m * 2.0)
         elif "BTC" in sym_name:
             min_sl_dist = max(500.0, current_price * 0.0060, atr_5m * 3.0)
         elif "ETH" in sym_name:
@@ -1495,13 +1497,22 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
 
         _is_hedged_override = False
 
+        # HARD HTF MOMENTUM GATE: Never place counter-trend orders against confirmed trend
+        if not is_manual:
+            if t_htf == "BULLISH" or t_5m == "BULLISH":
+                place_sell = False
+            elif t_htf == "BEARISH" or t_5m == "BEARISH":
+                place_buy = False
+
         if has_sells and not _is_100pct_grid:
-            place_buy = False
+            if t_htf != "BULLISH" and t_5m != "BULLISH":
+                place_buy = False
         elif has_sells and _is_100pct_grid and place_buy:
             _is_hedged_override = True
 
         if has_buys and not _is_100pct_grid:
-            place_sell = False
+            if t_htf != "BEARISH" and t_5m != "BEARISH":
+                place_sell = False
         elif has_buys and _is_100pct_grid and place_sell:
             _is_hedged_override = True
 

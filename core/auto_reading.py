@@ -12,9 +12,9 @@ _ORDERS_PER_SLOT = {"GOLD": 5, "MAJOR": 5, "MINOR": 3, "ALT": 2}
 # To add a new symbol just add a row here — no gap/offset tuning needed, ATR handles it.
 PAIR_SAFETY_BOUNDS = {
     "XAUUSD":   {"min_gap": 0.03, "max_gap": 0.80,  "min_offset": 0.03, "max_offset": 0.60,  "min_tp": 10.0, "max_tp":  40.0, "base_lot": 0.01, "std_gap": 0.07, "std_offset": 0.07, "lot_mult": 1.00, "max_cycle_sl": 12.00},
-    "PAXGUSDT": {"min_gap": 0.03, "max_gap": 0.80,  "min_offset": 0.03, "max_offset": 0.60,  "min_tp": 10.0, "max_tp":  40.0, "base_lot": 0.05, "std_gap": 0.07, "std_offset": 0.07, "lot_mult": 1.00, "max_cycle_sl": 12.00},
+    "PAXGUSDT": {"min_gap": 0.03, "max_gap": 0.80,  "min_offset": 0.03, "max_offset": 0.60,  "min_tp": 10.0, "max_tp":  40.0, "base_lot": 0.01, "std_gap": 0.07, "std_offset": 0.07, "lot_mult": 1.00, "max_cycle_sl": 12.00},
     "GOLD":     {"min_gap": 0.03, "max_gap": 0.80,  "min_offset": 0.03, "max_offset": 0.60,  "min_tp": 10.0, "max_tp":  40.0, "base_lot": 0.01, "std_gap": 0.07, "std_offset": 0.07, "lot_mult": 1.00, "max_cycle_sl": 12.00},
-    "ETHUSDT":  {"min_gap": 0.5,  "max_gap": 3.0,   "min_offset": 0.5,  "max_offset": 25.0,  "min_tp": 15.0, "max_tp":  60.0, "base_lot": 0.05, "std_gap": 0.10, "std_offset": 0.08, "lot_mult": 1.00, "max_cycle_sl": 6.00},
+    "ETHUSDT":  {"min_gap": 0.5,  "max_gap": 3.0,   "min_offset": 0.5,  "max_offset": 25.0,  "min_tp": 15.0, "max_tp":  60.0, "base_lot": 0.01, "std_gap": 0.10, "std_offset": 0.08, "lot_mult": 1.00, "max_cycle_sl": 6.00},
 }
 _DEFAULT_SAFETY_BOUNDS = {"min_gap": 0.03, "max_gap": 2.0, "min_offset": 0.03, "max_offset": 1.50, "min_tp": 5.00, "max_tp": 80.0, "base_lot": 0.01}
 
@@ -22,10 +22,10 @@ _DEFAULT_SAFETY_BOUNDS = {"min_gap": 0.03, "max_gap": 2.0, "min_offset": 0.03, "
 def clamp_symbol_lot_size(symbol: str, raw_size: float) -> float:
     """Clamps lot size strictly according to symbol category limits."""
     clean_sym = symbol.upper()
-    if any(x in clean_sym for x in ["XAU", "GOLD"]) and "PAXG" not in clean_sym:
-        return 0.01  # Strict flat 0.01 lot size for 100oz Forex Gold contracts
+    if any(x in clean_sym for x in ["XAU", "GOLD", "PAXG"]):
+        return 0.01  # Strict flat 0.01 lot size for all Gold/PAXG contracts
     else:
-        return max(0.01, min(0.10, round(raw_size, 2)))
+        return max(0.01, min(0.05, round(raw_size, 2)))
 
 
 def select_active_pairs(
