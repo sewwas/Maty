@@ -48,7 +48,7 @@ echo ""
 echo "=================================================================="
 echo "  HEALTH & PORT VERIFICATION"
 echo "=================================================================="
-ss -tulnp | grep -E '8001|8002|8003|8501|8502|8503|8006'
+ss -tulnp | grep -E '8001|8002|8003|8501|8502|8503'
 
 echo ""
 echo "SUCCESS: VPS Updated and all bot services are running!"
