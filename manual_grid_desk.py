@@ -103,7 +103,7 @@ def load_state() -> dict:
             "target_profit": 5.0,
             "stop_loss": 25.0,
             "auto_redeploy": True,
-            "oco_enabled": True,
+            "oco_enabled": False,
             "max_straggler_loss": 2.0,
         },
         "trade_history": [],
@@ -859,7 +859,7 @@ def get_pnl_monitor():
 
                                 # Scenario A: Strong BUY Breakout (>= 2 BUYs active)
                                 if len(buy_pos) >= 2 and sell_pos:
-                                    cancel_pending_by_side(brk, "SELL")
+                                    # Note: Pending orders are KEPT INTACT until full close per risk rule!
                                     for sp in sell_pos:
                                         s_pnl = float(getattr(sp, "profit", 0.0))
                                         sp_time = float(getattr(sp, "time", 0) or 0)
@@ -873,7 +873,7 @@ def get_pnl_monitor():
 
                                 # Scenario B: Strong SELL Breakout (>= 2 SELLs active)
                                 elif len(sell_pos) >= 2 and buy_pos:
-                                    cancel_pending_by_side(brk, "BUY")
+                                    # Note: Pending orders are KEPT INTACT until full close per risk rule!
                                     for bp in buy_pos:
                                         b_pnl = float(getattr(bp, "profit", 0.0))
                                         bp_time = float(getattr(bp, "time", 0) or 0)
@@ -1658,8 +1658,8 @@ with config_col:
     with col_g1:
         oco_enabled = st.toggle(
             "🛡️ Breakout Guard (OCO)",
-            value=bool(cfg.get("oco_enabled", True)),
-            help="When 2+ levels trigger in one direction (trend breakout): cancels opposing pending traps and cuts opposing straggler positions before they accumulate large losses.",
+            value=bool(cfg.get("oco_enabled", False)),
+            help="When 2+ levels trigger in one direction: cuts counter-trend straggler positions if they exceed max loss. Pending orders are kept intact until full close.",
             key="mgd_oco_enabled",
         )
     with col_g2:
