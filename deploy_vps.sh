@@ -18,13 +18,22 @@ echo "=================================================================="
 PYTHON_BIN=$(command -v python3 || echo "/usr/bin/python3")
 STREAMLIT_BIN=$(command -v streamlit || echo "/usr/local/bin/streamlit")
 
+echo "Stopping previous services..."
+pkill -f 'hub.py' 2>/dev/null || true
 pkill -f 'bot3_trend/trend_engine.py' 2>/dev/null || true
 pkill -f 'bot3_trend/panel.py' 2>/dev/null || true
 pkill -f 'manual_grid_desk.py' 2>/dev/null || true
 pkill -f 'streamlit run /root/Maty/app.py' 2>/dev/null || true
+
+# Force release any locked dashboard ports
+fuser -k 80/tcp 8501/tcp 8502/tcp 8503/tcp 2>/dev/null || true
 sleep 2
 
 mkdir -p $APP_DIR/logs
+
+echo "Starting Port 80 Command Center Portal (hub.py)..."
+nohup $PYTHON_BIN /root/Maty/hub.py > /root/Maty/logs/hub.log 2>&1 &
+echo "Command Center Portal started."
 
 echo "Starting Bot #1 Auto Grid Dashboard (Port 8501)..."
 nohup $STREAMLIT_BIN run /root/Maty/app.py --server.port 8501 --server.address 0.0.0.0 --server.headless true > /root/Maty/logs/streamlit_8501.log 2>&1 &
@@ -48,7 +57,7 @@ echo ""
 echo "=================================================================="
 echo "  HEALTH & PORT VERIFICATION"
 echo "=================================================================="
-ss -tulnp | grep -E '8001|8002|8003|8501|8502|8503'
+ss -tulnp | grep -E '80 |8001|8002|8003|8501|8502|8503'
 
 echo ""
 echo "SUCCESS: VPS Updated and all bot services are running!"
