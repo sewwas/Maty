@@ -55,6 +55,8 @@ tmp*
 bot_state.json
 bot_state_*.json
 state.json
+bot2_manual/manual_state.json
+bot2_manual/state.json
 bot3_trend/state.json
 bot4_smc/state.json
 investor_data.json

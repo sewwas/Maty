@@ -23,6 +23,7 @@ pkill -9 -f 'app.py' 2>/dev/null || true
 pkill -9 -f 'hub.py' 2>/dev/null || true
 pkill -9 -f 'bot3_trend' 2>/dev/null || true
 pkill -9 -f 'bot4_smc' 2>/dev/null || true
+pkill -9 -f 'bot2_manual' 2>/dev/null || true
 pkill -9 -f 'manual_grid_desk.py' 2>/dev/null || true
 pkill -9 -f 'streamlit' 2>/dev/null || true
 
@@ -49,8 +50,12 @@ echo "Starting Bot #1 Auto Grid Dashboard (Port 8501)..."
 nohup $STREAMLIT_BIN run /root/Maty/app.py --server.port 8501 --server.address 0.0.0.0 --server.headless true > /root/Maty/logs/streamlit_8501.log 2>&1 &
 echo "Bot #1 Dashboard started."
 
+echo "Starting Bot #2 24/7 Grid Engine..."
+nohup $PYTHON_BIN /root/Maty/bot2_manual/grid_engine.py > /root/Maty/logs/bot2_engine.log 2>&1 &
+echo "Bot #2 Engine started."
+
 echo "Starting Bot #2 Manual Grid Desk (Port 8502)..."
-nohup $STREAMLIT_BIN run /root/Maty/manual_grid_desk.py --server.port 8502 --server.address 0.0.0.0 --server.headless true > /root/Maty/logs/streamlit_8502.log 2>&1 &
+nohup $STREAMLIT_BIN run /root/Maty/bot2_manual/panel.py --server.port 8502 --server.address 0.0.0.0 --server.headless true > /root/Maty/logs/streamlit_8502.log 2>&1 &
 echo "Bot #2 Desk started."
 
 echo "Starting Bot #3 Trend Engine..."

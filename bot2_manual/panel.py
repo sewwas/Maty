@@ -23,6 +23,13 @@ warnings.filterwarnings("ignore")
 import time
 import datetime
 import os
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+ROOT_DIR = os.path.abspath(os.path.join(BASE_DIR, '..'))
+if ROOT_DIR not in sys.path:
+    sys.path.insert(0, ROOT_DIR)
+if BASE_DIR not in sys.path:
+    sys.path.insert(0, BASE_DIR)
 import json
 import threading
 import logging
@@ -854,8 +861,8 @@ def get_pnl_monitor():
             while True:
                 try:
                     now_t = time.time()
-                    # 1. Sync config from disk periodically (every 1.5s) without blocking fast tick loop
-                    if now_t - last_cfg_sync >= 1.5:
+                    # 1. Sync config from disk periodically (every 1.0s) without blocking fast tick loop
+                    if now_t - last_cfg_sync >= 1.0:
                         try:
                             cur_state = load_state()
                             cur_cfg = cur_state.get("grid_config", {})
@@ -866,6 +873,23 @@ def get_pnl_monitor():
                             last_cfg_sync = now_t
                         except Exception:
                             pass
+
+                    # 1b. If standalone 24/7 Bot2Engine daemon is active, sync telemetry and let daemon execute
+                    telem = cur_state.get("engine_telemetry", {})
+                    if telem.get("alive") and (now_t - float(telem.get("last_tick", 0.0))) < 4.0:
+                        shared["active"] = True
+                        shared["daemon_active"] = True
+                        shared["last_pnl"] = telem.get("pnl", 0.0)
+                        shared["peak_pnl"] = telem.get("peak_pnl", 0.0)
+                        shared["trail_floor"] = telem.get("trail_floor", 0.0)
+                        shared["cycle_target"] = telem.get("cycle_target", tp_target)
+                        shared["manual_paused"] = telem.get("manual_paused", False)
+                        if telem.get("last_msg"):
+                            shared["last_msg"] = telem.get("last_msg")
+                        time.sleep(0.15)
+                        continue
+                    else:
+                        shared["daemon_active"] = False
 
                     brk = get_manual_broker()
                     positions = get_live_positions(brk)
@@ -1505,11 +1529,17 @@ if monitor.get("last_msg") and monitor["triggered"]:
     mon_cls = "monitor-trigger"
 
 # Dynamic status text
-if is_monitoring:
-    mon_status_badge = "🟢 ARMED & ACTIVE"
+is_daemon_live = bool(monitor.get("daemon_active", False))
+if is_daemon_live:
+    mon_status_badge = "🟢 24/7 ENGINE ACTIVE"
     badge_bg = "#052e16"
     badge_color = "#4ade80"
     badge_border = "#166534"
+elif is_monitoring:
+    mon_status_badge = "🟡 UI ARMED & ACTIVE"
+    badge_bg = "#451a03"
+    badge_color = "#f59e0b"
+    badge_border = "#78350f"
 else:
     mon_status_badge = "⏸️ PAUSED"
     badge_bg = "#27272a"
@@ -1900,12 +1930,17 @@ with config_col:
         is_paused = monitor.get("manual_paused", False)
         pause_label = "▶️ ARM MONITOR" if is_paused else "⏸️ PAUSE MONITOR"
         if st.button(pause_label, key="btn_toggle_mon", width='stretch'):
-            monitor["manual_paused"] = not is_paused
-            monitor["active"] = not monitor["manual_paused"]
-            st.session_state.mgd_action_msg = "✅ Monitor ARMED & READY" if not monitor["manual_paused"] else "⏸️ Monitor PAUSED"
+            new_paused = not is_paused
+            monitor["manual_paused"] = new_paused
+            monitor["active"] = not new_paused
+            state["engine_paused"] = new_paused
+            save_state(state)
+            st.session_state.mgd_action_msg = "✅ Monitor ARMED & READY" if not new_paused else "⏸️ Monitor PAUSED"
             st.rerun()
 
     if st.button("🚨  FLATTEN ALL (Force Close)", type="secondary", key="btn_flatten", width='stretch'):
+        state["manual_cmd_flatten"] = True
+        save_state(state)
         msg = flatten_all(brk, state)
         monitor["triggered"] = False
         monitor["active"] = True  # Keep monitor ready for next deployment

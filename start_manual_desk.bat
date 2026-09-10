@@ -11,7 +11,7 @@ echo.
 cd /d "%~dp0"
 
 if exist ".venv\Scripts\python.exe" (
-    .venv\Scripts\python.exe -m streamlit run manual_grid_desk.py ^
+    .venv\Scripts\python.exe -m streamlit run bot2_manual\panel.py ^
         --server.port 8502 ^
         --server.address 0.0.0.0 ^
         --server.headless true ^
@@ -20,7 +20,7 @@ if exist ".venv\Scripts\python.exe" (
         --theme.backgroundColor "#09090b" ^
         --theme.primaryColor "#c084fc"
 ) else (
-    python -m streamlit run manual_grid_desk.py ^
+    python -m streamlit run bot2_manual\panel.py ^
         --server.port 8502 ^
         --server.address 0.0.0.0 ^
         --server.headless true ^

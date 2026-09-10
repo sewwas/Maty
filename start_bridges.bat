@@ -75,7 +75,7 @@ echo     Bot #4 Bridge → http://127.0.0.1:8004/account
 echo.
 echo Start the Streamlit Dashboards:
 echo     Bot #1 (Auto Grid):    streamlit run app.py --server.port 8501
-echo     Bot #2 (Manual Desk):  streamlit run manual_grid_desk.py --server.port 8502
+echo     Bot #2 (Manual Desk):  streamlit run bot2_manual\panel.py --server.port 8502
 echo     Bot #3 (Trend Runner): streamlit run bot3_trend\panel.py --server.port 8503
 echo     Bot #4 (SMC Hunter):   streamlit run bot4_smc\panel.py --server.port 8504
 echo.
