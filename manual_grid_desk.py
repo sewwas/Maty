@@ -847,6 +847,8 @@ def get_pnl_monitor():
             last_cfg_sync = 0.0
             cur_state = load_state()
             cur_cfg = cur_state.get("grid_config", {})
+            tp_target = float(cur_cfg.get("target_profit", shared["target_profit"]))
+            sl_limit  = float(cur_cfg.get("stop_loss", shared["stop_loss"]))
 
             while True:
                 try:
@@ -876,6 +878,8 @@ def get_pnl_monitor():
                     if shared["active"] and not shared["manual_paused"]:
                         buy_positions = [p for p in positions if getattr(p, "type", 0) == 0]
                         sell_positions = [p for p in positions if getattr(p, "type", 0) == 1]
+                        n_buy = len(buy_positions)
+                        n_sell = len(sell_positions)
                         buy_pnl = sum(float(getattr(p, "profit", 0.0)) for p in buy_positions)
                         sell_pnl = sum(float(getattr(p, "profit", 0.0)) for p in sell_positions)
                         pnl = buy_pnl + sell_pnl
@@ -902,7 +906,6 @@ def get_pnl_monitor():
                                 single_tp = float(cur_cfg.get("single_tp", 1.50))
 
                                 # --- BUY Side Evaluation ---
-                                n_buy = len(buy_positions)
                                 if n_buy > 0:
                                     buy_peak = max(float(shared.get("buy_peak", 0.0) or 0.0), buy_pnl)
                                     shared["buy_peak"] = round(buy_peak, 2)
@@ -921,6 +924,7 @@ def get_pnl_monitor():
                                         logging.info(f"[Manual Grid Harvest] {shared['last_msg']}")
                                         positions = [p for p in positions if getattr(p, "type", 0) != 0]
                                         buy_positions = []
+                                        n_buy = 0
                                         buy_pnl = 0.0
                                         shared["buy_pnl"] = 0.0
                                     elif n_buy >= 2 and buy_peak >= (tp_target * 0.60):
@@ -934,13 +938,13 @@ def get_pnl_monitor():
                                             logging.info(f"[Manual Grid Harvest] {shared['last_msg']}")
                                             positions = [p for p in positions if getattr(p, "type", 0) != 0]
                                             buy_positions = []
+                                            n_buy = 0
                                             buy_pnl = 0.0
                                             shared["buy_pnl"] = 0.0
                                 else:
                                     shared["buy_peak"] = 0.0
 
                                 # --- SELL Side Evaluation ---
-                                n_sell = len(sell_positions)
                                 if n_sell > 0:
                                     sell_peak = max(float(shared.get("sell_peak", 0.0) or 0.0), sell_pnl)
                                     shared["sell_peak"] = round(sell_peak, 2)
@@ -959,6 +963,7 @@ def get_pnl_monitor():
                                         logging.info(f"[Manual Grid Harvest] {shared['last_msg']}")
                                         positions = [p for p in positions if getattr(p, "type", 0) != 1]
                                         sell_positions = []
+                                        n_sell = 0
                                         sell_pnl = 0.0
                                         shared["sell_pnl"] = 0.0
                                     elif n_sell >= 2 and sell_peak >= (tp_target * 0.60):
