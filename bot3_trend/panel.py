@@ -180,7 +180,10 @@ elif status.get("is_buy_locked"):
             engine.reset_circuit_breaker()
             st.rerun()
 elif not box_info.get("valid", False) and box_info.get("range_pips", 0) > 0:
-    st.info(f"⏸️ **ASIAN RANGE STANDBY**: {box_info.get('status')}. Trading is paused today because session volatility is outside optimal breakout parameters (15–120 pips).")
+    s_cfg = engine.config.get("strategy", {})
+    cfg_min_p = float(s_cfg.get("min_asian_range_pips", 15.0))
+    cfg_max_p = float(s_cfg.get("max_asian_range_pips", 120.0))
+    st.info(f"⏸️ **ASIAN RANGE STANDBY**: {box_info.get('status')}. Trading is paused today because session volatility is outside optimal breakout parameters ({cfg_min_p:.0f}–{cfg_max_p:.0f} pips).")
 
 # Top KPI Metric Cards
 m1, m2, m3, m4, m5 = st.columns(5)
