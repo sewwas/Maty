@@ -849,7 +849,7 @@ def realign_pending_orders(bot, current_price, timestamp):
         # Redeploy traps (it will safely handle max levels because current_open is already > 0)
         # Note: we pass force=False so it only fills the remaining grid_levels minus current_open.
         if hasattr(bot, "deploy_traps"):
-            bot.deploy_traps(current_price, timestamp, force=False)
+            bot.deploy_traps(current_price, timestamp, force=True)
 
 
 def process_engine_tick(self, previous_price: float, current_price: float, timestamp: float, bb_width: Optional[float] = None) -> Optional[dict]:
@@ -1015,18 +1015,33 @@ def process_engine_tick(self, previous_price: float, current_price: float, times
     if getattr(self, "_max_open_in_cycle", 0) > 0 and current_open == 0 and current_pending > 0:
         needs_refresh = True
         refresh_reason = "Position cycle completed"
-    else:
-        # Debounce AI trend bias flip (minimum 120s cooldown between trend flip redeployments)
-        curr_uni = str(getattr(self, "unidirectional_mode", getattr(self, "auto_universe_bias", ""))).upper()
-        last_uni = str(getattr(self, "_last_synced_uni_mode", curr_uni)).upper()
-        last_flip_time = getattr(self, "_last_trend_flip_deploy_time", 0.0)
-        if (curr_uni and last_uni and curr_uni != last_uni and 
-                current_open == 0 and current_pending > 0 and 
-                (timestamp - last_flip_time) >= 120.0):
-            needs_refresh = True
-            refresh_reason = f"Trend bias confirmed flip ({last_uni} -> {curr_uni})"
-            self._last_trend_flip_deploy_time = timestamp
-        self._last_synced_uni_mode = curr_uni
+    elif current_open == 0 and current_pending > 0:
+        # Check if pending orders are drifting or stale with NO open positions
+        sym_pend = [o for o in getattr(self.broker, "pending_orders", {}).values() if getattr(o, "symbol", sym_name) == sym_name]
+        if sym_pend:
+            min_dist_to_price = min(abs(float(getattr(o, "trigger_price", current_price) or current_price) - current_price) for o in sym_pend)
+            is_gold = any(x in sym_name for x in ["XAU", "GOLD", "PAXG"])
+            drift_thresh = max(4.50 if is_gold else (10.00 if "ETH" in sym_name else (150.00 if "BTC" in sym_name else current_price * 0.0015)), current_price * 0.0008)
+            now_ts = timestamp / 1000.0 if timestamp > 1e11 else timestamp
+            oldest_age = max((now_ts - (float(getattr(o, "timestamp", now_ts) or now_ts) / 1000.0 if float(getattr(o, "timestamp", now_ts) or now_ts) > 1e11 else float(getattr(o, "timestamp", now_ts) or now_ts))) for o in sym_pend)
+            
+            last_drift_realign = getattr(self, "_last_stale_drift_realign_time", 0.0)
+            if (min_dist_to_price > drift_thresh and oldest_age > 60.0 and (now_ts - last_drift_realign >= 60.0)) or (oldest_age > 300.0 and (now_ts - last_drift_realign >= 120.0)):
+                needs_refresh = True
+                refresh_reason = f"Stale pending traps drifted with 0 open positions (nearest dist: ${min_dist_to_price:.2f} > ${drift_thresh:.2f}, oldest age: {oldest_age:.0f}s)"
+                self._last_stale_drift_realign_time = now_ts
+        if not needs_refresh:
+            # Debounce AI trend bias flip (minimum 120s cooldown between trend flip redeployments)
+            curr_uni = str(getattr(self, "unidirectional_mode", getattr(self, "auto_universe_bias", ""))).upper()
+            last_uni = str(getattr(self, "_last_synced_uni_mode", curr_uni)).upper()
+            last_flip_time = getattr(self, "_last_trend_flip_deploy_time", 0.0)
+            if (curr_uni and last_uni and curr_uni != last_uni and 
+                    current_open == 0 and current_pending > 0 and 
+                    (timestamp - last_flip_time) >= 120.0):
+                needs_refresh = True
+                refresh_reason = f"Trend bias confirmed flip ({last_uni} -> {curr_uni})"
+                self._last_trend_flip_deploy_time = timestamp
+            self._last_synced_uni_mode = curr_uni
 
     if needs_refresh:
         if refresh_reason == "Position cycle completed":
@@ -1080,7 +1095,7 @@ def process_engine_tick(self, previous_price: float, current_price: float, times
         
         post_cd = max(getattr(self, "_post_loss_cooldown", 0.0), getattr(self, "_post_cycle_cooldown_until", 0.0))
         if timestamp >= post_cd:
-            self.deploy_traps(current_price, timestamp, force=False)
+            self.deploy_traps(current_price, timestamp, force=True)
         else:
             remaining_cd = int(post_cd - timestamp)
             print(f"[{self.symbol}] ⏳ [POST-CYCLE COOLDOWN] Grid refresh pending. Waiting {remaining_cd}s cooldown before deploying fresh grid.")

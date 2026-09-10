@@ -181,6 +181,9 @@ def get_global_vps_trading_engine_v4():
                     if m_data.get("running", False):
                         try:
                             m_data["bot"].process_live_tick()
+                            cur_p = getattr(m_data["bot"], "_last_seen_price", None)
+                            if cur_p and cur_p > 0:
+                                m_data["last_price"] = cur_p
                         except Exception as tick_err:
                             print(f"[{sym_code}] Background tick error: {tick_err}")
                 

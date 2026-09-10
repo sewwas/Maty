@@ -1,3 +1,4 @@
+import os
 import requests
 import pandas as pd
 import numpy as np
@@ -61,14 +62,19 @@ def get_live_price(symbol: str = "PAXGUSDT") -> Optional[float]:
         bridge_port = os.getenv("WINE_BRIDGE_PORT", "8001")
         b_sym = "XAUUSD" if any(x in sym for x in ["PAXG", "XAU", "GOLD"]) else sym.replace("USDT", "USD").replace("USDC", "USD")
         r_b = requests.get(f"http://127.0.0.1:{bridge_port}/symbol_info?symbol={b_sym}", timeout=0.8)
-        if r_b.status_code == 200:
-            d_b = r_b.json()
-            ask_b = float(d_b.get("ask", 0.0) or 0.0)
-            bid_b = float(d_b.get("bid", 0.0) or 0.0)
-            if ask_b > 0 and bid_b > 0:
-                p = float((ask_b + bid_b) / 2.0)
-                _LIVE_PRICE_CACHE[sym] = (p, now)
-                return p
+        d_b = r_b.json() if r_b.status_code == 200 else {}
+        ask_b = float(d_b.get("ask", 0.0) or 0.0)
+        bid_b = float(d_b.get("bid", 0.0) or 0.0)
+        if ask_b <= 0 or bid_b <= 0:
+            r_t = requests.get(f"http://127.0.0.1:{bridge_port}/tick?symbol={b_sym}", timeout=0.8)
+            if r_t.status_code == 200:
+                d_t = r_t.json()
+                ask_b = float(d_t.get("ask", 0.0) or 0.0)
+                bid_b = float(d_t.get("bid", 0.0) or 0.0)
+        if ask_b > 0 and bid_b > 0:
+            p = float((ask_b + bid_b) / 2.0)
+            _LIVE_PRICE_CACHE[sym] = (p, now)
+            return p
     except Exception:
         pass
 
