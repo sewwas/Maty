@@ -1796,12 +1796,19 @@ with tab_desk:
                 ex_px  = float(tr.get("exit_price",  tr.get("close_price",  tr.get("price", 0.0))))
                 fl_cnt = int(tr.get("fills_count",   tr.get("trades_count",  tr.get("size", 1))))
                 base_cid = max((int(c.get("cycle_id", 0)) for c in cycles_list if isinstance(c.get("cycle_id"), (int, float)) or str(c.get("cycle_id", "")).isdigit()), default=len(cycles_list))
-                deal_t = tr.get("type", tr.get("side", ""))
-                if not deal_t or deal_t not in ("BUY", "SELL"):
-                    if dep_px > 0 and ex_px > 0 and abs(pnl_tr) > 0.0001:
-                        deal_t = "BUY" if ((ex_px > dep_px and pnl_tr > 0) or (ex_px < dep_px and pnl_tr < 0)) else "SELL"
-                    else:
-                        deal_t = "BUY"
+                raw_deal_t = str(tr.get("type", tr.get("side", ""))).strip().upper()
+                if "BUY" in raw_deal_t and "SELL" not in raw_deal_t:
+                    deal_t = "BUY"
+                elif "SELL" in raw_deal_t and "BUY" not in raw_deal_t:
+                    deal_t = "SELL"
+                elif raw_deal_t in ("0", "BUY_LIMIT", "BUY_STOP"):
+                    deal_t = "BUY"
+                elif raw_deal_t in ("1", "SELL_LIMIT", "SELL_STOP"):
+                    deal_t = "SELL"
+                elif dep_px > 0 and ex_px > 0 and abs(pnl_tr) > 0.0001:
+                    deal_t = "BUY" if ((ex_px > dep_px and pnl_tr > 0) or (ex_px < dep_px and pnl_tr < 0)) else "SELL"
+                else:
+                    deal_t = "BUY"
                 is_cent_acc = tr.get("is_cent", any("C" in str(tr.get("symbol", sym_code)).upper() for _ in [1]))
                 raw_pnl_val = float(tr.get("raw_pnl", pnl_tr * (100.0 if is_cent_acc else 1.0)))
                 cycles_list.append({
@@ -1840,14 +1847,21 @@ with tab_desk:
             rec["exit_time"] = ts_val
 
             # Infer and preserve trade side
-            side_v = rec.get("type", rec.get("side", ""))
+            raw_side_v = str(rec.get("type", rec.get("side", ""))).strip().upper()
             en_p = float(rec.get("deploy_price", rec.get("entry_price", 0.0)))
             ex_p = float(rec.get("exit_price", 0.0))
-            if not side_v or side_v not in ("BUY", "SELL"):
-                if en_p > 0 and ex_p > 0 and abs(pnl_val) > 0.0001:
-                    side_v = "BUY" if ((ex_p > en_p and pnl_val > 0) or (ex_p < en_p and pnl_val < 0)) else "SELL"
-                else:
-                    side_v = "BUY"
+            if "BUY" in raw_side_v and "SELL" not in raw_side_v:
+                side_v = "BUY"
+            elif "SELL" in raw_side_v and "BUY" not in raw_side_v:
+                side_v = "SELL"
+            elif raw_side_v in ("0", "BUY_LIMIT", "BUY_STOP"):
+                side_v = "BUY"
+            elif raw_side_v in ("1", "SELL_LIMIT", "SELL_STOP"):
+                side_v = "SELL"
+            elif en_p > 0 and ex_p > 0 and abs(pnl_val) > 0.0001:
+                side_v = "BUY" if ((ex_p > en_p and pnl_val > 0) or (ex_p < en_p and pnl_val < 0)) else "SELL"
+            else:
+                side_v = "BUY"
             rec["type"] = side_v
             rec["side"] = side_v
 
@@ -2076,12 +2090,19 @@ with tab_desk:
                 delta_str = "-"
 
             # Trade Side (BUY/SELL)
-            side = str(c.get("type", c.get("side", ""))).upper()
-            if side not in ("BUY", "SELL"):
-                if dep_px > 0 and ex_px > 0 and abs(c_pnl) > 0.0001:
-                    side = "BUY" if ((ex_px > dep_px and c_pnl > 0) or (ex_px < dep_px and c_pnl < 0)) else "SELL"
-                else:
-                    side = "BUY"
+            raw_c_side = str(c.get("type", c.get("side", ""))).strip().upper()
+            if "BUY" in raw_c_side and "SELL" not in raw_c_side:
+                side = "BUY"
+            elif "SELL" in raw_c_side and "BUY" not in raw_c_side:
+                side = "SELL"
+            elif raw_c_side in ("0", "BUY_LIMIT", "BUY_STOP"):
+                side = "BUY"
+            elif raw_c_side in ("1", "SELL_LIMIT", "SELL_STOP"):
+                side = "SELL"
+            elif dep_px > 0 and ex_px > 0 and abs(c_pnl) > 0.0001:
+                side = "BUY" if ((ex_px > dep_px and c_pnl > 0) or (ex_px < dep_px and c_pnl < 0)) else "SELL"
+            else:
+                side = "BUY"
             side_badge = f"<span style='color:#22c55e;font-weight:700'>BUY 🟢</span>" if side == "BUY" else f"<span style='color:#ef4444;font-weight:700'>SELL 🔴</span>"
 
             # Duration format

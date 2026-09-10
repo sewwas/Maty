@@ -19,15 +19,24 @@ PYTHON_BIN=$(command -v python3 || echo "/usr/bin/python3")
 STREAMLIT_BIN=$(command -v streamlit || echo "/usr/local/bin/streamlit")
 
 echo "Stopping previous services..."
-pkill -f 'hub.py' 2>/dev/null || true
-pkill -f 'bot3_trend/trend_engine.py' 2>/dev/null || true
-pkill -f 'bot3_trend/panel.py' 2>/dev/null || true
-pkill -f 'manual_grid_desk.py' 2>/dev/null || true
-pkill -f 'streamlit run /root/Maty/app.py' 2>/dev/null || true
+pkill -9 -f 'app.py' 2>/dev/null || true
+pkill -9 -f 'hub.py' 2>/dev/null || true
+pkill -9 -f 'bot3_trend' 2>/dev/null || true
+pkill -9 -f 'manual_grid_desk.py' 2>/dev/null || true
+pkill -9 -f 'streamlit' 2>/dev/null || true
 
 # Force release any locked dashboard ports
-fuser -k 80/tcp 8501/tcp 8502/tcp 8503/tcp 2>/dev/null || true
+fuser -k -9 80/tcp 8501/tcp 8502/tcp 8503/tcp 2>/dev/null || true
 sleep 2
+
+# Wait until ports are actually free
+for port in 80 8501 8502 8503; do
+    while fuser $port/tcp 2>/dev/null; do
+        echo "Waiting for port $port to clear..."
+        fuser -k -9 $port/tcp 2>/dev/null || true
+        sleep 1
+    done
+done
 
 mkdir -p $APP_DIR/logs
 

@@ -148,9 +148,9 @@ def enforce_profit_lock(self, current_price: float, timestamp: float) -> int:
     actions = 0
     
     if is_gold:
-        breakeven_trigger_dist = max(18.00, atr * 2.5)
-        breakeven_buffer = max(2.50, min(current_price * 0.0006, atr * 0.6))
-        min_room_from_price = 10.00
+        breakeven_trigger_dist = max(6.00, atr * 1.8)
+        breakeven_buffer = max(1.00, min(current_price * 0.0003, 1.50))
+        min_room_from_price = 3.50
     elif "BTC" in sym_name:
         breakeven_trigger_dist = max(350.0, atr * 2.5)
         breakeven_buffer = max(50.0, atr * 0.5)
@@ -165,9 +165,9 @@ def enforce_profit_lock(self, current_price: float, timestamp: float) -> int:
         min_room_from_price = atr * 1.5
     
     for pos_id, pos_obj in list(self.broker.open_positions.items()):
-        # Minimum 45-second breathing room before moving SL to breakeven
+        # Minimum 30-second breathing room before moving SL to breakeven
         pos_open_time = float(getattr(pos_obj, "entry_time", getattr(pos_obj, "time_setup", 0.0)) or 0.0)
-        if pos_open_time > 0 and (timestamp - pos_open_time) < 45.0:
+        if pos_open_time > 0 and (timestamp - pos_open_time) < 30.0:
             continue
 
         pos_type = str(getattr(pos_obj, "type", "")).upper()
@@ -740,6 +740,11 @@ def check_target_profit(self, current_price: float, timestamp: float) -> Optiona
             print(f"[{self.symbol}] 🎯 [PROFIT TAKING EXIT] {exit_reason} met! Net PnL: ${total_pnl:+.2f} USD")
         except UnicodeEncodeError:
             print(f"[{self.symbol}] [PROFIT TAKING EXIT] {exit_reason} met! Net PnL: ${total_pnl:+.2f} USD")
+        _deal_side = "BUY"
+        if getattr(self.broker, "open_positions", None):
+            _types = [str(getattr(p, "type", "")).upper() for p in self.broker.open_positions.values()]
+            _deal_side = "SELL" if sum(1 for t in _types if "SELL" in t) >= sum(1 for t in _types if "BUY" in t) else "BUY"
+
         # 1. Close active market positions FIRST (lock in live profit before any slippage)
         if hasattr(self.broker, "close_all_positions"):
             try: self.broker.close_all_positions()
@@ -755,10 +760,14 @@ def check_target_profit(self, current_price: float, timestamp: float) -> Optiona
         self._max_open_in_cycle = 0
         self._basket_max_pnl = 0.0
         self._basket_peak_pnl = 0.0
+        self._cycle_start_time = 0.0
+        self._cycle_start_realized_pnl = 0.0
 
         summary = {
             "cycle_id": getattr(self, "current_cycle_id", 1),
             "total_pnl": round(total_pnl, 2),
+            "type": _deal_side,
+            "side": _deal_side,
             "exit_reason": exit_reason,
             "duration": round(duration, 1),
             "timestamp": timestamp,
@@ -1033,7 +1042,10 @@ def process_engine_tick(self, previous_price: float, current_price: float, times
                         is_duplicate = True
 
                 if not is_duplicate and abs(cycle_pnl) > 0.01:
-                    reason = "NATIVE_SL" if cycle_pnl < 0 else "NATIVE_TP"
+                    last_trade_reason = None
+                    if hasattr(self.broker, "closed_trades") and self.broker.closed_trades:
+                        last_trade_reason = self.broker.closed_trades[-1].get("exit_reason")
+                    reason = last_trade_reason or ("NATIVE_SL" if cycle_pnl < 0 else "NATIVE_TP")
                     dur = max(1.0, timestamp - getattr(self, "_cycle_start_time", timestamp))
                     self.record_trade_outcome(cycle_pnl, reason, dur, current_price)
                     self.current_cycle_id = getattr(self, "current_cycle_id", len(self.cycle_history)) + 1
@@ -1045,6 +1057,13 @@ def process_engine_tick(self, previous_price: float, current_price: float, times
                         self._post_cycle_cooldown_until = timestamp + 90.0
 
             self._cycle_recorded = False  # Reset for next cycle
+            self._max_open_in_cycle = 0
+            self._basket_max_pnl = 0.0
+            self._basket_peak_pnl = 0.0
+            self.max_floating_pnl = -float("inf")
+            self.in_runner_mode = False
+            self._cycle_start_time = 0.0
+            self._cycle_start_realized_pnl = 0.0
                 
         print(f"[{self.symbol}] 🔄 [GRID REFRESH] {refresh_reason}. Canceling {current_pending} pending orders to deploy fresh grid.")
         try:
@@ -1432,8 +1451,8 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
         rr_min_tp = min_sl_dist * 1.50
 
         if is_gold:
-            # On Gold / PAXG: Enforce minimum $10-$20 distance (0.25% - 0.5% move), at least 2.5x ATR
-            min_tp_dist = max(10.0, current_price * 0.0025, atr_5m * 2.5, calculated_dynamic_tp, rr_min_tp)
+            # On Gold / PAXG: Enforce minimum $16-$25 distance (at least 1.5x SL and 3.0x ATR for institutional R:R)
+            min_tp_dist = max(16.0, current_price * 0.0035, atr_5m * 3.0, calculated_dynamic_tp, rr_min_tp)
         elif "ETH" in sym_name:
             # On ETH: Enforce minimum $15-$25 distance (0.5% - 1.0% move), at least 3x ATR
             min_tp_dist = max(15.0, current_price * 0.0050, atr_5m * 3.0, calculated_dynamic_tp, rr_min_tp)
@@ -1747,6 +1766,10 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
             valid_sls = [c_px for (_, c_px, _) in merged_resistance if c_px >= px + min_sl_dist and c_px <= px + (min_sl_dist * 2.5)]
             if valid_sls:
                 smart_sl = max(valid_sls)
+            # Enforce Institutional R:R (TP distance >= 1.5x SL distance)
+            actual_sl_dist = abs(smart_sl - px)
+            if abs(px - smart_tp) < actual_sl_dist * 1.50:
+                smart_tp = round(px - (actual_sl_dist * 1.50), digits)
             try:
                 r = self.broker.place_order("SELL_LIMIT", px, sz, timestamp, tp=smart_tp, sl=smart_sl)
                 if r:
@@ -1771,6 +1794,10 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
             valid_sls = [c_px for (_, c_px, _) in merged_support if c_px <= px - min_sl_dist and c_px >= px - (min_sl_dist * 2.5)]
             if valid_sls:
                 smart_sl = min(valid_sls)
+            # Enforce Institutional R:R (TP distance >= 1.5x SL distance)
+            actual_sl_dist = abs(px - smart_sl)
+            if abs(smart_tp - px) < actual_sl_dist * 1.50:
+                smart_tp = round(px + (actual_sl_dist * 1.50), digits)
             try:
                 r = self.broker.place_order("BUY_LIMIT", px, sz, timestamp, tp=smart_tp, sl=smart_sl)
                 if r:
@@ -1793,6 +1820,10 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
             valid_sls = [c_px for (_, c_px, _) in merged_resistance if c_px >= px + min_sl_dist and c_px <= px + (min_sl_dist * 2.5)]
             if valid_sls:
                 smart_sl = max(valid_sls)
+            # Enforce Institutional R:R (TP distance >= 1.5x SL distance)
+            actual_sl_dist = abs(smart_sl - px)
+            if abs(px - smart_tp) < actual_sl_dist * 1.50:
+                smart_tp = round(px - (actual_sl_dist * 1.50), digits)
             try:
                 r = self.broker.place_order("SELL_STOP", px, sz, timestamp, tp=smart_tp, sl=smart_sl)
                 if r:
@@ -1815,6 +1846,10 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
             valid_sls = [c_px for (_, c_px, _) in merged_support if c_px <= px - min_sl_dist and c_px >= px - (min_sl_dist * 2.5)]
             if valid_sls:
                 smart_sl = min(valid_sls)
+            # Enforce Institutional R:R (TP distance >= 1.5x SL distance)
+            actual_sl_dist = abs(px - smart_sl)
+            if abs(smart_tp - px) < actual_sl_dist * 1.50:
+                smart_tp = round(px + (actual_sl_dist * 1.50), digits)
             try:
                 r = self.broker.place_order("BUY_STOP", px, sz, timestamp, tp=smart_tp, sl=smart_sl)
                 if r:
@@ -2058,9 +2093,21 @@ def record_trade_outcome(self, pnl: float, exit_reason: str, duration: float, ex
 
     # For entry, use deploy_px as the logical start of the basket
     entry_px = deploy_px
-    if exit_price <= 0.0 and hasattr(self.broker, "closed_trades") and self.broker.closed_trades:
+    trade_side = None
+    if hasattr(self.broker, "closed_trades") and self.broker.closed_trades:
         last_trade = self.broker.closed_trades[-1]
-        exit_price  = float(last_trade.get("exit_price",  0.0))
+        if exit_price <= 0.0:
+            exit_price = float(last_trade.get("exit_price", 0.0))
+        if entry_px <= 0.0 or entry_px == exit_price:
+            entry_px = float(last_trade.get("entry_price", last_trade.get("deploy_price", entry_px)))
+            deploy_px = entry_px
+        t_side = str(last_trade.get("type", last_trade.get("side", ""))).strip().upper()
+        if "BUY" in t_side and "SELL" not in t_side:
+            trade_side = "BUY"
+        elif "SELL" in t_side and "BUY" not in t_side:
+            trade_side = "SELL"
+        if exit_reason in ("NATIVE_SL", "NATIVE_TP") and last_trade.get("exit_reason"):
+            exit_reason = last_trade.get("exit_reason")
 
     is_cent_account = False
     acc_info = getattr(self.broker, "get_account_info", lambda: None)()
@@ -2086,9 +2133,13 @@ def record_trade_outcome(self, pnl: float, exit_reason: str, duration: float, ex
         cid = int(last_cid) + 1
         self.current_cycle_id = cid
 
-    trade_side = getattr(self, "grid_bias", getattr(self, "side", "BUY"))
-    if not trade_side or trade_side not in ("BUY", "SELL"):
-        if entry_px > 0 and exit_price > 0 and abs(real_pnl) > 0.0001:
+    if not trade_side:
+        cand_bias = getattr(self, "pending_order_side_mode", getattr(self, "grid_bias", getattr(self, "unidirectional_mode", "")))
+        if "BUY" in str(cand_bias).upper() and "SELL" not in str(cand_bias).upper():
+            trade_side = "BUY"
+        elif "SELL" in str(cand_bias).upper() and "BUY" not in str(cand_bias).upper():
+            trade_side = "SELL"
+        elif entry_px > 0 and exit_price > 0 and abs(real_pnl) > 0.0001:
             trade_side = "BUY" if ((exit_price > entry_px and real_pnl > 0) or (exit_price < entry_px and real_pnl < 0)) else "SELL"
         else:
             trade_side = "BUY"
@@ -2232,14 +2283,21 @@ def sync_cycle_history_from_trades(self):
             if not merged:
                 last_cid = max((c.get("cycle_id", 0) for c in self.cycle_history if isinstance(c.get("cycle_id"), (int, float))), default=0)
                 new_cid = int(last_cid) + 1
-                deal_t = item.get("type", "BUY")
+                raw_t = str(item.get("type", item.get("side", ""))).strip().upper()
                 en_p = float(item.get("deploy_price", item.get("entry_price", 0.0)))
                 ex_p = float(item.get("exit_price", item.get("close_price", 0.0)))
-                if not deal_t or deal_t not in ("BUY", "SELL"):
-                    if en_p > 0 and ex_p > 0 and abs(pnl_val) > 0.0001:
-                        deal_t = "BUY" if ((ex_p > en_p and pnl_val > 0) or (ex_p < en_p and pnl_val < 0)) else "SELL"
-                    else:
-                        deal_t = "BUY"
+                if "BUY" in raw_t and "SELL" not in raw_t:
+                    deal_t = "BUY"
+                elif "SELL" in raw_t and "BUY" not in raw_t:
+                    deal_t = "SELL"
+                elif raw_t in ("0", "BUY_LIMIT", "BUY_STOP"):
+                    deal_t = "BUY"
+                elif raw_t in ("1", "SELL_LIMIT", "SELL_STOP"):
+                    deal_t = "SELL"
+                elif en_p > 0 and ex_p > 0 and abs(pnl_val) > 0.0001:
+                    deal_t = "BUY" if ((ex_p > en_p and pnl_val > 0) or (ex_p < en_p and pnl_val < 0)) else "SELL"
+                else:
+                    deal_t = "BUY"
                 raw_val = float(item.get("raw_pnl", pnl_val * (100.0 if item.get("is_cent") else 1.0)))
                 self.cycle_history.append({
                     "cycle_id": new_cid,
@@ -2326,7 +2384,7 @@ def enforce_trend_aware_position_guard(self, current_price: float, timestamp: fl
     cent_multiplier = 100.0 if is_cent_account else 1.0
 
     if is_gold:
-        profit_lock_threshold = 1.00     # Gold: lock if price moved >= $1.00 in our favor
+        profit_lock_threshold = 4.00     # Gold: lock if price moved >= $4.00 in our favor (solid profit)
     elif "BTC" in sym_name:
         profit_lock_threshold = 40.0     # BTC: lock if price moved >= $40 in our favor
     elif "ETH" in sym_name:
@@ -2337,6 +2395,13 @@ def enforce_trend_aware_position_guard(self, current_price: float, timestamp: fl
     closed = 0
     for pos_id, pos_obj in list(self.broker.open_positions.items()):
         try:
+            # 🛡️ 30s Minimum Hold Guard: Never cut brand new positions on indicator flicker
+            pos_open_time = float(getattr(pos_obj, "open_time", getattr(pos_obj, "time_msc", getattr(pos_obj, "time", 0.0))) or 0.0)
+            if pos_open_time > 1e11:
+                pos_open_time /= 1000.0
+            if pos_open_time > 0 and (now_ts - pos_open_time) < 30.0:
+                continue
+
             pos_type  = str(getattr(pos_obj, "type", "")).upper()
             entry     = float(getattr(pos_obj, "entry_price",
                               getattr(pos_obj, "price_open", current_price)) or current_price)
@@ -2358,7 +2423,7 @@ def enforce_trend_aware_position_guard(self, current_price: float, timestamp: fl
 
             if trend_against:
                 # ❌ Trend has flipped against this position
-                # Only close if in solid profit (>= $2.00) to lock gains before a real reversal.
+                # Only close if in solid profit (>= profit_lock_threshold) to lock gains before a real reversal.
                 # Never cut positions at a loss on trend noise; let the strategy SL protect risk.
                 if floating_pnl >= profit_lock_threshold:
                     should_close = True
@@ -2644,12 +2709,16 @@ def align_basket_take_profits(self, current_price: float, timestamp: float) -> i
 
     # ── Calculate optimal TP distance per symbol ──
     # 🟢 100% CONFIRMED TREND: extend TP to 3.5×ATR to ride the full move for max profit.
-    # Unconfirmed: standard 2.0×ATR so TP still fills quickly.
+    # Unconfirmed: standard 2.5×ATR so TP maintains positive R:R vs SL (~10.95 pts on Gold).
     _is_100pct_tp = is_auto_100pct_confirmed(self)
-    _tp_atr_mult  = 3.5 if _is_100pct_tp else 2.0
+    _tp_atr_mult  = 3.5 if _is_100pct_tp else 2.5
 
-    optimal_tp_dist = atr_5m * _tp_atr_mult
-    min_tp_dist = max(current_price * 0.001, atr_5m * 0.8)
+    if is_gold:
+        min_tp_dist = max(16.0, atr_5m * 2.5, current_price * 0.0035)
+        optimal_tp_dist = max(min_tp_dist, atr_5m * _tp_atr_mult)
+    else:
+        min_tp_dist = max(current_price * 0.002, atr_5m * 1.5)
+        optimal_tp_dist = max(min_tp_dist, atr_5m * _tp_atr_mult)
 
     buy_positions = []
     sell_positions = []
@@ -2674,7 +2743,7 @@ def align_basket_take_profits(self, current_price: float, timestamp: float) -> i
             if _is_100pct_tp:
                 best_tp = max(atr_tp, structure_tp)  # EXPAND: Use furthest target to ride the breakout!
             else:
-                best_tp = min(atr_tp, structure_tp)  # TIGHTEN: Use closer target to secure fill
+                best_tp = max(structure_tp, current_price + min_tp_dist)
         else:
             best_tp = atr_tp
 
@@ -2695,9 +2764,9 @@ def align_basket_take_profits(self, current_price: float, timestamp: float) -> i
                     target_tp = max(cur_tp, best_tp)
                 else:
                     # Fix #10: STANDARD TIGHTEN — only tighten if new TP is meaningfully
-                    # closer (> 0.5×ATR). Prevents noisy ATR fluctuations from repeatedly
-                    # overwriting structural TPs and causing premature exits.
-                    if cur_tp > 0 and (cur_tp - best_tp) > (atr_5m * 0.5):
+                    # closer (> 0.5×ATR) AND still satisfies min_tp_dist. Prevents noisy ATR fluctuations
+                    # from overwriting structural TPs down to unprofitable levels.
+                    if (best_tp - current_price) >= min_tp_dist and (cur_tp - best_tp) > (atr_5m * 0.5):
                         target_tp = best_tp
                     else:
                         target_tp = cur_tp  # Keep existing TP — structural level still valid
@@ -2730,7 +2799,7 @@ def align_basket_take_profits(self, current_price: float, timestamp: float) -> i
             if _is_100pct_tp:
                 best_tp = min(atr_tp, structure_tp)  # EXPAND: Use furthest target (lowest price)
             else:
-                best_tp = max(atr_tp, structure_tp)  # TIGHTEN: Use closest target
+                best_tp = min(structure_tp, current_price - min_tp_dist)
         else:
             best_tp = atr_tp
 
@@ -2750,9 +2819,8 @@ def align_basket_take_profits(self, current_price: float, timestamp: float) -> i
                     target_tp = min(cur_tp, best_tp)
                 else:
                     # Fix #10: STANDARD TIGHTEN — only tighten if new TP is meaningfully
-                    # closer (> 0.5×ATR). Prevents noisy ATR fluctuations from repeatedly
-                    # overwriting structural TPs and causing premature exits.
-                    if cur_tp > 0 and (best_tp - cur_tp) > (atr_5m * 0.5):
+                    # closer (> 0.5×ATR) AND still satisfies min_tp_dist.
+                    if (current_price - best_tp) >= min_tp_dist and (best_tp - cur_tp) > (atr_5m * 0.5):
                         target_tp = best_tp
                     else:
                         target_tp = cur_tp  # Keep existing TP — structural level still valid
@@ -2871,15 +2939,38 @@ def enforce_global_hedged_recovery(self, current_price: float, timestamp: float)
     types = [str(getattr(p, "type", "")).upper() for p in _open_pos.values()]
     has_buys = any("BUY" in t for t in types)
     has_sells = any("SELL" in t for t in types)
-    
+    is_hedged = has_buys and has_sells
+
+    # Single positions are managed by check_target_profit, trailing SL, and structural TP/SL.
+    # Basket recovery only operates when there are multiple positions or actively hedged positions.
+    if len(_open_pos) < 2 and not is_hedged:
+        return False
+
+    now_ts = timestamp or time.time()
+    # Guard: Do not execute instant basket harvest if the newest position was opened < 30s ago
+    newest_open_time = 0.0
+    for p in _open_pos.values():
+        ot = float(getattr(p, "open_time", getattr(p, "time_msc", getattr(p, "time", 0.0))) or 0.0)
+        if ot > 1e11:
+            ot /= 1000.0
+        if ot > newest_open_time:
+            newest_open_time = ot
+
     total_pnl = sum(float(getattr(p, "profit", 0.0)) for p in _open_pos.values())
     total_volume = sum(float(getattr(p, "volume", 0.01)) for p in _open_pos.values())
+
+    # If any position is younger than 30s, do not harvest unless in massive profit
+    if newest_open_time > 0 and (now_ts - newest_open_time) < 30.0 and total_pnl < 15.0:
+        return False
+
+    # Basket harvest MUST ONLY close in profit
+    if total_pnl <= 0.0:
+        return False
     
     buy_vol = sum(float(getattr(p, "volume", 0)) for p in _open_pos.values() if "BUY" in str(getattr(p, "type", "")).upper())
     sell_vol = sum(float(getattr(p, "volume", 0)) for p in _open_pos.values() if "SELL" in str(getattr(p, "type", "")).upper())
     current_trend = str(getattr(self, "unidirectional_mode", getattr(self, "auto_universe_bias", ""))).upper()
     
-    is_hedged = has_buys and has_sells
     is_counter_trend = False
     if buy_vol > sell_vol and current_trend == "BEARISH":
         is_counter_trend = True
@@ -2917,6 +3008,11 @@ def enforce_global_hedged_recovery(self, current_price: float, timestamp: float)
                 self.broker.cancel_all_orders(symbol=sym_name)
             self.deployed = False
             self._basket_max_pnl = 0.0
+            self._basket_peak_pnl = 0.0
+            self._max_open_in_cycle = 0
+            self._cycle_start_time = 0.0
+            self._cycle_start_realized_pnl = 0.0
+            self.in_runner_mode = False
             return True
             
     return False
