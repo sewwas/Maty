@@ -103,7 +103,6 @@ def load_state() -> dict:
             "target_profit": 100.0,
             "stop_loss": 500.0,
             "auto_redeploy": True,
-            "anti_bleed_shield": True,
             "side_harvest": True,
             "single_tp": 1.50,
         },
@@ -906,48 +905,7 @@ def get_pnl_monitor():
                             in_startup_grace = (now_t - monitor_start_time) < 3.0
                             gap_step = float(cur_cfg.get("gap_value", 2.0))
 
-                            # ── 1. Anti-Bleed Shield: Auto-Prune Stranded Counter-Trend Orders ──
-                            if cur_cfg.get("anti_bleed_shield", True):
-                                max_opp_dist = max(3.0, gap_step * 1.5)
-                                max_single_loss = max(15.0 if acct_curr == "USC" else 1.0, tp_target * 0.35)
-
-                                # If BUYs are active and profitable, prune any stranded SELLs bleeding out
-                                if len(buy_positions) >= 1 and buy_pnl > 0:
-                                    for sp in list(sell_positions):
-                                        s_in = float(getattr(sp, "price_open", 0.0))
-                                        s_pnl = float(getattr(sp, "profit", 0.0))
-                                        s_curr = float(getattr(sp, "price_current", 0.0))
-                                        if (s_curr - s_in >= max_opp_dist) or (s_pnl <= -max_single_loss):
-                                            s_tick = getattr(sp, "ticket", 0)
-                                            s_vol = getattr(sp, "volume", 0.0)
-                                            if close_single_ticket(brk, s_tick, s_vol):
-                                                cancel_pending_by_side(brk, "SELL")
-                                                shared["last_msg"] = f"🛡️ Anti-Bleed Shield: Pruned stranded SELL #{s_tick} ({curr_sym}{s_pnl:+.2f})! Opp pendings purged."
-                                                logging.info(f"[Manual Grid Shield] {shared['last_msg']}")
-                                                positions = [p for p in positions if getattr(p, "ticket", 0) != s_tick]
-                                                sell_positions = [p for p in sell_positions if getattr(p, "ticket", 0) != s_tick]
-                                                sell_pnl = sum(float(getattr(p, "profit", 0.0)) for p in sell_positions)
-                                                shared["sell_pnl"] = round(sell_pnl, 2)
-
-                                # If SELLs are active and profitable, prune any stranded BUYs bleeding out
-                                if len(sell_positions) >= 1 and sell_pnl > 0:
-                                    for bp in list(buy_positions):
-                                        b_in = float(getattr(bp, "price_open", 0.0))
-                                        b_pnl = float(getattr(bp, "profit", 0.0))
-                                        b_curr = float(getattr(bp, "price_current", 0.0))
-                                        if (b_in - b_curr >= max_opp_dist) or (b_pnl <= -max_single_loss):
-                                            b_tick = getattr(bp, "ticket", 0)
-                                            b_vol = getattr(bp, "volume", 0.0)
-                                            if close_single_ticket(brk, b_tick, b_vol):
-                                                cancel_pending_by_side(brk, "BUY")
-                                                shared["last_msg"] = f"🛡️ Anti-Bleed Shield: Pruned stranded BUY #{b_tick} ({curr_sym}{b_pnl:+.2f})! Opp pendings purged."
-                                                logging.info(f"[Manual Grid Shield] {shared['last_msg']}")
-                                                positions = [p for p in positions if getattr(p, "ticket", 0) != b_tick]
-                                                buy_positions = [p for p in buy_positions if getattr(p, "ticket", 0) != b_tick]
-                                                buy_pnl = sum(float(getattr(p, "profit", 0.0)) for p in buy_positions)
-                                                shared["buy_pnl"] = round(buy_pnl, 2)
-
-                            # ── 2. Side-Isolated Harvest (Single-Fill 1.50 TP vs Multi-Fill Target Profit) ──
+                            # ── 1. Side-Isolated Harvest (Single-Fill 1.50 TP vs Multi-Fill Target Profit) ──
                             if cur_cfg.get("side_harvest", True) and not shared["triggered"]:
                                 single_tp = float(cur_cfg.get("single_tp", 1.50))
 
@@ -1656,7 +1614,6 @@ s_pnl_val = float(monitor.get("sell_pnl", 0.0) or 0.0)
 b_color = "#4ade80" if b_pnl_val > 0 else ("#f87171" if b_pnl_val < 0 else "#a1a1aa")
 s_color = "#4ade80" if s_pnl_val > 0 else ("#f87171" if s_pnl_val < 0 else "#a1a1aa")
 
-shield_active = bool(cfg.get("anti_bleed_shield", True))
 side_active = bool(cfg.get("side_harvest", True))
 cur_single_tp = float(cfg.get("single_tp", 1.50))
 
@@ -1665,9 +1622,6 @@ st.markdown(f'''
     <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
         <span style="background:{badge_bg};color:{badge_color};border:1px solid {badge_border};font-size:0.75rem;font-weight:700;padding:4px 10px;border-radius:6px;font-family:'JetBrains Mono',monospace;">
             {mon_status_badge}
-        </span>
-        <span style="background:#1e1b4b;color:#a5b4fc;border:1px solid #3730a3;font-size:0.72rem;font-weight:600;padding:3px 8px;border-radius:5px;">
-            {'🛡️ Anti-Bleed: ON' if shield_active else '🛡️ Shield: OFF'}
         </span>
         <span style="background:#064e3b;color:#6ee7b7;border:1px solid #047857;font-size:0.72rem;font-weight:600;padding:3px 8px;border-radius:5px;">
             {'🎯 Side-Harvest: ON' if side_active else '🎯 Side-Harvest: OFF'}
@@ -1855,7 +1809,7 @@ with config_col:
             key="mgd_sl",
         )
 
-    col_t1, col_t2, col_t3 = st.columns(3)
+    col_t1, col_t2 = st.columns(2)
     with col_t1:
         side_harvest = st.toggle(
             "🎯 Side Harvest",
@@ -1864,13 +1818,6 @@ with config_col:
             key="mgd_side_harvest",
         )
     with col_t2:
-        anti_bleed_shield = st.toggle(
-            "🛡️ Anti-Bleed Shield",
-            value=bool(cfg.get("anti_bleed_shield", True)),
-            help="Prunes stranded counter-trend positions and purges opposite pending traps before they can bleed profit.",
-            key="mgd_anti_bleed",
-        )
-    with col_t3:
         auto_redeploy = st.toggle(
             "🔄 Auto-Deploy on TP",
             value=bool(cfg.get("auto_redeploy", True)),
@@ -1881,7 +1828,6 @@ with config_col:
     # Persist config changes
     new_cfg_vals = {
         "auto_redeploy":      auto_redeploy,
-        "anti_bleed_shield":  anti_bleed_shield,
         "side_harvest":       side_harvest,
         "single_tp":          single_tp,
         "center_mode":        center_mode,
