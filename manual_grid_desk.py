@@ -100,8 +100,8 @@ def load_state() -> dict:
             "lot_size": 0.01,
             "flat_levels": 3,
             "lot_mult": 1.0,
-            "target_profit": 5.0,
-            "stop_loss": 25.0,
+            "target_profit": 100.0,
+            "stop_loss": 500.0,
             "auto_redeploy": True,
         },
         "trade_history": [],
@@ -802,8 +802,8 @@ def get_pnl_monitor():
 
         shared = {
             "active":        True,
-            "target_profit": 5.0,
-            "stop_loss":     25.0,
+            "target_profit": 10.0,
+            "stop_loss":     500.0,
             "last_pnl":      0.0,
             "peak_pnl":      0.0,
             "trail_floor":   0.0,
@@ -814,6 +814,7 @@ def get_pnl_monitor():
         }
 
         def _monitor_loop():
+            monitor_start_time = time.time()
             last_cfg_sync = 0.0
             cur_state = load_state()
             cur_cfg = cur_state.get("grid_config", {})
@@ -852,6 +853,25 @@ def get_pnl_monitor():
                             acc_i = get_account_summary(brk)
                             acct_curr = acc_i.get("currency", "USD")
                             curr_sym = "¢" if acct_curr == "USC" else "$"
+
+                            # Auto-protect against Cent-account scale mismatch:
+                            # If this is a Cent account (USC) and stop_loss was loaded as <= 50.0 (old USD default),
+                            # immediately upgrade it to 500.0 USC ($5.00) so a restart never liquidates the desk!
+                            if acct_curr == "USC" and sl_limit <= 50.0:
+                                sl_limit = 500.0
+                                shared["stop_loss"] = 500.0
+                                cur_cfg["stop_loss"] = 500.0
+                                if tp_target <= 10.0:
+                                    tp_target = 100.0
+                                    shared["target_profit"] = 100.0
+                                    cur_cfg["target_profit"] = 100.0
+                                cur_state["grid_config"] = cur_cfg
+                                save_state(cur_state)
+
+                            # Startup Grace Period:
+                            # Wait at least 3.0s after monitor launch before executing any Stop Loss liquidation
+                            # to allow config sync, MT5 ticks, and UI session state to fully stabilize.
+                            in_startup_grace = (now_t - monitor_start_time) < 3.0
 
                             # Track peak floating PnL (in account currency units matching UI config)
                             current_peak = max(float(shared.get("peak_pnl", 0.0) or 0.0), pnl)
@@ -926,22 +946,25 @@ def get_pnl_monitor():
                                     shared["active"] = True
 
                             elif pnl <= -abs(sl_limit) and not shared["triggered"]:
-                                shared["triggered"] = True
-                                try:
-                                    msg = f"🛑 STOP LOSS HIT: {curr_sym}{pnl:+.2f} {acct_curr} (SL: -{curr_sym}{sl_limit:.2f} {acct_curr}) — Auto-Flattening 100% all orders!"
-                                    logging.info(f"[Manual Grid Monitor] {msg}")
+                                if in_startup_grace:
+                                    logging.info(f"[Manual Grid Monitor] Startup grace period active ({(now_t - monitor_start_time):.1f}s) — deferring SL check (PnL: {pnl:.2f}, SL: -{sl_limit:.2f})")
+                                else:
+                                    shared["triggered"] = True
+                                    try:
+                                        msg = f"🛑 STOP LOSS HIT: {curr_sym}{pnl:+.2f} {acct_curr} (SL: -{curr_sym}{sl_limit:.2f} {acct_curr}) — Auto-Flattening 100% all orders!"
+                                        logging.info(f"[Manual Grid Monitor] {msg}")
 
-                                    flat_res = flatten_all(brk, cur_state)
+                                        flat_res = flatten_all(brk, cur_state)
 
-                                    shared["last_msg"] = f"🛑 STOP LOSS HIT {curr_sym}{pnl:+.2f} {acct_curr}! {flat_res} · Desk is READY for next grid."
+                                        shared["last_msg"] = f"🛑 STOP LOSS HIT {curr_sym}{pnl:+.2f} {acct_curr}! {flat_res} · Desk is READY for next grid."
 
-                                    shared["peak_pnl"] = 0.0
-                                    shared["trail_floor"] = 0.0
-                                    time.sleep(1.0)
-                                finally:
-                                    shared["triggered"] = False
-                                    if not shared.get("auto_rearm", True):
-                                        shared["active"] = False
+                                        shared["peak_pnl"] = 0.0
+                                        shared["trail_floor"] = 0.0
+                                        time.sleep(1.0)
+                                    finally:
+                                        shared["triggered"] = False
+                                        if not shared.get("auto_rearm", True):
+                                            shared["active"] = False
                             else:
                                 if not exit_action:
                                     shared["triggered"] = False
@@ -1345,6 +1368,17 @@ pending_ord   = get_live_pending(brk)
 acc           = get_account_summary(brk)
 cfg           = state["grid_config"]
 
+# Auto-migrate legacy USD defaults if active account is Cent (USC)
+if acc.get("currency", "USD") == "USC":
+    if float(cfg.get("stop_loss", 0.0)) <= 50.0:
+        cfg["stop_loss"] = 500.0
+        state["grid_config"]["stop_loss"] = 500.0
+        save_state(state)
+    if float(cfg.get("target_profit", 0.0)) <= 10.0:
+        cfg["target_profit"] = 100.0
+        state["grid_config"]["target_profit"] = 100.0
+        save_state(state)
+
 # Update monitor's target/SL from current config
 monitor["target_profit"] = cfg["target_profit"]
 monitor["stop_loss"]     = cfg["stop_loss"]
@@ -1457,8 +1491,8 @@ else:
     badge_color = "#a1a1aa"
     badge_border = "#3f3f46"
 
-cur_tp = float(cfg.get("target_profit", 5.0))
-cur_sl = float(cfg.get("stop_loss", 25.0))
+cur_tp = float(cfg.get("target_profit", 100.0 if display_curr == "USC" else 5.0))
+cur_sl = float(cfg.get("stop_loss", 500.0 if display_curr == "USC" else 25.0))
 curr_sym = "¢" if display_curr == "USC" else "$"
 dist_tp = max(0.0, cur_tp - floating_pnl)
 trail_floor_val = float(monitor.get("trail_floor", 0.0) or 0.0)
@@ -1605,14 +1639,25 @@ with config_col:
     if curr_label == "USC":
         st.caption("🪙 **Cent Account Active:** Targets & limits are in **US Cents (USC)**. 100 USC = $1.00 USD. E.g. 150 USC ≈ $1.50 USD.")
 
+    default_tp = 100.0 if curr_label == "USC" else 5.0
+    default_sl = 500.0 if curr_label == "USC" else 25.0
+    val_tp = float(cfg.get("target_profit", default_tp))
+    val_sl = float(cfg.get("stop_loss", default_sl))
+    if curr_label == "USC" and val_sl <= 50.0:
+        val_sl = 500.0
+        cfg["stop_loss"] = 500.0
+    if curr_label == "USC" and val_tp <= 10.0:
+        val_tp = 100.0
+        cfg["target_profit"] = 100.0
+
     col_r1, col_r2 = st.columns(2)
     with col_r1:
         target_profit = st.number_input(
             f"Target Profit ({curr_unit})",
-            value=float(cfg.get("target_profit", 5.0)),
+            value=val_tp,
             min_value=0.10,
             max_value=100000.0,
-            step=0.50,
+            step=5.0 if curr_label == "USC" else 0.50,
             format="%.2f",
             help=f"Auto-flatten all when total floating P&L reaches this profit in {curr_label}.",
             key="mgd_tp",
@@ -1620,10 +1665,10 @@ with config_col:
     with col_r2:
         stop_loss = st.number_input(
             f"Stop Loss ({curr_unit})",
-            value=float(cfg.get("stop_loss", 25.0)),
+            value=val_sl,
             min_value=0.10,
             max_value=100000.0,
-            step=1.0,
+            step=10.0 if curr_label == "USC" else 1.0,
             format="%.2f",
             help=f"Auto-flatten all when total floating loss hits this amount in {curr_label}.",
             key="mgd_sl",
@@ -1668,6 +1713,8 @@ with config_col:
     # If user changed any input, auto-save state to disk immediately so background thread gets it instantly!
     if has_cfg_changed:
         save_state(state)
+
+    st.caption(f"💾 **Active Risk Controls Persisted:** Target: `+{curr_unit}{target_profit:.2f}` | Stop Loss: `-{curr_unit}{stop_loss:.2f}` (Auto-saved to disk)")
 
 
     # ── Preview levels for chart ──────────────────────────────────────────────

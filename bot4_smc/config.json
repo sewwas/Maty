@@ -1,0 +1,22 @@
+{
+  "symbol": "XAUUSD",
+  "magic_number": 998874,
+  "bridge_url": "http://127.0.0.1:8004",
+  "risk_pct_per_trade": 1.0,
+  "max_daily_risk_pct": 3.0,
+  "max_trades_per_day": 4,
+  "auto_trading": true,
+  "strategy": {
+    "lookback_candles": 120,
+    "min_wick_ratio": 0.38,
+    "fvg_min_pips": 3.5,
+    "tp1_rr": 1.5,
+    "tp1_close_pct": 50.0,
+    "tp2_rr": 3.5,
+    "be_trigger_rr": 1.0,
+    "be_offset_points": 30,
+    "atr_period": 14,
+    "atr_sl_multiplier": 1.2,
+    "trailing_stop_active": true
+  }
+}

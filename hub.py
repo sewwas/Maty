@@ -57,6 +57,18 @@ BOT_CONFIGS = [
         "server": "Exness-MT5Real36",
         "color": "#a855f7",
         "icon": "📈"
+    },
+    {
+        "id": 4,
+        "name": "Bot #4 — SMC Liquidity Hunter",
+        "tag": "SMC REVERSAL",
+        "strategy": "Liquidity Sweep & FVG Reversal (Turtle Soup)",
+        "bridge_port": 8004,
+        "panel_port": 8504,
+        "default_acc": 257515248,
+        "server": "Exness-MT5Real36",
+        "color": "#10b981",
+        "icon": "🎯"
     }
 ]
 
@@ -822,6 +834,7 @@ PORTAL_HTML = """<!DOCTYPE html>
         .icon-bot1 { background: rgba(56, 189, 248, 0.15); border: 1px solid rgba(56, 189, 248, 0.25); }
         .icon-bot2 { background: rgba(245, 158, 11, 0.15); border: 1px solid rgba(245, 158, 11, 0.25); }
         .icon-bot3 { background: rgba(168, 85, 247, 0.15); border: 1px solid rgba(168, 85, 247, 0.25); }
+        .icon-bot4 { background: rgba(16, 185, 129, 0.15); border: 1px solid rgba(16, 185, 129, 0.25); }
 
         .port-tag {
             font-family: 'JetBrains Mono', monospace;
@@ -889,6 +902,8 @@ PORTAL_HTML = """<!DOCTYPE html>
         .btn-gold:hover { background: #b45309; }
         .btn-purple { background: #9333ea; color: #ffffff; }
         .btn-purple:hover { background: #7e22ce; }
+        .btn-emerald { background: #059669; color: #ffffff; }
+        .btn-emerald:hover { background: #047857; }
 
         .notice-box {
             background: rgba(30, 41, 59, 0.6);
@@ -1050,14 +1065,16 @@ PORTAL_HTML = """<!DOCTYPE html>
                 </div>
             </div>
             <div class="bar-container" id="distribution-bar">
-                <div class="bar-slice" style="width: 33.3%; background: #38bdf8;"></div>
-                <div class="bar-slice" style="width: 33.3%; background: #f59e0b;"></div>
-                <div class="bar-slice" style="width: 33.4%; background: #a855f7;"></div>
+                <div class="bar-slice" style="width: 25%; background: #38bdf8;"></div>
+                <div class="bar-slice" style="width: 25%; background: #f59e0b;"></div>
+                <div class="bar-slice" style="width: 25%; background: #a855f7;"></div>
+                <div class="bar-slice" style="width: 25%; background: #10b981;"></div>
             </div>
             <div class="bar-legend" id="distribution-legend">
                 <div class="legend-item"><div class="legend-color" style="background: #38bdf8;"></div> Bot #1 Auto Grid: --</div>
                 <div class="legend-item"><div class="legend-color" style="background: #f59e0b;"></div> Bot #2 Manual Desk: --</div>
                 <div class="legend-item"><div class="legend-color" style="background: #a855f7;"></div> Bot #3 Trend Runner: --</div>
+                <div class="legend-item"><div class="legend-color" style="background: #10b981;"></div> Bot #4 SMC Hunter: --</div>
             </div>
         </div>
 
@@ -1164,10 +1181,42 @@ PORTAL_HTML = """<!DOCTYPE html>
                 </div>
                 <a id="link-bot3" href="http://" class="btn-launch btn-purple">Open Trend Panel &rarr;</a>
             </div>
+
+            <!-- Bot 4: SMC Liquidity Hunter -->
+            <div class="card">
+                <div>
+                    <div class="card-header">
+                        <div class="card-icon icon-bot4">🎯</div>
+                        <div class="port-tag">PORT 8504</div>
+                    </div>
+                    <div class="card-title">Bot #4 — SMC Liquidity Hunter</div>
+                    <div class="card-desc">Institutional liquidity sweep & FVG reversal engine fading fakeouts at session highs/lows.</div>
+                    
+                    <div class="card-stats-grid">
+                        <div>
+                            <div class="card-stat-label">Live Equity</div>
+                            <div class="card-stat-value" id="b4-equity">--</div>
+                        </div>
+                        <div>
+                            <div class="card-stat-label">Floating P&L</div>
+                            <div class="card-stat-value" id="b4-floating">--</div>
+                        </div>
+                        <div>
+                            <div class="card-stat-label" id="b4-pnl-label">30D Realized</div>
+                            <div class="card-stat-value" id="b4-pnl">--</div>
+                        </div>
+                        <div>
+                            <div class="card-stat-label">Win Rate</div>
+                            <div class="card-stat-value val-neutral" id="b4-winrate">--</div>
+                        </div>
+                    </div>
+                </div>
+                <a id="link-bot4" href="http://" class="btn-launch btn-emerald">Open SMC Panel &rarr;</a>
+            </div>
         </div>
 
         <div class="notice-box">
-            💡 <strong>Connection & Profit Tracking:</strong> All metrics are fetched live from MetaTrader 5 terminal bridges under Wine prefixes (<code>8001</code>, <code>8002</code>, <code>8003</code>). To access individual bot dashboards, connect via <code>http://</code> (not <code>https://</code>). Auto-refresh is synchronized every 5 seconds.
+            💡 <strong>Connection & Profit Tracking:</strong> All metrics are fetched live from MetaTrader 5 terminal bridges under Wine prefixes (<code>8001</code>, <code>8002</code>, <code>8003</code>, <code>8004</code>). To access individual bot dashboards, connect via <code>http://</code> (not <code>https://</code>). Auto-refresh is synchronized every 5 seconds.
         </div>
     </div>
 
@@ -1186,6 +1235,7 @@ PORTAL_HTML = """<!DOCTYPE html>
         document.getElementById("link-bot1").href = "http://" + host + ":8501";
         document.getElementById("link-bot2").href = "http://" + host + ":8502";
         document.getElementById("link-bot3").href = "http://" + host + ":8503";
+        document.getElementById("link-bot4").href = "http://" + host + ":8504";
 
         function setUnit(unit) {
             currentUnit = unit;
@@ -1210,7 +1260,7 @@ PORTAL_HTML = """<!DOCTYPE html>
             document.getElementById("kpi-pnl-label").innerText = labels[period];
             document.getElementById("th-period-pnl").innerText = labels[period];
             
-            ['b1', 'b2', 'b3'].forEach(id => {
+            ['b1', 'b2', 'b3', 'b4'].forEach(id => {
                 const el = document.getElementById(id + "-pnl-label");
                 if (el) el.innerText = period.toUpperCase() + " Realized";
             });
@@ -1326,7 +1376,8 @@ PORTAL_HTML = """<!DOCTYPE html>
                 const btnColors = {
                     1: "btn-blue",
                     2: "btn-gold",
-                    3: "btn-purple"
+                    3: "btn-purple",
+                    4: "btn-emerald"
                 };
 
                 tr.innerHTML = `

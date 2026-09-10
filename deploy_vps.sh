@@ -22,15 +22,16 @@ echo "Stopping previous services..."
 pkill -9 -f 'app.py' 2>/dev/null || true
 pkill -9 -f 'hub.py' 2>/dev/null || true
 pkill -9 -f 'bot3_trend' 2>/dev/null || true
+pkill -9 -f 'bot4_smc' 2>/dev/null || true
 pkill -9 -f 'manual_grid_desk.py' 2>/dev/null || true
 pkill -9 -f 'streamlit' 2>/dev/null || true
 
 # Force release any locked dashboard ports
-fuser -k -9 80/tcp 8501/tcp 8502/tcp 8503/tcp 2>/dev/null || true
+fuser -k -9 80/tcp 8501/tcp 8502/tcp 8503/tcp 8504/tcp 2>/dev/null || true
 sleep 2
 
 # Wait until ports are actually free
-for port in 80 8501 8502 8503; do
+for port in 80 8501 8502 8503 8504; do
     while fuser $port/tcp 2>/dev/null; do
         echo "Waiting for port $port to clear..."
         fuser -k -9 $port/tcp 2>/dev/null || true
@@ -60,13 +61,21 @@ echo "Starting Bot #3 Web Dashboard (Port 8503)..."
 nohup $STREAMLIT_BIN run /root/Maty/bot3_trend/panel.py --server.port 8503 --server.address 0.0.0.0 --server.headless true > /root/Maty/logs/streamlit_8503.log 2>&1 &
 echo "Bot #3 Panel started."
 
+echo "Starting Bot #4 SMC Engine..."
+nohup $PYTHON_BIN /root/Maty/bot4_smc/smc_engine.py > /root/Maty/logs/bot4_engine.log 2>&1 &
+echo "Bot #4 Engine started."
+
+echo "Starting Bot #4 Web Dashboard (Port 8504)..."
+nohup $STREAMLIT_BIN run /root/Maty/bot4_smc/panel.py --server.port 8504 --server.address 0.0.0.0 --server.headless true > /root/Maty/logs/streamlit_8504.log 2>&1 &
+echo "Bot #4 Panel started."
+
 sleep 3
 
 echo ""
 echo "=================================================================="
 echo "  HEALTH & PORT VERIFICATION"
 echo "=================================================================="
-ss -tulnp | grep -E '80 |8001|8002|8003|8501|8502|8503'
+ss -tulnp | grep -E '80 |8001|8002|8003|8004|8501|8502|8503|8504'
 
 echo ""
 echo "SUCCESS: VPS Updated and all bot services are running!"

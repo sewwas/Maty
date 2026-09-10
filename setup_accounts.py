@@ -97,7 +97,8 @@ def check_conflict():
     cfgs = {
         1: load_existing(8001),
         2: load_existing(8002),
-        3: load_existing(8003)
+        3: load_existing(8003),
+        4: load_existing(8004)
     }
     seen = {}
     for b_num, cfg in cfgs.items():
@@ -119,6 +120,7 @@ if __name__ == "__main__":
     setup_account(1, 8001)
     setup_account(2, 8002)
     setup_account(3, 8003)
+    setup_account(4, 8004)
 
     if not check_conflict():
         sys.exit(1)
@@ -135,4 +137,5 @@ if __name__ == "__main__":
     print("    Bot #1 (Auto Grid):     http://localhost:8501")
     print("    Bot #2 (Manual Desk):   http://localhost:8502")
     print("    Bot #3 (Trend Runner):  http://localhost:8503")
+    print("    Bot #4 (SMC Hunter):    http://localhost:8504")
     print("══════════════════════════════════════════════════════════\n")
