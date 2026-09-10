@@ -103,6 +103,9 @@ def load_state() -> dict:
             "target_profit": 100.0,
             "stop_loss": 500.0,
             "auto_redeploy": True,
+            "anti_bleed_shield": True,
+            "side_harvest": True,
+            "breakeven_sl": True,
         },
         "trade_history": [],
         "deployed": False,
@@ -554,6 +557,19 @@ def close_single_ticket(brk: MT5Broker, ticket: int, volume: float) -> bool:
         return False
 
 
+def set_position_sl_tp(ticket: int, sl: float = 0.0, tp: float = 0.0) -> bool:
+    """Sets hard broker-side Stop Loss and Take Profit on MT5 ticket."""
+    try:
+        r = _FAST_SESSION.get(
+            f"http://127.0.0.1:{MT5_BRIDGE_PORT}/modify_sl_tp?ticket={ticket}&sl={sl:.2f}&tp={tp:.2f}",
+            timeout=2.5
+        )
+        return bool(r.status_code == 200 and r.json().get("success"))
+    except Exception as e:
+        logging.warning(f"set_position_sl_tp error ticket {ticket}: {e}")
+        return False
+
+
 def _pos_priority_key(p):
     """
     Dual-Priority Key:
@@ -576,6 +592,7 @@ def close_positions_by_side(brk: MT5Broker, side: str) -> str:
     PRIORITY: Closes BIGGEST PROFIT & BIGGEST LOT FIRST!
     """
     closed = 0
+    total_pnl = 0.0
     target_side = 0 if side.upper() == "BUY" else 1
     
     # 1. Atomic bulk close for this side via bridge
@@ -583,7 +600,9 @@ def close_positions_by_side(brk: MT5Broker, side: str) -> str:
         try:
             r = _FAST_SESSION.get(f"http://127.0.0.1:{MT5_BRIDGE_PORT}/close_all?magic={m_id}&side={side.upper()}", timeout=4.0)
             if r.status_code == 200 and r.json().get("success"):
-                closed += int(r.json().get("closed_count", 0))
+                d = r.json()
+                closed += int(d.get("closed_count", 0))
+                total_pnl += float(d.get("total_pnl", 0.0))
         except Exception:
             pass
 
@@ -614,6 +633,26 @@ def close_positions_by_side(brk: MT5Broker, side: str) -> str:
                 brk.open_positions.pop(pid, None)
     except Exception:
         pass
+
+    # Record trade history & audit state
+    if closed > 0:
+        try:
+            acc_i = get_account_summary(brk)
+            curr_sym = "¢" if acc_i.get("currency") == "USC" else "$"
+            ts_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            fresh_state = load_state()
+            record = {
+                "time": ts_str,
+                "action": f"HARVEST {side.upper()}",
+                "count": closed,
+                "total_pnl": round(total_pnl, 2),
+                "audit": [f"Harvested {closed} {side.upper()} order(s): {curr_sym}{total_pnl:+.2f}"],
+            }
+            fresh_state["trade_history"].insert(0, record)
+            fresh_state["trade_history"] = fresh_state["trade_history"][:MAX_HISTORY_ROWS]
+            save_state(fresh_state)
+        except Exception:
+            pass
 
     return f"⚡ Closed {closed} {side} position(s) (highest profit & largest lot first)."
 
@@ -801,21 +840,26 @@ def get_pnl_monitor():
             return _MONITOR_SHARED
 
         shared = {
-            "active":        True,
-            "target_profit": 10.0,
-            "stop_loss":     500.0,
-            "last_pnl":      0.0,
-            "peak_pnl":      0.0,
-            "trail_floor":   0.0,
-            "last_msg":      "",
-            "triggered":     False,
-            "manual_paused": False,
-            "auto_rearm":    True,
+            "active":            True,
+            "target_profit":     25.0,
+            "stop_loss":         500.0,
+            "last_pnl":          0.0,
+            "peak_pnl":          0.0,
+            "trail_floor":       0.0,
+            "buy_pnl":           0.0,
+            "sell_pnl":          0.0,
+            "buy_peak":          0.0,
+            "sell_peak":         0.0,
+            "last_msg":          "",
+            "triggered":         False,
+            "manual_paused":     False,
+            "auto_rearm":        True,
         }
 
         def _monitor_loop():
             monitor_start_time = time.time()
             last_cfg_sync = 0.0
+            last_be_check = 0.0
             cur_state = load_state()
             cur_cfg = cur_state.get("grid_config", {})
 
@@ -845,7 +889,14 @@ def get_pnl_monitor():
                         shared["active"] = True
 
                     if shared["active"] and not shared["manual_paused"]:
-                        pnl = sum(float(getattr(p, "profit", 0.0)) for p in positions)
+                        buy_positions = [p for p in positions if getattr(p, "type", 0) == 0]
+                        sell_positions = [p for p in positions if getattr(p, "type", 0) == 1]
+                        buy_pnl = sum(float(getattr(p, "profit", 0.0)) for p in buy_positions)
+                        sell_pnl = sum(float(getattr(p, "profit", 0.0)) for p in sell_positions)
+                        pnl = buy_pnl + sell_pnl
+                        
+                        shared["buy_pnl"] = round(buy_pnl, 2)
+                        shared["sell_pnl"] = round(sell_pnl, 2)
                         shared["last_pnl"] = round(pnl, 2)
 
                         # Only evaluate profit targets when there are ACTUAL open positions
@@ -855,40 +906,156 @@ def get_pnl_monitor():
                             curr_sym = "¢" if acct_curr == "USC" else "$"
 
                             # Auto-protect against Cent-account scale mismatch:
-                            # If this is a Cent account (USC) and stop_loss was loaded as <= 50.0 (old USD default),
-                            # immediately upgrade it to 500.0 USC ($5.00) so a restart never liquidates the desk!
                             if acct_curr == "USC" and sl_limit <= 50.0:
                                 sl_limit = 500.0
                                 shared["stop_loss"] = 500.0
                                 cur_cfg["stop_loss"] = 500.0
                                 if tp_target <= 10.0:
-                                    tp_target = 100.0
-                                    shared["target_profit"] = 100.0
-                                    cur_cfg["target_profit"] = 100.0
+                                    tp_target = 25.0
+                                    shared["target_profit"] = 25.0
+                                    cur_cfg["target_profit"] = 25.0
                                 cur_state["grid_config"] = cur_cfg
                                 save_state(cur_state)
 
-                            # Startup Grace Period:
-                            # Wait at least 3.0s after monitor launch before executing any Stop Loss liquidation
-                            # to allow config sync, MT5 ticks, and UI session state to fully stabilize.
                             in_startup_grace = (now_t - monitor_start_time) < 3.0
+                            gap_step = float(cur_cfg.get("gap_value", 2.0))
 
-                            # Track peak floating PnL (in account currency units matching UI config)
+                            # ── 1. Individual Breakeven SL Auto-Lock (Zero-Loss Guarantee) ──
+                            if cur_cfg.get("breakeven_sl", True) and (now_t - last_be_check >= 0.5):
+                                last_be_check = now_t
+                                for p in positions:
+                                    t_id = getattr(p, "ticket", 0)
+                                    p_side = getattr(p, "type", 0)
+                                    p_open = float(getattr(p, "price_open", 0.0))
+                                    p_curr = float(getattr(p, "price_current", 0.0))
+                                    p_sl = float(getattr(p, "sl", 0.0) or 0.0)
+                                    if p_side == 0:  # BUY
+                                        if (p_curr - p_open) >= max(1.50, gap_step * 0.75):
+                                            be_target = round(p_open + 0.15, 2)
+                                            if p_sl < be_target:
+                                                set_position_sl_tp(t_id, sl=be_target)
+                                    elif p_side == 1:  # SELL
+                                        if (p_open - p_curr) >= max(1.50, gap_step * 0.75):
+                                            be_target = round(p_open - 0.15, 2)
+                                            if p_sl <= 0.0 or p_sl > be_target:
+                                                set_position_sl_tp(t_id, sl=be_target)
+
+                            # ── 2. Anti-Bleed Shield: Auto-Prune Stranded Counter-Trend Orders ──
+                            if cur_cfg.get("anti_bleed_shield", True):
+                                max_opp_dist = max(3.0, gap_step * 1.5)
+                                max_single_loss = max(15.0 if acct_curr == "USC" else 1.0, tp_target * 0.35)
+
+                                # If BUYs are active and profitable, prune any stranded SELLs bleeding out
+                                if len(buy_positions) >= 1 and buy_pnl > 0:
+                                    for sp in list(sell_positions):
+                                        s_in = float(getattr(sp, "price_open", 0.0))
+                                        s_pnl = float(getattr(sp, "profit", 0.0))
+                                        s_curr = float(getattr(sp, "price_current", 0.0))
+                                        if (s_curr - s_in >= max_opp_dist) or (s_pnl <= -max_single_loss):
+                                            s_tick = getattr(sp, "ticket", 0)
+                                            s_vol = getattr(sp, "volume", 0.0)
+                                            if close_single_ticket(brk, s_tick, s_vol):
+                                                cancel_pending_by_side(brk, "SELL")
+                                                shared["last_msg"] = f"🛡️ Anti-Bleed Shield: Pruned stranded SELL #{s_tick} ({curr_sym}{s_pnl:+.2f})! Opp pendings purged."
+                                                logging.info(f"[Manual Grid Shield] {shared['last_msg']}")
+                                                positions = [p for p in positions if getattr(p, "ticket", 0) != s_tick]
+                                                sell_positions = [p for p in sell_positions if getattr(p, "ticket", 0) != s_tick]
+                                                sell_pnl = sum(float(getattr(p, "profit", 0.0)) for p in sell_positions)
+                                                shared["sell_pnl"] = round(sell_pnl, 2)
+
+                                # If SELLs are active and profitable, prune any stranded BUYs bleeding out
+                                if len(sell_positions) >= 1 and sell_pnl > 0:
+                                    for bp in list(buy_positions):
+                                        b_in = float(getattr(bp, "price_open", 0.0))
+                                        b_pnl = float(getattr(bp, "profit", 0.0))
+                                        b_curr = float(getattr(bp, "price_current", 0.0))
+                                        if (b_in - b_curr >= max_opp_dist) or (b_pnl <= -max_single_loss):
+                                            b_tick = getattr(bp, "ticket", 0)
+                                            b_vol = getattr(bp, "volume", 0.0)
+                                            if close_single_ticket(brk, b_tick, b_vol):
+                                                cancel_pending_by_side(brk, "BUY")
+                                                shared["last_msg"] = f"🛡️ Anti-Bleed Shield: Pruned stranded BUY #{b_tick} ({curr_sym}{b_pnl:+.2f})! Opp pendings purged."
+                                                logging.info(f"[Manual Grid Shield] {shared['last_msg']}")
+                                                positions = [p for p in positions if getattr(p, "ticket", 0) != b_tick]
+                                                buy_positions = [p for p in buy_positions if getattr(p, "ticket", 0) != b_tick]
+                                                buy_pnl = sum(float(getattr(p, "profit", 0.0)) for p in buy_positions)
+                                                shared["buy_pnl"] = round(buy_pnl, 2)
+
+                            # ── 3. Side-Isolated Harvest (Bank Winners Independently) ──
+                            if cur_cfg.get("side_harvest", True) and not shared["triggered"]:
+                                # --- BUY Side Evaluation ---
+                                if len(buy_positions) > 0:
+                                    buy_peak = max(float(shared.get("buy_peak", 0.0) or 0.0), buy_pnl)
+                                    shared["buy_peak"] = round(buy_peak, 2)
+                                    if buy_pnl >= tp_target:
+                                        close_positions_by_side(brk, "BUY")
+                                        cancel_pending_by_side(brk, "BUY")
+                                        shared["buy_peak"] = 0.0
+                                        shared["last_msg"] = f"🎯 BUY HARVEST: +{curr_sym}{buy_pnl:.2f} {acct_curr} Banked! (Winners closed independently, zero bleed)."
+                                        logging.info(f"[Manual Grid Harvest] {shared['last_msg']}")
+                                        positions = [p for p in positions if getattr(p, "type", 0) != 0]
+                                        buy_positions = []
+                                        buy_pnl = 0.0
+                                        shared["buy_pnl"] = 0.0
+                                    elif buy_peak >= (tp_target * 0.60):
+                                        min_floor = max(0.20 if acct_curr != "USC" else 1.0, tp_target * 0.20)
+                                        buy_floor = min(max(min_floor, buy_peak * 0.50), buy_peak * 0.80)
+                                        if buy_pnl <= buy_floor and buy_pnl > 0:
+                                            close_positions_by_side(brk, "BUY")
+                                            cancel_pending_by_side(brk, "BUY")
+                                            shared["buy_peak"] = 0.0
+                                            shared["last_msg"] = f"🛡️ BUY TRAIL LOCK: +{curr_sym}{buy_pnl:.2f} {acct_curr} Secured! (Peak was {curr_sym}{buy_peak:.2f})."
+                                            logging.info(f"[Manual Grid Harvest] {shared['last_msg']}")
+                                            positions = [p for p in positions if getattr(p, "type", 0) != 0]
+                                            buy_positions = []
+                                            buy_pnl = 0.0
+                                            shared["buy_pnl"] = 0.0
+                                else:
+                                    shared["buy_peak"] = 0.0
+
+                                # --- SELL Side Evaluation ---
+                                if len(sell_positions) > 0:
+                                    sell_peak = max(float(shared.get("sell_peak", 0.0) or 0.0), sell_pnl)
+                                    shared["sell_peak"] = round(sell_peak, 2)
+                                    if sell_pnl >= tp_target:
+                                        close_positions_by_side(brk, "SELL")
+                                        cancel_pending_by_side(brk, "SELL")
+                                        shared["sell_peak"] = 0.0
+                                        shared["last_msg"] = f"🎯 SELL HARVEST: +{curr_sym}{sell_pnl:.2f} {acct_curr} Banked! (Winners closed independently, zero bleed)."
+                                        logging.info(f"[Manual Grid Harvest] {shared['last_msg']}")
+                                        positions = [p for p in positions if getattr(p, "type", 0) != 1]
+                                        sell_positions = []
+                                        sell_pnl = 0.0
+                                        shared["sell_pnl"] = 0.0
+                                    elif sell_peak >= (tp_target * 0.60):
+                                        min_floor = max(0.20 if acct_curr != "USC" else 1.0, tp_target * 0.20)
+                                        sell_floor = min(max(min_floor, sell_peak * 0.50), sell_peak * 0.80)
+                                        if sell_pnl <= sell_floor and sell_pnl > 0:
+                                            close_positions_by_side(brk, "SELL")
+                                            cancel_pending_by_side(brk, "SELL")
+                                            shared["sell_peak"] = 0.0
+                                            shared["last_msg"] = f"🛡️ SELL TRAIL LOCK: +{curr_sym}{sell_pnl:.2f} {acct_curr} Secured! (Peak was {curr_sym}{sell_peak:.2f})."
+                                            logging.info(f"[Manual Grid Harvest] {shared['last_msg']}")
+                                            positions = [p for p in positions if getattr(p, "type", 0) != 1]
+                                            sell_positions = []
+                                            sell_pnl = 0.0
+                                            shared["sell_pnl"] = 0.0
+                                else:
+                                    shared["sell_peak"] = 0.0
+
+                            # ── 4. Full Basket Liquidation / Stop Loss Check ──
+                            pnl = sum(float(getattr(p, "profit", 0.0)) for p in positions)
+                            shared["last_pnl"] = round(pnl, 2)
                             current_peak = max(float(shared.get("peak_pnl", 0.0) or 0.0), pnl)
                             shared["peak_pnl"] = round(current_peak, 2)
 
                             exit_action = None
                             exit_msg = ""
 
-                            # ── 1. Target Profit Hit (Strict Full Target) ──
                             if pnl >= tp_target and not shared["triggered"]:
                                 exit_action = "FULL_TP"
                                 exit_msg = f"🎯 TARGET PROFIT HIT: {curr_sym}{pnl:+.2f} {acct_curr} (Target: +{curr_sym}{tp_target:.2f} {acct_curr}) — 100% ASAP Closing ALL Active & Pending Orders!"
-
-                            # ── 2. Basket Trailing Profit Lock (Guaranteed Profit Retention) ──
-                            # If basket reached >= 60% of target, lock trailing profit floor at 50% of peak
                             elif current_peak >= (tp_target * 0.60) and not shared["triggered"]:
-                                # Floor protects 50% of peak; capped at 80% of peak so it NEVER triggers immediately upon touching peak
                                 min_floor = max(0.10 if acct_curr != "USC" else 0.50, tp_target * 0.20)
                                 trailing_floor = min(max(min_floor, current_peak * 0.50), current_peak * 0.80)
                                 shared["trail_floor"] = round(trailing_floor, 2)
@@ -902,15 +1069,11 @@ def get_pnl_monitor():
                                 shared["triggered"] = True
                                 try:
                                     logging.info(f"[Manual Grid Monitor] {exit_msg}")
-
-                                    # 1. 100% Zero-Latency Close All Active Positions + Cancel All Pending Orders ASAP
                                     flat_res = flatten_all(brk, cur_state)
-
-                                    # 2. Check Auto-Redeploy New Grid setting
                                     auto_redeploy = cur_cfg.get("auto_redeploy", True)
                                     action_label = "🎯 TARGET HIT" if exit_action == "FULL_TP" else "🛡️ TRAIL LOCK"
                                     if auto_redeploy:
-                                        time.sleep(0.15)  # Brief MT5 order settlement buffer
+                                        time.sleep(0.15)
                                         new_center = get_mt5_live_price(brk)
                                         new_levels = compute_grid_levels(
                                             new_center,
@@ -925,11 +1088,13 @@ def get_pnl_monitor():
                                         n_mult = float(cur_cfg.get("lot_mult", 1.0))
                                         n_flat = int(cur_cfg.get("flat_levels", 3))
                                         placed, errors = deploy_grid(brk, new_levels, n_lot, n_mult, n_flat)
+                                        
+                                        fresh_s = load_state()
                                         if placed > 0:
-                                            cur_state["deployed"] = True
-                                            cur_state["grid_levels"] = new_levels
-                                            cur_state["grid_config"]["center_price"] = new_center
-                                            save_state(cur_state)
+                                            fresh_s["deployed"] = True
+                                            fresh_s["grid_levels"] = new_levels
+                                            fresh_s["grid_config"]["center_price"] = new_center
+                                            save_state(fresh_s)
                                             shared["last_msg"] = f"{action_label} {curr_sym}{pnl:+.2f} {acct_curr}! 100% Closed. 🚀 Auto-deployed NEW GRID ({placed} orders) centered at ${new_center:,.2f}"
                                             logging.info(f"[Manual Grid Monitor] {shared['last_msg']}")
                                         else:
@@ -937,9 +1102,10 @@ def get_pnl_monitor():
                                     else:
                                         shared["last_msg"] = f"{action_label} {curr_sym}{pnl:+.2f} {acct_curr}! {flat_res} · Desk is READY for next grid."
 
-                                    # Re-arm monitor for the new cycle
                                     shared["peak_pnl"] = 0.0
                                     shared["trail_floor"] = 0.0
+                                    shared["buy_peak"] = 0.0
+                                    shared["sell_peak"] = 0.0
                                     time.sleep(1.0)
                                 finally:
                                     shared["triggered"] = False
@@ -953,13 +1119,12 @@ def get_pnl_monitor():
                                     try:
                                         msg = f"🛑 STOP LOSS HIT: {curr_sym}{pnl:+.2f} {acct_curr} (SL: -{curr_sym}{sl_limit:.2f} {acct_curr}) — Auto-Flattening 100% all orders!"
                                         logging.info(f"[Manual Grid Monitor] {msg}")
-
                                         flat_res = flatten_all(brk, cur_state)
-
                                         shared["last_msg"] = f"🛑 STOP LOSS HIT {curr_sym}{pnl:+.2f} {acct_curr}! {flat_res} · Desk is READY for next grid."
-
                                         shared["peak_pnl"] = 0.0
                                         shared["trail_floor"] = 0.0
+                                        shared["buy_peak"] = 0.0
+                                        shared["sell_peak"] = 0.0
                                         time.sleep(1.0)
                                     finally:
                                         shared["triggered"] = False
@@ -971,11 +1136,15 @@ def get_pnl_monitor():
                         else:
                             shared["peak_pnl"] = 0.0
                             shared["trail_floor"] = 0.0
+                            shared["buy_peak"] = 0.0
+                            shared["sell_peak"] = 0.0
                             shared["triggered"] = False
                     else:
                         shared["last_pnl"] = 0.0
                         shared["peak_pnl"] = 0.0
                         shared["trail_floor"] = 0.0
+                        shared["buy_peak"] = 0.0
+                        shared["sell_peak"] = 0.0
                 except Exception as e:
                     logging.warning(f"[PnL Monitor Error] {e}")
 
@@ -1491,29 +1660,46 @@ else:
     badge_color = "#a1a1aa"
     badge_border = "#3f3f46"
 
-cur_tp = float(cfg.get("target_profit", 100.0 if display_curr == "USC" else 5.0))
+cur_tp = float(cfg.get("target_profit", 25.0 if display_curr == "USC" else 5.0))
 cur_sl = float(cfg.get("stop_loss", 500.0 if display_curr == "USC" else 25.0))
 curr_sym = "¢" if display_curr == "USC" else "$"
 dist_tp = max(0.0, cur_tp - floating_pnl)
 trail_floor_val = float(monitor.get("trail_floor", 0.0) or 0.0)
-trail_info_html = f'<span style="color:#71717a;">|</span><span style="color:#fbbf24;">Trail Floor: <b>+{curr_sym}{trail_floor_val:.2f} {display_curr}</b></span>' if trail_floor_val > 0 else ''
+trail_info_html = f'<span style="color:#71717a;">|</span><span style="color:#fbbf24;">Trail: <b>+{curr_sym}{trail_floor_val:.2f}</b></span>' if trail_floor_val > 0 else ''
+
+b_pnl_val = float(monitor.get("buy_pnl", 0.0) or 0.0)
+s_pnl_val = float(monitor.get("sell_pnl", 0.0) or 0.0)
+b_color = "#4ade80" if b_pnl_val > 0 else ("#f87171" if b_pnl_val < 0 else "#a1a1aa")
+s_color = "#4ade80" if s_pnl_val > 0 else ("#f87171" if s_pnl_val < 0 else "#a1a1aa")
+
+shield_active = bool(cfg.get("anti_bleed_shield", True))
+side_active = bool(cfg.get("side_harvest", True))
+be_active = bool(cfg.get("breakeven_sl", True))
 
 st.markdown(f'''
 <div style="background:#141417;border:1px solid #27272a;border-radius:10px;padding:12px 16px;margin:10px 0 14px 0;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;">
-    <div style="display:flex;align-items:center;gap:12px;">
+    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
         <span style="background:{badge_bg};color:{badge_color};border:1px solid {badge_border};font-size:0.75rem;font-weight:700;padding:4px 10px;border-radius:6px;font-family:'JetBrains Mono',monospace;">
             {mon_status_badge}
         </span>
-        <div style="font-size:0.82rem;color:#d4d4d8;">
-            <b>Target Profit:</b> <span style="color:#4ade80;font-family:'JetBrains Mono',monospace;font-weight:700;">+{curr_sym}{cur_tp:.2f} {display_curr}</span> · 
-            <b>Stop Loss:</b> <span style="color:#f87171;font-family:'JetBrains Mono',monospace;font-weight:700;">-{curr_sym}{cur_sl:.2f} {display_curr}</span> · 
-            <b>Cycle:</b> <span style="color:#38bdf8;font-weight:600;">{'🔄 Auto-Deploy ON' if cfg.get('auto_redeploy', True) else '⏹️ Auto-Deploy OFF'}</span>
-        </div>
+        <span style="background:#1e1b4b;color:#a5b4fc;border:1px solid #3730a3;font-size:0.72rem;font-weight:600;padding:3px 8px;border-radius:5px;">
+            {'🛡️ Anti-Bleed: ON' if shield_active else '🛡️ Shield: OFF'}
+        </span>
+        <span style="background:#064e3b;color:#6ee7b7;border:1px solid #047857;font-size:0.72rem;font-weight:600;padding:3px 8px;border-radius:5px;">
+            {'🎯 Side-Harvest: ON' if side_active else '🎯 Side-Harvest: OFF'}
+        </span>
+        <span style="background:#3b0764;color:#d8b4fe;border:1px solid #6b21a8;font-size:0.72rem;font-weight:600;padding:3px 8px;border-radius:5px;">
+            {'🔒 BE-Lock: ON' if be_active else '🔒 BE: OFF'}
+        </span>
     </div>
-    <div style="display:flex;align-items:center;gap:14px;font-size:0.78rem;font-family:'JetBrains Mono',monospace;">
-        <span style="color:#a1a1aa;">Floating: <b style="color:{'#4ade80' if floating_pnl >= 0 else '#f87171'}">{curr_sym}{floating_pnl:+.2f} {display_curr}</b></span>
+    <div style="display:flex;align-items:center;gap:12px;font-size:0.78rem;font-family:'JetBrains Mono',monospace;flex-wrap:wrap;">
+        <span>BUY: <b style="color:{b_color}">{curr_sym}{b_pnl_val:+.2f}</b></span>
         <span style="color:#71717a;">|</span>
-        <span style="color:#a1a1aa;">To Target: <b style="color:#60a5fa">{curr_sym}{dist_tp:.2f} {display_curr}</b></span>
+        <span>SELL: <b style="color:{s_color}">{curr_sym}{s_pnl_val:+.2f}</b></span>
+        <span style="color:#71717a;">|</span>
+        <span style="color:#a1a1aa;">Net: <b style="color:{'#4ade80' if floating_pnl >= 0 else '#f87171'}">{curr_sym}{floating_pnl:+.2f} {display_curr}</b></span>
+        <span style="color:#71717a;">|</span>
+        <span style="color:#a1a1aa;">Target: <b style="color:#60a5fa">+{curr_sym}{cur_tp:.2f}</b></span>
         {trail_info_html}
     </div>
 </div>
@@ -1674,16 +1860,40 @@ with config_col:
             key="mgd_sl",
         )
 
-    auto_redeploy = st.toggle(
-        "🔄 Auto-Deploy New Grid on Target Profit",
-        value=bool(cfg.get("auto_redeploy", True)),
-        help="When Target Profit is reached: automatically closes all active positions, cancels all pending orders, and immediately deploys a brand new grid centered on live market price.",
-        key="mgd_auto_redeploy",
-    )
+    col_t1, col_t2 = st.columns(2)
+    with col_t1:
+        side_harvest = st.toggle(
+            "🎯 Independent Side Harvest",
+            value=bool(cfg.get("side_harvest", True)),
+            help="Take profit on BUY or SELL independently as soon as it wins, banking cash immediately without liquidating the opposite side.",
+            key="mgd_side_harvest",
+        )
+        anti_bleed_shield = st.toggle(
+            "🛡️ Anti-Bleed Shield",
+            value=bool(cfg.get("anti_bleed_shield", True)),
+            help="Prunes stranded counter-trend positions and purges opposite pending traps before they can bleed profit.",
+            key="mgd_anti_bleed",
+        )
+    with col_t2:
+        breakeven_sl = st.toggle(
+            "🔒 Breakeven SL Protection",
+            value=bool(cfg.get("breakeven_sl", True)),
+            help="Auto-advances broker-side Stop Loss to entry price (+spread buffer) as soon as an order reaches profit. Never lets a winner turn into a loss.",
+            key="mgd_breakeven_sl",
+        )
+        auto_redeploy = st.toggle(
+            "🔄 Auto-Deploy New Grid on TP",
+            value=bool(cfg.get("auto_redeploy", True)),
+            help="When Target Profit is reached: automatically closes active positions, cancels pending orders, and redeploys a fresh grid.",
+            key="mgd_auto_redeploy",
+        )
 
     # Persist config changes
     new_cfg_vals = {
         "auto_redeploy":      auto_redeploy,
+        "anti_bleed_shield":  anti_bleed_shield,
+        "side_harvest":       side_harvest,
+        "breakeven_sl":       breakeven_sl,
         "center_mode":        center_mode,
         "center_price":       center_price_input,
         "levels_above":       int(levels_above),
