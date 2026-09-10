@@ -1796,11 +1796,23 @@ with tab_desk:
                 ex_px  = float(tr.get("exit_price",  tr.get("close_price",  tr.get("price", 0.0))))
                 fl_cnt = int(tr.get("fills_count",   tr.get("trades_count",  tr.get("size", 1))))
                 base_cid = max((int(c.get("cycle_id", 0)) for c in cycles_list if isinstance(c.get("cycle_id"), (int, float)) or str(c.get("cycle_id", "")).isdigit()), default=len(cycles_list))
+                deal_t = tr.get("type", tr.get("side", ""))
+                if not deal_t or deal_t not in ("BUY", "SELL"):
+                    if dep_px > 0 and ex_px > 0 and abs(pnl_tr) > 0.0001:
+                        deal_t = "BUY" if ((ex_px > dep_px and pnl_tr > 0) or (ex_px < dep_px and pnl_tr < 0)) else "SELL"
+                    else:
+                        deal_t = "BUY"
+                is_cent_acc = tr.get("is_cent", any("C" in str(tr.get("symbol", sym_code)).upper() for _ in [1]))
+                raw_pnl_val = float(tr.get("raw_pnl", pnl_tr * (100.0 if is_cent_acc else 1.0)))
                 cycles_list.append({
                     "cycle_id":    base_cid + 1,
                     "symbol":      tr.get("symbol", sym_code),
+                    "type":        deal_t,
+                    "side":        deal_t,
                     "pnl":         pnl_tr,
                     "total_pnl":   pnl_tr,
+                    "raw_pnl":     raw_pnl_val,
+                    "is_cent":     is_cent_acc,
                     "deploy_price": dep_px,
                     "entry_price":  dep_px,
                     "exit_price":   ex_px,
@@ -1826,6 +1838,22 @@ with tab_desk:
             rec["total_pnl"] = pnl_val
             rec["timestamp"] = ts_val
             rec["exit_time"] = ts_val
+
+            # Infer and preserve trade side
+            side_v = rec.get("type", rec.get("side", ""))
+            en_p = float(rec.get("deploy_price", rec.get("entry_price", 0.0)))
+            ex_p = float(rec.get("exit_price", 0.0))
+            if not side_v or side_v not in ("BUY", "SELL"):
+                if en_p > 0 and ex_p > 0 and abs(pnl_val) > 0.0001:
+                    side_v = "BUY" if ((ex_p > en_p and pnl_val > 0) or (ex_p < en_p and pnl_val < 0)) else "SELL"
+                else:
+                    side_v = "BUY"
+            rec["type"] = side_v
+            rec["side"] = side_v
+
+            is_c = rec.get("is_cent", any("C" in str(rec.get("symbol", "")).upper() for _ in [1]))
+            rec["is_cent"] = is_c
+            rec["raw_pnl"] = float(rec.get("raw_pnl", pnl_val * (100.0 if is_c else 1.0)))
 
             # Check if a near-duplicate already exists in deduped_list
             is_dup = False
@@ -1855,17 +1883,18 @@ with tab_desk:
             raw_history.append(rec)
 
     # Filtering Toolbar
-    flt_c1, flt_c2, flt_c3, flt_c4, flt_c5 = st.columns([2, 2, 2, 2, 2])
+    flt_c1, flt_c2, flt_c3, flt_c4, flt_c5, flt_c6 = st.columns([2, 2, 2, 2, 2, 2])
     with flt_c1:
         f_pair = st.selectbox(
             "🪙 Symbol Pair",
             ["ALL PAIRS"] + _symbols,
+            format_func=lambda s: "ALL PAIRS" if s == "ALL PAIRS" else ("XAUUSD (Gold)" if any(x in s.upper() for x in ["PAXG", "XAU", "GOLD"]) else ("ETHUSD (Ethereum)" if "ETH" in s.upper() else s)),
             key="hist_flt_pair"
         )
     with flt_c2:
         f_reason = st.selectbox(
             "🎯 Exit Reason",
-            ["ALL EXITS", "TARGET_PROFIT", "COUNTER_TREND_PROFIT_HARVEST", "COUNTER_TREND_BREAKEVEN_EXIT", "RUNNER_EXPANSION", "TRAILING_STOP", "BREAKEVEN", "STOP_LOSS", "WVAP_COST_RECOVERY", "SINGLE_FILL_QUICK_SCALP", "PROP_FIRM_GUARD", "EARLY_RANGE_EXIT"],
+            ["ALL EXITS", "TARGET_PROFIT", "PARTIAL_TP", "TRAILING_STOP", "TRAILING_PROFIT_LOCK", "COUNTER_TREND_PROFIT_HARVEST", "COUNTER_TREND_BREAKEVEN_EXIT", "RUNNER_EXPANSION", "BREAKEVEN", "STOP_LOSS", "WVAP_COST_RECOVERY", "SINGLE_FILL_QUICK_SCALP", "PROP_FIRM_GUARD", "EARLY_RANGE_EXIT"],
             key="hist_flt_reason"
         )
     with flt_c3:
@@ -1885,6 +1914,12 @@ with tab_desk:
             "👁️ Display Limit",
             ["SHOW ALL (Unlimited)", "50 Rows", "100 Rows", "250 Rows", "500 Rows"],
             key="hist_flt_limit"
+        )
+    with flt_c6:
+        f_curr = st.selectbox(
+            "💵 Currency Mode",
+            ["MT5 + USD ($)", "MT5 Account (USC)", "USD Exact ($0.0000)"],
+            key="hist_flt_curr"
         )
 
     # Apply Filters
@@ -1926,11 +1961,15 @@ with tab_desk:
     # Filtered Metrics Summary
     f_total_cnt  = len(filtered_list)
     f_total_pnl  = sum(float(c.get("pnl", 0)) for c in filtered_list)
+    f_total_raw  = sum(float(c.get("raw_pnl", float(c.get("pnl", 0)) * 100.0)) for c in filtered_list)
     f_wins_cnt   = sum(1 for c in filtered_list if float(c.get("pnl", 0)) > 0)
     f_win_rate   = (f_wins_cnt / f_total_cnt * 100.0) if f_total_cnt > 0 else 0.0
     f_avg_pnl    = (f_total_pnl / f_total_cnt) if f_total_cnt > 0 else 0.0
+    f_avg_raw    = (f_total_raw / f_total_cnt) if f_total_cnt > 0 else 0.0
     f_best_pnl   = max([float(c.get("pnl", 0)) for c in filtered_list], default=0.0)
+    f_best_raw   = max([float(c.get("raw_pnl", float(c.get("pnl", 0)) * 100.0)) for c in filtered_list], default=0.0)
     f_worst_pnl  = min([float(c.get("pnl", 0)) for c in filtered_list], default=0.0)
+    f_worst_raw  = min([float(c.get("raw_pnl", float(c.get("pnl", 0)) * 100.0)) for c in filtered_list], default=0.0)
 
     # Calculate average cycle duration across filtered history
     valid_durs = [int(c["exit_time"] - c["start_time"]) for c in filtered_list if c.get("exit_time") and c.get("start_time") and c["exit_time"] >= c["start_time"]]
@@ -1946,11 +1985,28 @@ with tab_desk:
     f_best_cls = "pnl-green" if f_best_pnl >= 0 else "pnl-red"
     f_worst_cls = "pnl-red" if f_worst_pnl < 0 else "pnl-green"
 
+    # Display PnL strings according to currency mode
+    if f_curr == "MT5 Account (USC)":
+        disp_tot = f"{f_total_raw:+,.2f} USC"
+        disp_avg = f"{f_avg_raw:+,.2f} USC"
+        disp_bst = f"{f_best_raw:+,.2f} USC"
+        disp_wst = f"{f_worst_raw:+,.2f} USC"
+    elif f_curr == "USD Exact ($0.0000)":
+        disp_tot = f"${f_total_pnl:+,.4f}"
+        disp_avg = f"${f_avg_pnl:+,.4f}"
+        disp_bst = f"${f_best_pnl:+,.4f}"
+        disp_wst = f"${f_worst_pnl:+,.4f}"
+    else: # MT5 + USD Combined
+        disp_tot = f"${f_total_pnl:+,.2f} <span style='font-size:0.75rem;color:#a1a1aa'>({f_total_raw:+,.1f} USC)</span>"
+        disp_avg = f"${f_avg_pnl:+,.2f}"
+        disp_bst = f"${f_best_pnl:+,.2f} <span style='font-size:0.75rem;color:#a1a1aa'>({f_best_raw:+,.1f} USC)</span>"
+        disp_wst = f"${f_worst_pnl:+,.2f} <span style='font-size:0.75rem;color:#a1a1aa'>({f_worst_raw:+,.1f} USC)</span>"
+
     st.markdown(f"""
     <div style='display:grid;grid-template-columns:1fr 1fr 1fr 1fr 1fr 1fr;gap:8px;margin:10px 0 14px'>
       <div style='background:#18181b;border:1px solid #27272a;padding:8px 12px;border-radius:6px;font-size:0.80rem'>
         <div style='color:#71717a'>Filtered PnL ({f_total_cnt} Cycles)</div>
-        <strong class='{f_pnl_cls}' style='font-size:1.0rem'>${f_total_pnl:+,.2f}</strong>
+        <strong class='{f_pnl_cls}' style='font-size:1.0rem'>{disp_tot}</strong>
       </div>
       <div style='background:#18181b;border:1px solid #27272a;padding:8px 12px;border-radius:6px;font-size:0.80rem'>
         <div style='color:#71717a'>Win Rate</div>
@@ -1958,7 +2014,7 @@ with tab_desk:
       </div>
       <div style='background:#18181b;border:1px solid #27272a;padding:8px 12px;border-radius:6px;font-size:0.80rem'>
         <div style='color:#71717a'>Avg Cycle PnL</div>
-        <strong style='font-size:1.0rem'>${f_avg_pnl:+,.2f}</strong>
+        <strong style='font-size:1.0rem'>{disp_avg}</strong>
       </div>
       <div style='background:#18181b;border:1px solid #27272a;padding:8px 12px;border-radius:6px;font-size:0.80rem'>
         <div style='color:#71717a'>Avg Duration</div>
@@ -1966,11 +2022,11 @@ with tab_desk:
       </div>
       <div style='background:#18181b;border:1px solid #27272a;padding:8px 12px;border-radius:6px;font-size:0.80rem'>
         <div style='color:#71717a'>Best Cycle</div>
-        <strong class='{f_best_cls}' style='font-size:1.0rem'>${f_best_pnl:+,.2f}</strong>
+        <strong class='{f_best_cls}' style='font-size:1.0rem'>{disp_bst}</strong>
       </div>
       <div style='background:#18181b;border:1px solid #27272a;padding:8px 12px;border-radius:6px;font-size:0.80rem'>
         <div style='color:#71717a'>Worst Cycle</div>
-        <strong class='{f_worst_cls}' style='font-size:1.0rem'>${f_worst_pnl:+,.2f}</strong>
+        <strong class='{f_worst_cls}' style='font-size:1.0rem'>{disp_wst}</strong>
       </div>
     </div>
     """, unsafe_allow_html=True)
@@ -1990,18 +2046,45 @@ with tab_desk:
         table_rows = ""
         for c in display_list:
             c_pnl = float(c.get("pnl", 0.0))
+            raw_pnl = float(c.get("raw_pnl", c_pnl * 100.0 if c.get("is_cent") else c_pnl))
             pnl_cls = "pnl-green" if c_pnl >= 0 else "pnl-red"
             trades_cnt = c.get("fills_count", c.get("trades_count", c.get("size", 1)))
-            sym_badge = c.get("symbol", "ACTIVE")
+            raw_sym = str(c.get("symbol", "ACTIVE")).upper()
+            if any(x in raw_sym for x in ["PAXG", "XAU", "GOLD"]):
+                sym_badge = "XAUUSD (Gold)"
+            elif any(x in raw_sym for x in ["ETH"]):
+                sym_badge = "ETHUSD"
+            elif any(x in raw_sym for x in ["BTC"]):
+                sym_badge = "BTCUSD"
+            else:
+                sym_badge = c.get("symbol", "ACTIVE")
+            
             t_exit = time.strftime("%H:%M:%S", time.localtime(c.get("exit_time", time.time()))) if c.get("exit_time") else "-"
             
             dep_px = float(c.get("deploy_price", c.get("entry_price", c.get("open_price", 0.0))))
             ex_px = float(c.get("exit_price", c.get("close_price", c.get("price", 0.0))))
             
-            px_fmt = "{:,.3f}" if any(x in str(sym_badge).upper() for x in ["XAU", "GOLD", "PAXG", "EUR", "GBP", "JPY"]) else "{:,.2f}"
+            px_fmt = "{:,.3f}" if any(x in str(raw_sym) for x in ["XAU", "GOLD", "PAXG", "EUR", "GBP", "JPY"]) else "{:,.2f}"
             dep_str = f"${px_fmt.format(dep_px)}" if dep_px > 0 else "-"
             ex_str = f"${px_fmt.format(ex_px)}" if ex_px > 0 else "-"
 
+            # Move delta
+            if dep_px > 0 and ex_px > 0:
+                delta_px = ex_px - dep_px
+                delta_str = f"{delta_px:+,.3f}" if any(x in str(raw_sym) for x in ["XAU", "GOLD", "PAXG"]) else f"{delta_px:+,.2f}"
+            else:
+                delta_str = "-"
+
+            # Trade Side (BUY/SELL)
+            side = str(c.get("type", c.get("side", ""))).upper()
+            if side not in ("BUY", "SELL"):
+                if dep_px > 0 and ex_px > 0 and abs(c_pnl) > 0.0001:
+                    side = "BUY" if ((ex_px > dep_px and c_pnl > 0) or (ex_px < dep_px and c_pnl < 0)) else "SELL"
+                else:
+                    side = "BUY"
+            side_badge = f"<span style='color:#22c55e;font-weight:700'>BUY 🟢</span>" if side == "BUY" else f"<span style='color:#ef4444;font-weight:700'>SELL 🔴</span>"
+
+            # Duration format
             st_t = float(c.get("start_time", 0.0))
             ex_t = float(c.get("exit_time", 0.0))
             st_t = (st_t / 1000.0) if st_t > 1e11 else st_t
@@ -2020,17 +2103,31 @@ with tab_desk:
             else:
                 dur_fmt = "15s"
 
+            # PnL String based on f_curr
+            is_cent_account = c.get("is_cent", False) or any(x.endswith("c") or "USC" in x for x in [raw_sym, str(c.get("account_currency", ""))]) or (abs(c_pnl) < 0.25 and abs(raw_pnl) > 0.01)
+            if f_curr == "MT5 Account (USC)":
+                pnl_disp = f"{raw_pnl:+,.2f} USC"
+            elif f_curr == "USD Exact ($0.0000)":
+                pnl_disp = f"${c_pnl:+,.4f}"
+            else: # MT5 + USD Combined
+                if is_cent_account or abs(raw_pnl - c_pnl) > 0.01:
+                    pnl_disp = f"{raw_pnl:+,.2f} USC <span style='font-size:0.72rem;color:#a1a1aa'>(${c_pnl:+,.3f})</span>"
+                else:
+                    pnl_disp = f"${c_pnl:+,.2f}"
+
             table_rows += (
                 f"<tr>"
                 f"<td>#{c.get('cycle_id', 1)}</td>"
                 f"<td><strong>{sym_badge}</strong></td>"
+                f"<td>{side_badge}</td>"
                 f"<td>{dep_str}</td>"
                 f"<td>{ex_str}</td>"
+                f"<td><span style='font-family:JetBrains Mono,monospace;font-size:0.75rem'>{delta_str}</span></td>"
                 f"<td>{trades_cnt}</td>"
                 f"<td><span style='font-family:JetBrains Mono,monospace;color:#38bdf8'>⏱️ {dur_fmt}</span></td>"
                 f"<td><span style='background:#27272a;padding:2px 6px;border-radius:4px;font-size:0.72rem'>{c.get('exit_reason', 'TP')}</span></td>"
                 f"<td>{t_exit}</td>"
-                f"<td class='{pnl_cls}'><strong>${c_pnl:+,.2f}</strong></td>"
+                f"<td class='{pnl_cls}'><strong>{pnl_disp}</strong></td>"
                 f"</tr>"
             )
         st.markdown(f"""
@@ -2038,9 +2135,11 @@ with tab_desk:
             <thead>
                 <tr>
                     <th>Cycle ID</th>
-                    <th>Symbol</th>
+                    <th>Asset</th>
+                    <th>Side</th>
                     <th>Deploy Entry</th>
                     <th>Exit Price</th>
+                    <th>Price Move</th>
                     <th>Fills</th>
                     <th>Duration</th>
                     <th>Exit Reason</th>
@@ -2320,34 +2419,70 @@ with tab_manual:
             man_raw_history.sort(key=lambda x: x.get("exit_time", x.get("timestamp", 0.0)), reverse=True)
             
             table_rows_man = ""
-            for c in man_raw_history[:30]:
+            for c in man_raw_history[:50]:
                 c_pnl = float(c.get('pnl', c.get('total_pnl', 0.0)))
+                raw_pnl = float(c.get('raw_pnl', c_pnl * 100.0 if c.get('is_cent') else c_pnl))
                 pnl_cls = "pnl-green" if c_pnl >= 0 else "pnl-red"
-                sym_badge = c.get('symbol', 'UNK')
+                raw_sym = str(c.get('symbol', 'UNK')).upper()
+                if any(x in raw_sym for x in ["PAXG", "XAU", "GOLD"]):
+                    sym_badge = "XAUUSD (Gold)"
+                elif any(x in raw_sym for x in ["ETH"]):
+                    sym_badge = "ETHUSD"
+                else:
+                    sym_badge = c.get('symbol', 'UNK')
+
+                en_p = float(c.get('deploy_price', c.get('entry_price', 0)))
+                ex_p = float(c.get('exit_price', 0))
+
+                # Side
+                side = str(c.get("type", c.get("side", ""))).upper()
+                if side not in ("BUY", "SELL"):
+                    if en_p > 0 and ex_p > 0 and abs(c_pnl) > 0.0001:
+                        side = "BUY" if ((ex_p > en_p and c_pnl > 0) or (ex_p < en_p and c_pnl < 0)) else "SELL"
+                    else:
+                        side = "BUY"
+                side_badge = f"<span style='color:#22c55e;font-weight:700'>BUY 🟢</span>" if side == "BUY" else f"<span style='color:#ef4444;font-weight:700'>SELL 🔴</span>"
+
+                # Move delta
+                if en_p > 0 and ex_p > 0:
+                    delta_px = ex_p - en_p
+                    delta_str = f"{delta_px:+,.3f}" if any(x in raw_sym for x in ["XAU", "GOLD", "PAXG"]) else f"{delta_px:+,.2f}"
+                else:
+                    delta_str = "-"
+
                 dur_fmt = f"{c.get('duration', 1)}s" if c.get('duration', 1) < 60 else f"{int(c.get('duration', 1)//60)}m {int(c.get('duration', 1)%60)}s"
                 try:
                     dt = datetime.datetime.fromtimestamp(c.get('exit_time', c.get('timestamp', time.time())))
                     t_exit = dt.strftime('%H:%M:%S')
                 except:
                     t_exit = "-"
+
+                is_cent_acc = c.get("is_cent", False) or any(x.endswith("c") or "USC" in x for x in [raw_sym, str(c.get("account_currency", ""))]) or (abs(c_pnl) < 0.25 and abs(raw_pnl) > 0.01)
+                if is_cent_acc or abs(raw_pnl - c_pnl) > 0.01:
+                    pnl_disp = f"{raw_pnl:+,.2f} USC <span style='font-size:0.72rem;color:#a1a1aa'>(${c_pnl:+,.3f})</span>"
+                else:
+                    pnl_disp = f"${c_pnl:+,.2f}"
+
                 table_rows_man += (
                     f"<tr>"
                     f"<td>#{c.get('cycle_id', '?')}</td>"
                     f"<td><strong>{sym_badge}</strong></td>"
-                    f"<td>${float(c.get('deploy_price', c.get('entry_price', 0))):,.3f}</td>"
-                    f"<td>${float(c.get('exit_price', 0)):,.3f}</td>"
+                    f"<td>{side_badge}</td>"
+                    f"<td>${en_p:,.3f}</td>"
+                    f"<td>${ex_p:,.3f}</td>"
+                    f"<td><span style='font-family:JetBrains Mono,monospace;font-size:0.75rem'>{delta_str}</span></td>"
                     f"<td>{c.get('fills_count', c.get('trades_count', 1))}</td>"
                     f"<td><span style='font-family:JetBrains Mono,monospace;color:#38bdf8'>⏱️ {dur_fmt}</span></td>"
                     f"<td><span style='background:#27272a;padding:2px 6px;border-radius:4px;font-size:0.72rem'>{c.get('exit_reason', 'TP')}</span></td>"
                     f"<td>{t_exit}</td>"
-                    f"<td class='{pnl_cls}'><strong>${c_pnl:+,.2f}</strong></td>"
+                    f"<td class='{pnl_cls}'><strong>{pnl_disp}</strong></td>"
                     f"</tr>"
                 )
             
             if table_rows_man:
                 st.markdown(f'''
                 <table class="fast-table" style="font-size:0.78rem">
-                    <thead><tr><th>ID</th><th>Symbol</th><th>Entry</th><th>Exit</th><th>Fills</th><th>Duration</th><th>Reason</th><th>Time</th><th>PnL</th></tr></thead>
+                    <thead><tr><th>ID</th><th>Asset</th><th>Side</th><th>Entry</th><th>Exit</th><th>Price Move</th><th>Fills</th><th>Duration</th><th>Reason</th><th>Time</th><th>Net PnL</th></tr></thead>
                     <tbody>{table_rows_man}</tbody>
                 </table>
                 ''', unsafe_allow_html=True)

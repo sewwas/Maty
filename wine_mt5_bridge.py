@@ -591,13 +591,13 @@ class MT5BridgeHandler(BaseHTTPRequestHandler):
                         target_poss.append(pos)
 
                     # 2. DUAL-PRIORITY SORT:
-                    # Winners (pnl >= 0): Highest Profit ($) descending -> locks peak cash first
-                    # Losers (pnl < 0): Largest Lot Size & Largest Loss descending -> cuts biggest risk first
+                    # Winners (pnl >= 0): Bigger Lot Size & Highest Profit descending -> locks peak cash on large lots first
+                    # Losers (pnl < 0): Bigger Lot Size & Largest Loss descending -> cuts biggest risk & margin first
                     def _sort_pos_key(p):
                         pnl = float(getattr(p, "profit", 0.0))
                         vol = float(getattr(p, "volume", 0.0))
                         if pnl >= 0:
-                            return (0, -pnl, -vol)
+                            return (0, -vol, -pnl)
                         else:
                             return (1, -vol, pnl)
 
@@ -667,27 +667,28 @@ class MT5BridgeHandler(BaseHTTPRequestHandler):
                                 "volume": p_vol,
                                 "pnl": round(p_pnl, 2)
                             })
-                    # 3. AFTER ACTIVE POSITIONS ARE 100% CLOSED: Clean up pending orders
-                    if cancel_pend:
-                        try:
-                            all_o = mt5.orders_get()
-                            if all_o:
-                                pend_list = [o for o in all_o if not (magic_filter and str(getattr(o, "magic", "")) != str(magic_filter))]
-                                for po in pend_list:
-                                    rc = mt5.order_send({"action": mt5.TRADE_ACTION_REMOVE, "order": po.ticket})
-                                    if rc and rc.retcode in (0, 10009, 10008, 10004):
-                                        cancelled_pending += 1
-                        except Exception:
-                            pass
 
-                    res = {
-                        "success": True,
-                        "closed_count": closed_count,
-                        "total_pnl": round(total_pnl, 2),
-                        "closed_tickets": closed_tickets,
-                        "cancelled_pending": cancelled_pending,
-                        "audit": audit_log
-                    }
+                # 3. AFTER ACTIVE POSITIONS ARE 100% CLOSED: Clean up pending orders
+                if cancel_pend:
+                    try:
+                        all_o = mt5.orders_get()
+                        if all_o:
+                            pend_list = [o for o in all_o if not (magic_filter and str(getattr(o, "magic", "")) != str(magic_filter))]
+                            for po in pend_list:
+                                rc = mt5.order_send({"action": mt5.TRADE_ACTION_REMOVE, "order": po.ticket})
+                                if rc and rc.retcode in (0, 10009, 10008, 10004):
+                                    cancelled_pending += 1
+                    except Exception:
+                        pass
+
+                res = {
+                    "success": True,
+                    "closed_count": closed_count,
+                    "total_pnl": round(total_pnl, 2),
+                    "closed_tickets": closed_tickets,
+                    "cancelled_pending": cancelled_pending,
+                    "audit": audit_log
+                }
             except Exception as e:
                 res = {"success": False, "error": str(e)}
             self.send_response(200)
@@ -799,28 +800,45 @@ class MT5BridgeHandler(BaseHTTPRequestHandler):
 
 def ensure_mt5(port: int) -> bool:
     global _mt5_ready, _mt5_saved_login, _mt5_saved_pwd, _mt5_saved_srv, _mt5_path
+    cfg = get_bridge_config(port)
+    target_login = cfg.get("login")
+    target_pwd = cfg.get("password")
+    target_srv = cfg.get("server", "Exness-MT5Real36")
+    target_path = resolve_terminal_path(port)
+
     try:
         term = mt5.terminal_info()
-        if term is not None:
-            _mt5_ready = True
-            return True
+        acc = mt5.account_info()
+        if term is not None and acc is not None:
+            if not target_login or int(getattr(acc, "login", 0)) == int(target_login):
+                _mt5_ready = True
+                return True
+            elif target_login and target_pwd:
+                if mt5.login(login=int(target_login), password=target_pwd, server=target_srv, timeout=5000):
+                    _mt5_ready = True
+                    return True
     except Exception:
         pass
 
     with _mt5_lock:
         try:
             term = mt5.terminal_info()
-            if term is not None:
-                _mt5_ready = True
-                return True
+            acc = mt5.account_info()
+            if term is not None and acc is not None:
+                if not target_login or int(getattr(acc, "login", 0)) == int(target_login):
+                    _mt5_ready = True
+                    return True
+                elif target_login and target_pwd:
+                    if mt5.login(login=int(target_login), password=target_pwd, server=target_srv, timeout=5000):
+                        _mt5_ready = True
+                        return True
         except Exception:
             pass
 
-        cfg = get_bridge_config(port)
-        _mt5_saved_login = cfg.get("login")
-        _mt5_saved_pwd = cfg.get("password")
-        _mt5_saved_srv = cfg.get("server", "Exness-MT5Real36")
-        _mt5_path = resolve_terminal_path(port)
+        _mt5_saved_login = target_login
+        _mt5_saved_pwd = target_pwd
+        _mt5_saved_srv = target_srv
+        _mt5_path = target_path
 
         init_ok = False
         if _mt5_saved_login and _mt5_saved_pwd:

@@ -1282,10 +1282,20 @@ class MT5Broker:
             positions = mt5.positions_get() if MT5_AVAILABLE else None
 
         if positions:
+            # Sort positions: Bigger lot size first (-vol), then most profitable first (-pnl)
+            def _sort_pos_key(p):
+                pnl = float(getattr(p, "profit", 0.0))
+                vol = float(getattr(p, "volume", 0.0))
+                if pnl >= 0:
+                    return (0, -vol, -pnl)
+                else:
+                    return (1, -vol, pnl)
+            sorted_positions = sorted(list(positions), key=_sort_pos_key)
+
             # Pre-fetch ALL ticks in one pass so the close loop has zero I/O delay per position
             tick_cache = {}
             sym_info_cache = {}
-            for pos in positions:
+            for pos in sorted_positions:
                 if pos.symbol not in tick_cache:
                     tick_cache[pos.symbol] = mt5.symbol_info_tick(pos.symbol)
                 if pos.symbol not in sym_info_cache:
@@ -1293,7 +1303,7 @@ class MT5Broker:
 
             # Now fire all close orders in a tight sequential loop — MT5 API is single-threaded,
             # so this is the fastest safe approach. All calls happen back-to-back with no delays.
-            for pos in list(positions):
+            for pos in sorted_positions:
                 try:
                     if f"live_{pos.ticket}" in exclude_ids:
                         continue
@@ -1589,6 +1599,9 @@ class MT5Broker:
                                 "size": float(d.volume) / cent_mult,
                                 "fills_count": max(1, int(round((float(d.volume) / cent_mult) / 0.01))) if any(x in d_sym for x in ["XAU", "GOLD", "PAXG"]) else 1,
                                 "pnl": pnl,
+                                "raw_pnl": raw_pnl,
+                                "is_cent": is_cent_account,
+                                "account_currency": "USC" if is_cent_account else "USD",
                                 "entry_time": e_sec,
                                 "start_time": e_sec,
                                 "exit_time": ex_sec,

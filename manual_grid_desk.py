@@ -103,8 +103,6 @@ def load_state() -> dict:
             "target_profit": 5.0,
             "stop_loss": 25.0,
             "auto_redeploy": True,
-            "oco_enabled": False,
-            "max_straggler_loss": 2.0,
         },
         "trade_history": [],
         "deployed": False,
@@ -557,11 +555,17 @@ def close_single_ticket(brk: MT5Broker, ticket: int, volume: float) -> bool:
 
 
 def _pos_priority_key(p):
-    """Dual-Priority Key: Winners by profit descending; Losers by lot size & loss descending."""
+    """
+    Dual-Priority Key:
+    1. Winners (pnl >= 0): Bigger Lot Size (-vol) first, then Most Profitable (-pnl) first.
+       Secures maximum profit on high-exposure orders immediately before price slippage!
+    2. Losers (pnl < 0): Bigger Lot Size (-vol) first, then Largest Loss (pnl) first.
+       Cuts maximum risk and margin exposure first.
+    """
     pnl = float(getattr(p, "profit", 0.0))
     vol = float(getattr(p, "volume", 0.0))
     if pnl >= 0:
-        return (0, -pnl, -vol)
+        return (0, -vol, -pnl)
     else:
         return (1, -vol, pnl)
 
@@ -616,11 +620,14 @@ def close_positions_by_side(brk: MT5Broker, side: str) -> str:
 
 def flatten_all(brk: MT5Broker, state: dict) -> str:
     """
-    INSTANT ZERO-LATENCY ATOMIC FLATTEN SEQUENCE:
-    1. Fires atomic bridge close_all with cancel_pending=1 directly over persistent pooled HTTP session.
-       Cancels all pendings & executes market close for all positions in ONE single C/MT5 atomic round-trip.
-    2. Instantly verifies 0 positions & 0 orders. If clean (99% of time), returns immediately with ZERO SLEEP.
-    3. If any straggler ticket remains due to broker requote, cleans them up concurrently via ThreadPoolExecutor.
+    INSTANT ZERO-LATENCY FLATTEN SEQUENCE:
+    1. CLOSE ACTIVE POSITIONS FIRST:
+       - Priority: Bigger lot size and most profitable positions closed FIRST to bank profit.
+       - Zero time wasted on pending orders while open positions are floating in the market.
+    2. CONCURRENT POSITION VERIFICATION & SWEEP:
+       - Ensures all open positions are 100% liquidated before touching pendings.
+    3. INSTANTLY CANCEL ALL PENDING ORDERS:
+       - Once all profit is banked and positions are flat, cancels all pending trap orders.
     4. Records audit trail and resets desk state.
     """
     closed_count = 0
@@ -635,24 +642,20 @@ def flatten_all(brk: MT5Broker, state: dict) -> str:
     curr_sym = "¢" if acct_curr == "USC" else "$"
 
     # ──────────────────────────────────────────────────────────────────
-    # PASS 1: ATOMIC ZERO-LATENCY CLOSE (WIPES PENDINGS + CLOSES POSITIONS)
+    # PASS 1: CLOSE ACTIVE POSITIONS FIRST (BIGGER LOT & MOST PROFITABLE FIRST)
     # ──────────────────────────────────────────────────────────────────
-    # Direct explicit sweep: cancel all pending trap orders immediately
-    cancel_all_pending(brk)
-
+    # NOTE: cancel_pending=0 so bridge focuses 100% speed on market orders first!
     for m_id in ALLOWED_MANUAL_MAGICS:
         try:
             r = _FAST_SESSION.get(
-                f"http://127.0.0.1:{MT5_BRIDGE_PORT}/close_all?magic={m_id}&cancel_pending=1",
+                f"http://127.0.0.1:{MT5_BRIDGE_PORT}/close_all?magic={m_id}&cancel_pending=0",
                 timeout=8.0
             )
             if r.status_code == 200:
                 d = r.json()
                 if d.get("success"):
                     c_cnt = int(d.get("closed_count", 0))
-                    c_pend = int(d.get("cancelled_pending", 0))
                     closed_count += c_cnt
-                    cancelled_pend += c_pend
                     total_pnl += float(d.get("total_pnl", 0.0))
                     for a in d.get("audit", []):
                         audit_steps.append(f"Closed #{a['ticket']} ({a['volume']}L {a['side']}): {curr_sym}{a['pnl']:+.2f}")
@@ -660,29 +663,20 @@ def flatten_all(brk: MT5Broker, state: dict) -> str:
             errors.append(f"Bridge atomic close: {e}")
 
     # ──────────────────────────────────────────────────────────────────
-    # PASS 2: VERIFICATION & CONCURRENT STRAGGLER CLEANUP (ZERO SLEEP IF CLEAN)
+    # PASS 2: VERIFICATION & CONCURRENT POSITION STRAGGLER CLEANUP
     # ──────────────────────────────────────────────────────────────────
     rem_pos = get_live_positions(brk)
-    rem_ord = get_live_pending(brk)
-
-    if rem_pos or rem_ord:
-        # Concurrent cleanup: CLOSE ACTIVE POSITIONS FIRST to lock in profit, then cancel orders
+    if rem_pos:
+        rem_pos.sort(key=_pos_priority_key)
         with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
-            close_futures = []
-            rem_pos.sort(key=_pos_priority_key)
-            for p in rem_pos:
-                t = getattr(p, "ticket", 0)
-                v = getattr(p, "volume", 0.0)
-                if t > 0:
-                    close_futures.append(
-                        executor.submit(
-                            lambda t_id, vol: _FAST_SESSION.get(f"http://127.0.0.1:{MT5_BRIDGE_PORT}/position_close?ticket={t_id}&volume={vol}", timeout=2.5),
-                            t,
-                            v
-                        )
-                    )
-
-            # Wait for all active position closes FIRST
+            close_futures = [
+                executor.submit(
+                    lambda t_id, vol: _FAST_SESSION.get(f"http://127.0.0.1:{MT5_BRIDGE_PORT}/position_close?ticket={t_id}&volume={vol}", timeout=2.5),
+                    getattr(p, "ticket", 0),
+                    getattr(p, "volume", 0.0)
+                )
+                for p in rem_pos if getattr(p, "ticket", 0) > 0
+            ]
             for f in concurrent.futures.as_completed(close_futures):
                 try:
                     res = f.result()
@@ -691,18 +685,28 @@ def flatten_all(brk: MT5Broker, state: dict) -> str:
                 except Exception:
                     pass
 
-            # SECOND: Cancel pending orders
-            cancel_futures = []
-            for o in rem_ord:
-                t = getattr(o, "ticket", 0)
-                if t > 0:
-                    cancel_futures.append(
-                        executor.submit(
-                            lambda t_id: _FAST_SESSION.get(f"http://127.0.0.1:{MT5_BRIDGE_PORT}/order_cancel?ticket={t_id}", timeout=2.0),
-                            t
-                        )
-                    )
+    # ──────────────────────────────────────────────────────────────────
+    # PASS 3: CANCEL ALL PENDING ORDERS (INSTANTLY AFTER PROFIT IS LOCKED)
+    # ──────────────────────────────────────────────────────────────────
+    for m_id in ALLOWED_MANUAL_MAGICS:
+        try:
+            r = _FAST_SESSION.get(f"http://127.0.0.1:{MT5_BRIDGE_PORT}/cancel_all?magic={m_id}", timeout=3.0)
+            if r.status_code == 200 and r.json().get("success"):
+                cancelled_pend += int(r.json().get("cancelled_count", 0))
+        except Exception:
+            pass
 
+    # Instant concurrent sweep for any remaining pending orders
+    rem_ord = get_live_pending(brk)
+    if rem_ord:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+            cancel_futures = [
+                executor.submit(
+                    lambda t_id: _FAST_SESSION.get(f"http://127.0.0.1:{MT5_BRIDGE_PORT}/order_cancel?ticket={t_id}", timeout=2.0),
+                    getattr(o, "ticket", 0)
+                )
+                for o in rem_ord if getattr(o, "ticket", 0) > 0
+            ]
             for f in concurrent.futures.as_completed(cancel_futures):
                 try:
                     res = f.result()
@@ -852,41 +856,6 @@ def get_pnl_monitor():
                             # Track peak floating PnL (in account currency units matching UI config)
                             current_peak = max(float(shared.get("peak_pnl", 0.0) or 0.0), pnl)
                             shared["peak_pnl"] = round(current_peak, 2)
-
-                            # ── 0. Directional Breakout Guard & Straggler Cut (OCO) ──
-                            oco_enabled = cur_cfg.get("oco_enabled", True)
-                            if oco_enabled and not shared["triggered"]:
-                                buy_pos = [p for p in positions if getattr(p, "type", 0) == 0]
-                                sell_pos = [p for p in positions if getattr(p, "type", 0) == 1]
-                                max_straggler = float(cur_cfg.get("max_straggler_loss", 2.0))
-
-                                # Scenario A: Strong BUY Breakout (>= 2 BUYs active)
-                                if len(buy_pos) >= 2 and sell_pos:
-                                    # Note: Pending orders are KEPT INTACT until full close per risk rule!
-                                    for sp in sell_pos:
-                                        s_pnl = float(getattr(sp, "profit", 0.0))
-                                        sp_time = float(getattr(sp, "time", 0) or 0)
-                                        # Only cut if it exceeded straggler loss cap AND has been open >= 30s
-                                        if s_pnl <= -abs(max_straggler) and (time.time() - sp_time >= 30.0 if sp_time > 0 else True):
-                                            t_sp = getattr(sp, "ticket", 0)
-                                            v_sp = getattr(sp, "volume", 0.0)
-                                            if close_single_ticket(brk, t_sp, v_sp):
-                                                shared["last_msg"] = f"🛡️ Breakout Guard: Cut counter SELL #{t_sp} ({curr_sym}{s_pnl:+.2f}) to protect {len(buy_pos)} winning BUYs!"
-                                                logging.info(f"[Breakout Guard] {shared['last_msg']}")
-
-                                # Scenario B: Strong SELL Breakout (>= 2 SELLs active)
-                                elif len(sell_pos) >= 2 and buy_pos:
-                                    # Note: Pending orders are KEPT INTACT until full close per risk rule!
-                                    for bp in buy_pos:
-                                        b_pnl = float(getattr(bp, "profit", 0.0))
-                                        bp_time = float(getattr(bp, "time", 0) or 0)
-                                        # Only cut if it exceeded straggler loss cap AND has been open >= 30s
-                                        if b_pnl <= -abs(max_straggler) and (time.time() - bp_time >= 30.0 if bp_time > 0 else True):
-                                            t_bp = getattr(bp, "ticket", 0)
-                                            v_bp = getattr(bp, "volume", 0.0)
-                                            if close_single_ticket(brk, t_bp, v_bp):
-                                                shared["last_msg"] = f"🛡️ Breakout Guard: Cut counter BUY #{t_bp} ({curr_sym}{b_pnl:+.2f}) to protect {len(sell_pos)} winning SELLs!"
-                                                logging.info(f"[Breakout Guard] {shared['last_msg']}")
 
                             exit_action = None
                             exit_msg = ""
@@ -1667,31 +1636,9 @@ with config_col:
         key="mgd_auto_redeploy",
     )
 
-    col_g1, col_g2 = st.columns(2)
-    with col_g1:
-        oco_enabled = st.toggle(
-            "🛡️ Breakout Guard (OCO)",
-            value=bool(cfg.get("oco_enabled", False)),
-            help="When 2+ levels trigger in one direction: cuts counter-trend straggler positions if they exceed max loss. Pending orders are kept intact until full close.",
-            key="mgd_oco_enabled",
-        )
-    with col_g2:
-        max_straggler_loss = st.number_input(
-            f"Max Counter Loss ({curr_unit})",
-            value=float(cfg.get("max_straggler_loss", 2.0)),
-            min_value=0.50,
-            max_value=50.0,
-            step=0.50,
-            format="%.2f",
-            help="Maximum allowed loss for a counter-trend straggler position before Breakout Guard cuts it.",
-            key="mgd_max_straggler",
-        )
-
     # Persist config changes
     new_cfg_vals = {
         "auto_redeploy":      auto_redeploy,
-        "oco_enabled":        oco_enabled,
-        "max_straggler_loss": max_straggler_loss,
         "center_mode":        center_mode,
         "center_price":       center_price_input,
         "levels_above":       int(levels_above),

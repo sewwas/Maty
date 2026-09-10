@@ -641,7 +641,12 @@ def check_target_profit(self, current_price: float, timestamp: float) -> Optiona
         if sl_limit <= 0:
             try:
                 from core.auto_reading import PAIR_SAFETY_BOUNDS
-                _bounds = PAIR_SAFETY_BOUNDS.get(sym_u, {})
+                _clean = sym_u
+                for s_token in PAIR_SAFETY_BOUNDS.keys():
+                    if s_token in sym_u:
+                        _clean = s_token
+                        break
+                _bounds = PAIR_SAFETY_BOUNDS.get(_clean, {})
                 _fallback_sl = float(_bounds.get("max_cycle_sl", 0.0))
                 if _fallback_sl > 0:
                     sl_limit = _fallback_sl * cent_multiplier
@@ -1471,6 +1476,12 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
             else:
                 place_buy, place_sell = True, True
 
+        # STRICT DIRECTIONAL LOCK: Invariants must NEVER be violated
+        if "SELL" in side_cfg and "ONLY" in side_cfg:
+            place_buy = False
+        elif "BUY" in side_cfg and "ONLY" in side_cfg:
+            place_sell = False
+
         # ─────────────────────────────────────────────────────────────
         # DIRECTIONAL MODE: Limit orders from optimal price levels
         #   SELL confirmed → SELL_LIMIT above current (sell the bounce at TOP/resistance)
@@ -1499,10 +1510,21 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
 
         # HARD HTF MOMENTUM GATE: Never place counter-trend orders against confirmed trend
         if not is_manual:
-            if t_htf == "BULLISH" or t_5m == "BULLISH":
-                place_sell = False
-            elif t_htf == "BEARISH" or t_5m == "BEARISH":
-                place_buy = False
+            if "SELL" in side_cfg and "ONLY" in side_cfg:
+                # In SELL_ONLY mode, place_buy is already strictly False.
+                # Only block place_sell if HTF is decisively BULLISH against our bias.
+                if t_htf == "BULLISH" and t_5m == "BULLISH":
+                    place_sell = False
+            elif "BUY" in side_cfg and "ONLY" in side_cfg:
+                # In BUY_ONLY mode, place_sell is already strictly False.
+                # Only block place_buy if HTF is decisively BEARISH against our bias.
+                if t_htf == "BEARISH" and t_5m == "BEARISH":
+                    place_buy = False
+            else:
+                if t_htf == "BULLISH" or t_5m == "BULLISH":
+                    place_sell = False
+                elif t_htf == "BEARISH" or t_5m == "BEARISH":
+                    place_buy = False
 
         if has_sells and not _is_100pct_grid:
             if t_htf != "BULLISH" and t_5m != "BULLISH":
@@ -1516,6 +1538,17 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
         elif has_buys and _is_100pct_grid and place_sell:
             _is_hedged_override = True
 
+        # Invariant re-check: SELL_ONLY must NEVER have place_buy=True, BUY_ONLY must NEVER have place_sell=True
+        if "SELL" in side_cfg and "ONLY" in side_cfg:
+            place_buy = False
+        elif "BUY" in side_cfg and "ONLY" in side_cfg:
+            place_sell = False
+
+        if not place_buy and not place_sell:
+            print(f"[{sym_name}] ⏳ [TRAP GATED] Both directions blocked (side_cfg={side_cfg}, HTF={t_htf}, 5m={t_5m}). Zero orders placed.")
+            self._is_deploying = False
+            return
+
         directional_sell = place_sell and not place_buy   # Pure sell signal
         directional_buy  = place_buy  and not place_sell  # Pure buy signal
         ranging_mode     = place_buy  and place_sell      # Both sides = choppy
@@ -1523,7 +1556,7 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
         # 3. Chop Restriction (Limit Exposure in Ranging Markets)
         # USER REQUEST: Do not deploy in ranging market without clear trend confirmation.
         if ranging_mode and not is_manual:
-            print(f"[{self.symbol}] ⏳ [TREND WAIT] Market is ranging. Waiting for clear trend confirmation before deploying.")
+            print(f"[{sym_name}] ⏳ [TREND WAIT] Market is ranging. Waiting for clear trend confirmation before deploying.")
             self._is_deploying = False
             return
 
@@ -1855,19 +1888,21 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
         else:
             # ── RANGING / DUAL MODE ──
             # Balanced boundary traps: Limit orders near boundaries + breakout stops
-            lim_buy_px = merged_support[0][1] if merged_support else round(bid_ref - base_start_offset, digits)
-            lim_buy_lb = merged_support[0][2] if merged_support else "Anchor"
-            _place_buy_limit(lim_buy_px, lim_buy_lb, 0)
+            if place_buy:
+                lim_buy_px = merged_support[0][1] if merged_support else round(bid_ref - base_start_offset, digits)
+                lim_buy_lb = merged_support[0][2] if merged_support else "Anchor"
+                _place_buy_limit(lim_buy_px, lim_buy_lb, 0)
 
-            lim_sell_px = merged_resistance[0][1] if merged_resistance else round(ask_ref + base_start_offset, digits)
-            lim_sell_lb = merged_resistance[0][2] if merged_resistance else "Anchor"
-            _place_sell_limit(lim_sell_px, lim_sell_lb, 1)
+            if place_sell:
+                lim_sell_px = merged_resistance[0][1] if merged_resistance else round(ask_ref + base_start_offset, digits)
+                lim_sell_lb = merged_resistance[0][2] if merged_resistance else "Anchor"
+                _place_sell_limit(lim_sell_px, lim_sell_lb, 1)
 
-            if effective_levels >= 3:
+            if effective_levels >= 3 and place_buy:
                 stp_buy_px = merged_resistance[0][1] if merged_resistance else round(ask_ref + base_start_offset, digits)
                 stp_buy_lb = merged_resistance[0][2] if merged_resistance else "Anchor"
                 _place_buy_stop(stp_buy_px, stp_buy_lb, 2)
-            if effective_levels >= 4:
+            if effective_levels >= 4 and place_sell:
                 stp_sell_px = merged_support[0][1] if merged_support else round(bid_ref - base_start_offset, digits)
                 stp_sell_lb = merged_support[0][2] if merged_support else "Anchor"
                 _place_sell_stop(stp_sell_px, stp_sell_lb, 3)
@@ -2051,14 +2086,25 @@ def record_trade_outcome(self, pnl: float, exit_reason: str, duration: float, ex
         cid = int(last_cid) + 1
         self.current_cycle_id = cid
 
+    trade_side = getattr(self, "grid_bias", getattr(self, "side", "BUY"))
+    if not trade_side or trade_side not in ("BUY", "SELL"):
+        if entry_px > 0 and exit_price > 0 and abs(real_pnl) > 0.0001:
+            trade_side = "BUY" if ((exit_price > entry_px and real_pnl > 0) or (exit_price < entry_px and real_pnl < 0)) else "SELL"
+        else:
+            trade_side = "BUY"
+
     outcome = {
         "timestamp":    now_ts,
         "exit_time":    now_ts,
         "start_time":   st_time,
         "entry_time":   st_time,
         "symbol":       sym_name,
-        "pnl":          round(real_pnl, 2),
-        "total_pnl":    round(real_pnl, 2),
+        "pnl":          round(real_pnl, 4),
+        "total_pnl":    round(real_pnl, 4),
+        "raw_pnl":      round(float(pnl), 2),
+        "is_cent":      is_cent_account,
+        "type":         trade_side,
+        "side":         trade_side,
         "exit_reason":  exit_reason,
         "duration":     dur_val,
         "is_win":       real_pnl > 0.0,
@@ -2162,8 +2208,14 @@ def sync_cycle_history_from_trades(self):
                         cycle["total_pnl"] = 0.0
                         cycle["fills_count"] = 0
                         cycle["mt5_synced"] = True
-                    cycle["total_pnl"] = round(cycle.get("total_pnl", 0.0) + pnl_val, 3)
+                    cycle["total_pnl"] = round(cycle.get("total_pnl", 0.0) + pnl_val, 4)
                     cycle["pnl"] = cycle["total_pnl"]
+                    raw_add = float(item.get("raw_pnl", pnl_val * (100.0 if item.get("is_cent") else 1.0)))
+                    cycle["raw_pnl"] = round(cycle.get("raw_pnl", 0.0) + raw_add, 2)
+                    cycle["is_cent"] = item.get("is_cent", cycle.get("is_cent", False))
+                    if not cycle.get("type"):
+                        cycle["type"] = item.get("type", "BUY")
+                        cycle["side"] = cycle["type"]
                     fills_add = max(1, int(item.get("fills_count", item.get("size", 1))))
                     cycle["fills_count"] = cycle.get("fills_count", 0) + fills_add
                     cycle["trades_count"] = cycle["fills_count"]
@@ -2180,14 +2232,27 @@ def sync_cycle_history_from_trades(self):
             if not merged:
                 last_cid = max((c.get("cycle_id", 0) for c in self.cycle_history if isinstance(c.get("cycle_id"), (int, float))), default=0)
                 new_cid = int(last_cid) + 1
+                deal_t = item.get("type", "BUY")
+                en_p = float(item.get("deploy_price", item.get("entry_price", 0.0)))
+                ex_p = float(item.get("exit_price", item.get("close_price", 0.0)))
+                if not deal_t or deal_t not in ("BUY", "SELL"):
+                    if en_p > 0 and ex_p > 0 and abs(pnl_val) > 0.0001:
+                        deal_t = "BUY" if ((ex_p > en_p and pnl_val > 0) or (ex_p < en_p and pnl_val < 0)) else "SELL"
+                    else:
+                        deal_t = "BUY"
+                raw_val = float(item.get("raw_pnl", pnl_val * (100.0 if item.get("is_cent") else 1.0)))
                 self.cycle_history.append({
                     "cycle_id": new_cid,
-                    "total_pnl": round(pnl_val, 3),
-                    "pnl": round(pnl_val, 3),
+                    "total_pnl": round(pnl_val, 4),
+                    "pnl": round(pnl_val, 4),
+                    "raw_pnl": round(raw_val, 2),
+                    "is_cent": item.get("is_cent", False),
                     "symbol": item_sym,
-                    "deploy_price": float(item.get("deploy_price", item.get("entry_price", 0.0))),
-                    "entry_price": float(item.get("entry_price", item.get("open_price", 0.0))),
-                    "exit_price": float(item.get("exit_price", item.get("close_price", 0.0))),
+                    "type": deal_t,
+                    "side": deal_t,
+                    "deploy_price": en_p,
+                    "entry_price": float(item.get("entry_price", item.get("open_price", en_p))),
+                    "exit_price": ex_p,
                     "fills_count": max(1, int(item.get("fills_count", item.get("size", 1)))),
                     "trades_count": max(1, int(item.get("fills_count", item.get("size", 1)))),
                     "exit_reason": item.get("exit_reason", "TARGET_PROFIT" if pnl_val > 0 else "STOP_LOSS"),
@@ -2715,15 +2780,89 @@ def align_basket_take_profits(self, current_price: float, timestamp: float) -> i
 def sync_trap_mode_realtime(self, current_price: float, timestamp: float) -> bool:
     """
     Real-Time Trap Mode Protection Engine.
-    Ensures active MT5 grid orders stay stable without canceling active orders in a loop.
-    Pending orders remain active on MT5 so they can fill cleanly into trades.
+    Guarantees active pending orders strictly conform to the configured/evaluated Trap Mode.
+    If Trap Mode is SELL_ONLY: Instantly cancels ANY active BUY pending orders.
+    If Trap Mode is BUY_ONLY: Instantly cancels ANY active SELL pending orders.
     """
-    return False
+    if not hasattr(self, "broker"):
+        return False
+
+    now = timestamp or time.time()
+    last_sync = getattr(self, "_last_trap_sync_time", 0.0)
+    if now - last_sync < 1.5:
+        return False
+    self._last_trap_sync_time = now
+
+    side_cfg = str(getattr(self, "pending_order_side_mode", "AUTO_ADAPTIVE")).upper()
+    if side_cfg == "AUTO_ADAPTIVE":
+        last_eval = getattr(self, "last_auto_eval", None)
+        if isinstance(last_eval, dict):
+            auto_uni = str(last_eval.get("unidirectional_mode", "")).upper()
+            if "BUY" in auto_uni and "ONLY" in auto_uni:
+                side_cfg = "BUY_ONLY"
+            elif "SELL" in auto_uni and "ONLY" in auto_uni:
+                side_cfg = "SELL_ONLY"
+        if side_cfg == "AUTO_ADAPTIVE":
+            auto_uni = str(getattr(self, "unidirectional_mode", "")).upper()
+            if "BUY" in auto_uni and "ONLY" in auto_uni:
+                side_cfg = "BUY_ONLY"
+            elif "SELL" in auto_uni and "ONLY" in auto_uni:
+                side_cfg = "SELL_ONLY"
+
+    if side_cfg not in ("SELL_ONLY", "BUY_ONLY"):
+        return False
+
+    sym_name = str(getattr(self.broker, "symbol", getattr(self, "symbol_code", ""))).upper()
+    canceled_any = False
+
+    # 1. Purge from broker.pending_orders cache
+    pending = getattr(self.broker, "pending_orders", {})
+    to_cancel_ids = []
+    for oid, o in list(pending.items()):
+        o_type = str(getattr(o, "type", "")).upper()
+        if side_cfg == "SELL_ONLY" and "BUY" in o_type:
+            to_cancel_ids.append(oid)
+        elif side_cfg == "BUY_ONLY" and "SELL" in o_type:
+            to_cancel_ids.append(oid)
+
+    for oid in to_cancel_ids:
+        try:
+            print(f"[{sym_name}] 🛡️ [TRAP_MODE_ENFORCER] Purging invalid counter-trend order {oid} in {side_cfg} mode.")
+            self.broker.cancel_order(oid)
+            canceled_any = True
+        except Exception as e:
+            import logging; logging.warning(f"Failed to cancel invalid order {oid}: {e}")
+
+    # 2. Check live broker orders if available
+    if hasattr(self.broker, "_fetch_live_orders") and hasattr(self.broker, "cancel_order_by_ticket"):
+        try:
+            ex_sym = getattr(self.broker, "get_exness_symbol", lambda x: x)(sym_name) or sym_name
+            live_orders = self.broker._fetch_live_orders(ex_sym)
+            type_map = {0: 'BUY', 1: 'SELL', 2: 'BUY_LIMIT', 3: 'SELL_LIMIT', 4: 'BUY_STOP', 5: 'SELL_STOP'}
+            for lo in live_orders or []:
+                raw_type = getattr(lo, "type", None)
+                t_str = type_map.get(raw_type, str(raw_type)).upper()
+                ticket = getattr(lo, "ticket", None)
+                if not ticket:
+                    continue
+                if side_cfg == "SELL_ONLY" and "BUY" in t_str:
+                    print(f"[{sym_name}] 🛡️ [LIVE_MT5_PURGE] Cancelling invalid live BUY order {ticket} ({t_str}) in SELL_ONLY mode.")
+                    self.broker.cancel_order_by_ticket(ticket)
+                    canceled_any = True
+                elif side_cfg == "BUY_ONLY" and "SELL" in t_str:
+                    print(f"[{sym_name}] 🛡️ [LIVE_MT5_PURGE] Cancelling invalid live SELL order {ticket} ({t_str}) in BUY_ONLY mode.")
+                    self.broker.cancel_order_by_ticket(ticket)
+                    canceled_any = True
+        except Exception as e:
+            import logging; logging.warning(f"Live trap sync error: {e}")
+
+    return canceled_any
+
 
 def enforce_global_hedged_recovery(self, current_price: float, timestamp: float) -> bool:
     """
     Monitors global hedged PnL. If both BUY and SELL positions are open
-    and total net PnL crosses $1.00, it closes EVERYTHING and resets.
+    and total net PnL crosses dynamic threshold, it securely closes the basket in profit.
     """
     _open_pos = getattr(self.broker, "open_positions", {})
     if len(_open_pos) == 0:
@@ -2768,7 +2907,8 @@ def enforce_global_hedged_recovery(self, current_price: float, timestamp: float)
             
         drop_limit = max(dynamic_threshold, self._basket_max_pnl * 0.80)
         
-        if is_reversal or total_pnl <= drop_limit:
+        # Hard requirement: total_pnl > 0.0 to prevent locking in negative basket losses
+        if (is_reversal or total_pnl <= drop_limit) and total_pnl > 0.0:
             reason = "TREND REVERSAL" if is_reversal else f"TRAILING PROFIT DROP (Peak: ${self._basket_max_pnl:.2f}, Drop Limit: ${drop_limit:.2f})"
             print(f"[{sym_name}] 💥 [BASKET HARVEST] {reason}. Securing +${total_pnl:.2f} net profit. Nuking entire basket!")
             if hasattr(self.broker, "close_all_positions"):

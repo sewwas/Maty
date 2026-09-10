@@ -15,9 +15,7 @@
     "target_profit": 5.0,
     "stop_loss": 25.0,
     "auto_redeploy": true,
-    "flat_levels": 3,
-    "oco_enabled": false,
-    "max_straggler_loss": 2.0
+    "flat_levels": 3
   },
   "trade_history": [],
   "deployed": false,
