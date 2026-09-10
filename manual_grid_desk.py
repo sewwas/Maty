@@ -100,7 +100,7 @@ def load_state() -> dict:
             "lot_size": 0.01,
             "flat_levels": 3,
             "lot_mult": 1.0,
-            "target_profit": 100.0,
+            "target_profit": 5.0,
             "stop_loss": 500.0,
             "auto_redeploy": True,
             "side_harvest": True,
@@ -890,17 +890,9 @@ def get_pnl_monitor():
                             acct_curr = acc_i.get("currency", "USD")
                             curr_sym = "¢" if acct_curr == "USC" else "$"
 
-                            # Auto-protect against Cent-account scale mismatch:
-                            if acct_curr == "USC" and sl_limit <= 50.0:
-                                sl_limit = 500.0
-                                shared["stop_loss"] = 500.0
-                                cur_cfg["stop_loss"] = 500.0
-                                if tp_target <= 10.0:
-                                    tp_target = 25.0
-                                    shared["target_profit"] = 25.0
-                                    cur_cfg["target_profit"] = 25.0
-                                cur_state["grid_config"] = cur_cfg
-                                save_state(cur_state)
+                            # Ensure monitor uses configured targets
+                            shared["target_profit"] = tp_target
+                            shared["stop_loss"] = sl_limit
 
                             in_startup_grace = (now_t - monitor_start_time) < 3.0
                             gap_step = float(cur_cfg.get("gap_value", 2.0))
@@ -1479,17 +1471,6 @@ pending_ord   = get_live_pending(brk)
 acc           = get_account_summary(brk)
 cfg           = state["grid_config"]
 
-# Auto-migrate legacy USD defaults if active account is Cent (USC)
-if acc.get("currency", "USD") == "USC":
-    if float(cfg.get("stop_loss", 0.0)) <= 50.0:
-        cfg["stop_loss"] = 500.0
-        state["grid_config"]["stop_loss"] = 500.0
-        save_state(state)
-    if float(cfg.get("target_profit", 0.0)) <= 10.0:
-        cfg["target_profit"] = 100.0
-        state["grid_config"]["target_profit"] = 100.0
-        save_state(state)
-
 # Update monitor's target/SL from current config
 monitor["target_profit"] = cfg["target_profit"]
 monitor["stop_loss"]     = cfg["stop_loss"]
@@ -1763,16 +1744,10 @@ with config_col:
     if curr_label == "USC":
         st.caption("🪙 **Cent Account Active:** Targets & limits are in **US Cents (USC)**. 100 USC = $1.00 USD. E.g. 150 USC ≈ $1.50 USD.")
 
-    default_tp = 100.0 if curr_label == "USC" else 5.0
+    default_tp = 5.0 if curr_label == "USC" else 5.0
     default_sl = 500.0 if curr_label == "USC" else 25.0
     val_tp = float(cfg.get("target_profit", default_tp))
     val_sl = float(cfg.get("stop_loss", default_sl))
-    if curr_label == "USC" and val_sl <= 50.0:
-        val_sl = 500.0
-        cfg["stop_loss"] = 500.0
-    if curr_label == "USC" and val_tp <= 10.0:
-        val_tp = 100.0
-        cfg["target_profit"] = 100.0
 
     col_r1, col_r2, col_r3 = st.columns(3)
     with col_r1:
@@ -1781,7 +1756,7 @@ with config_col:
             value=val_tp,
             min_value=0.10,
             max_value=100000.0,
-            step=5.0 if curr_label == "USC" else 0.50,
+            step=1.0 if curr_label == "USC" else 0.50,
             format="%.2f",
             help=f"Target profit for 2+ filled orders on a side, or both sides combined in {curr_label}.",
             key="mgd_tp",
