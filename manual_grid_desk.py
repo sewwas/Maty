@@ -103,7 +103,8 @@ def load_state() -> dict:
             "target_profit": 5.0,
             "stop_loss": 500.0,
             "auto_redeploy": True,
-            "side_harvest": True,
+            "cycle_close_all": True,
+            "side_harvest": False,
             "single_tp": 1.50,
         },
         "trade_history": [],
@@ -901,106 +902,35 @@ def get_pnl_monitor():
                             in_startup_grace = (now_t - monitor_start_time) < 3.0
                             gap_step = float(cur_cfg.get("gap_value", 2.0))
 
-                            # ── 1. Side-Isolated Harvest (Single-Fill 1.50 TP vs Multi-Fill Target Profit) ──
-                            if cur_cfg.get("side_harvest", True) and not shared["triggered"]:
-                                single_tp = float(cur_cfg.get("single_tp", 1.50))
+                            # ── Unified Cycle Close: ALWAYS Close ALL With Profit & New Start ──
+                            single_tp = float(cur_cfg.get("single_tp", 1.50))
+                            n_pos = len(positions)
 
-                                # --- BUY Side Evaluation ---
-                                if n_buy > 0:
-                                    buy_peak = max(float(shared.get("buy_peak", 0.0) or 0.0), buy_pnl)
-                                    shared["buy_peak"] = round(buy_peak, 2)
-                                    
-                                    # 1 order filled individually (opposite side 0 fills) -> Single-Fill TP (1.50)
-                                    # 2+ orders filled OR both sides filled -> full Target Profit (tp_target)
-                                    is_buy_single = (n_buy == 1 and n_sell == 0)
-                                    buy_target = single_tp if is_buy_single else tp_target
-                                    
-                                    if buy_pnl >= buy_target:
-                                        close_positions_by_side(brk, "BUY")
-                                        cancel_pending_by_side(brk, "BUY")
-                                        shared["buy_peak"] = 0.0
-                                        h_label = f"1-Order Scalp (+{single_tp:.2f})" if is_buy_single else f"Target Profit (+{tp_target:.2f})"
-                                        shared["last_msg"] = f"🎯 BUY HARVEST ({h_label}): +{curr_sym}{buy_pnl:.2f} {acct_curr} Banked! ({n_buy} pos closed independently)."
-                                        logging.info(f"[Manual Grid Harvest] {shared['last_msg']}")
-                                        positions = [p for p in positions if getattr(p, "type", 0) != 0]
-                                        buy_positions = []
-                                        n_buy = 0
-                                        buy_pnl = 0.0
-                                        shared["buy_pnl"] = 0.0
-                                    elif n_buy >= 2 and buy_peak >= (tp_target * 0.60):
-                                        min_floor = max(0.20 if acct_curr != "USC" else 1.0, tp_target * 0.20)
-                                        buy_floor = min(max(min_floor, buy_peak * 0.50), buy_peak * 0.80)
-                                        if buy_pnl <= buy_floor and buy_pnl > 0:
-                                            close_positions_by_side(brk, "BUY")
-                                            cancel_pending_by_side(brk, "BUY")
-                                            shared["buy_peak"] = 0.0
-                                            shared["last_msg"] = f"🛡️ BUY TRAIL LOCK: +{curr_sym}{buy_pnl:.2f} {acct_curr} Secured! (Peak was {curr_sym}{buy_peak:.2f})."
-                                            logging.info(f"[Manual Grid Harvest] {shared['last_msg']}")
-                                            positions = [p for p in positions if getattr(p, "type", 0) != 0]
-                                            buy_positions = []
-                                            n_buy = 0
-                                            buy_pnl = 0.0
-                                            shared["buy_pnl"] = 0.0
-                                else:
-                                    shared["buy_peak"] = 0.0
+                            # Determine cycle target: 1 order filled -> single_tp (1.50); 2+ orders filled -> tp_target (e.g. 5.00)
+                            if n_pos == 1:
+                                cycle_target = single_tp
+                                target_label = f"1-Order Scalp (+{single_tp:.2f})"
+                            else:
+                                cycle_target = tp_target
+                                target_label = f"Cycle Basket (+{tp_target:.2f})"
 
-                                # --- SELL Side Evaluation ---
-                                if n_sell > 0:
-                                    sell_peak = max(float(shared.get("sell_peak", 0.0) or 0.0), sell_pnl)
-                                    shared["sell_peak"] = round(sell_peak, 2)
-                                    
-                                    # 1 order filled individually (opposite side 0 fills) -> Single-Fill TP (1.50)
-                                    # 2+ orders filled OR both sides filled -> full Target Profit (tp_target)
-                                    is_sell_single = (n_sell == 1 and n_buy == 0)
-                                    sell_target = single_tp if is_sell_single else tp_target
-                                    
-                                    if sell_pnl >= sell_target:
-                                        close_positions_by_side(brk, "SELL")
-                                        cancel_pending_by_side(brk, "SELL")
-                                        shared["sell_peak"] = 0.0
-                                        h_label = f"1-Order Scalp (+{single_tp:.2f})" if is_sell_single else f"Target Profit (+{tp_target:.2f})"
-                                        shared["last_msg"] = f"🎯 SELL HARVEST ({h_label}): +{curr_sym}{sell_pnl:.2f} {acct_curr} Banked! ({n_sell} pos closed independently)."
-                                        logging.info(f"[Manual Grid Harvest] {shared['last_msg']}")
-                                        positions = [p for p in positions if getattr(p, "type", 0) != 1]
-                                        sell_positions = []
-                                        n_sell = 0
-                                        sell_pnl = 0.0
-                                        shared["sell_pnl"] = 0.0
-                                    elif n_sell >= 2 and sell_peak >= (tp_target * 0.60):
-                                        min_floor = max(0.20 if acct_curr != "USC" else 1.0, tp_target * 0.20)
-                                        sell_floor = min(max(min_floor, sell_peak * 0.50), sell_peak * 0.80)
-                                        if sell_pnl <= sell_floor and sell_pnl > 0:
-                                            close_positions_by_side(brk, "SELL")
-                                            cancel_pending_by_side(brk, "SELL")
-                                            shared["sell_peak"] = 0.0
-                                            shared["last_msg"] = f"🛡️ SELL TRAIL LOCK: +{curr_sym}{sell_pnl:.2f} {acct_curr} Secured! (Peak was {curr_sym}{sell_peak:.2f})."
-                                            logging.info(f"[Manual Grid Harvest] {shared['last_msg']}")
-                                            positions = [p for p in positions if getattr(p, "type", 0) != 1]
-                                            sell_positions = []
-                                            sell_pnl = 0.0
-                                            shared["sell_pnl"] = 0.0
-                                else:
-                                    shared["sell_peak"] = 0.0
-
-                            # ── 3. Both Sides Filled / Combined Basket Check ──
-                            pnl = sum(float(getattr(p, "profit", 0.0)) for p in positions)
-                            shared["last_pnl"] = round(pnl, 2)
+                            shared["cycle_target"] = round(cycle_target, 2)
                             current_peak = max(float(shared.get("peak_pnl", 0.0) or 0.0), pnl)
                             shared["peak_pnl"] = round(current_peak, 2)
 
                             exit_action = None
                             exit_msg = ""
 
-                            if pnl >= tp_target and not shared["triggered"]:
+                            if pnl >= cycle_target and not shared["triggered"]:
                                 exit_action = "FULL_TP"
-                                exit_msg = f"🎯 TARGET PROFIT HIT: {curr_sym}{pnl:+.2f} {acct_curr} (Target: +{curr_sym}{tp_target:.2f} {acct_curr}) — 100% ASAP Closing ALL Active & Pending Orders!"
-                            elif current_peak >= (tp_target * 0.60) and not shared["triggered"]:
-                                min_floor = max(0.10 if acct_curr != "USC" else 0.50, tp_target * 0.20)
+                                exit_msg = f"🎯 TARGET PROFIT HIT ({target_label}): {curr_sym}{pnl:+.2f} {acct_curr} (Target: +{curr_sym}{cycle_target:.2f} {acct_curr}) — Closing ALL {n_pos} Cycle Positions & Pendings!"
+                            elif current_peak >= (cycle_target * 0.60) and not shared["triggered"] and n_pos >= 2:
+                                min_floor = max(0.10 if acct_curr != "USC" else 0.50, cycle_target * 0.20)
                                 trailing_floor = min(max(min_floor, current_peak * 0.50), current_peak * 0.80)
                                 shared["trail_floor"] = round(trailing_floor, 2)
                                 if pnl <= trailing_floor:
                                     exit_action = "TRAIL_LOCK"
-                                    exit_msg = f"🛡️ TRAILING PROFIT LOCK HIT: {curr_sym}{pnl:+.2f} {acct_curr} (Peak was {curr_sym}{current_peak:.2f}, Floor: {curr_sym}{trailing_floor:.2f}) — Securing locked profit!"
+                                    exit_msg = f"🛡️ TRAILING PROFIT LOCK HIT: {curr_sym}{pnl:+.2f} {acct_curr} (Peak was {curr_sym}{current_peak:.2f}, Floor: {curr_sym}{trailing_floor:.2f}) — Securing locked profit, closing ALL {n_pos} positions!"
                             else:
                                 shared["trail_floor"] = 0.0
 
@@ -1034,17 +964,15 @@ def get_pnl_monitor():
                                             fresh_s["grid_levels"] = new_levels
                                             fresh_s["grid_config"]["center_price"] = new_center
                                             save_state(fresh_s)
-                                            shared["last_msg"] = f"{action_label} {curr_sym}{pnl:+.2f} {acct_curr}! 100% Closed. 🚀 Auto-deployed NEW GRID ({placed} orders) centered at ${new_center:,.2f}"
+                                            shared["last_msg"] = f"{action_label} {curr_sym}{pnl:+.2f} {acct_curr}! 100% ALL CLOSED ({n_pos} pos). 🚀 NEW START: Redeployed fresh grid ({placed} orders) @ ${new_center:,.2f}"
                                             logging.info(f"[Manual Grid Monitor] {shared['last_msg']}")
                                         else:
-                                            shared["last_msg"] = f"{action_label} {curr_sym}{pnl:+.2f} {acct_curr}! 100% Closed. Redeploy warnings: {'; '.join(errors[:2])}"
+                                            shared["last_msg"] = f"{action_label} {curr_sym}{pnl:+.2f} {acct_curr}! 100% ALL CLOSED ({n_pos} pos). Redeploy warnings: {'; '.join(errors[:2])}"
                                     else:
-                                        shared["last_msg"] = f"{action_label} {curr_sym}{pnl:+.2f} {acct_curr}! {flat_res} · Desk is READY for next grid."
+                                        shared["last_msg"] = f"{action_label} {curr_sym}{pnl:+.2f} {acct_curr}! {flat_res} · ALL CLOSED. Desk is READY for next grid."
 
                                     shared["peak_pnl"] = 0.0
                                     shared["trail_floor"] = 0.0
-                                    shared["buy_peak"] = 0.0
-                                    shared["sell_peak"] = 0.0
                                     time.sleep(1.0)
                                 finally:
                                     shared["triggered"] = False
@@ -1600,8 +1528,10 @@ s_pnl_val = float(monitor.get("sell_pnl", 0.0) or 0.0)
 b_color = "#4ade80" if b_pnl_val > 0 else ("#f87171" if b_pnl_val < 0 else "#a1a1aa")
 s_color = "#4ade80" if s_pnl_val > 0 else ("#f87171" if s_pnl_val < 0 else "#a1a1aa")
 
-side_active = bool(cfg.get("side_harvest", True))
+side_active = bool(cfg.get("cycle_close_all", True))
 cur_single_tp = float(cfg.get("single_tp", 1.50))
+is_redeploy = bool(cfg.get("auto_redeploy", True))
+active_cycle_target = cur_single_tp if len(open_pos) <= 1 else cur_tp
 
 st.markdown(f'''
 <div style="background:#141417;border:1px solid #27272a;border-radius:10px;padding:12px 16px;margin:10px 0 14px 0;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;">
@@ -1610,10 +1540,13 @@ st.markdown(f'''
             {mon_status_badge}
         </span>
         <span style="background:#064e3b;color:#6ee7b7;border:1px solid #047857;font-size:0.72rem;font-weight:600;padding:3px 8px;border-radius:5px;">
-            {'🎯 Side-Harvest: ON' if side_active else '🎯 Side-Harvest: OFF'}
+            🎯 Cycle-Close: ALL (100% Flat)
+        </span>
+        <span style="background:{'#1e1b4b' if is_redeploy else '#27272a'};color:{'#c7d2fe' if is_redeploy else '#a1a1aa'};border:1px solid {'#4338ca' if is_redeploy else '#3f3f46'};font-size:0.72rem;font-weight:600;padding:3px 8px;border-radius:5px;">
+            {'🔄 New Start: Auto-Deploy ON' if is_redeploy else '⏸️ Auto-Deploy OFF'}
         </span>
         <span style="background:#27272a;color:#d4d4d8;border:1px solid #3f3f46;font-size:0.72rem;font-weight:600;padding:3px 8px;border-radius:5px;font-family:'JetBrains Mono',monospace;">
-            1-Fill TP: +{curr_sym}{cur_single_tp:.2f}
+            1-Fill: +{curr_sym}{cur_single_tp:.2f} | 2+ Basket: +{curr_sym}{cur_tp:.2f}
         </span>
     </div>
     <div style="display:flex;align-items:center;gap:12px;font-size:0.78rem;font-family:'JetBrains Mono',monospace;flex-wrap:wrap;">
@@ -1623,7 +1556,7 @@ st.markdown(f'''
         <span style="color:#71717a;">|</span>
         <span style="color:#a1a1aa;">Net: <b style="color:{'#4ade80' if floating_pnl >= 0 else '#f87171'}">{curr_sym}{floating_pnl:+.2f} {display_curr}</b></span>
         <span style="color:#71717a;">|</span>
-        <span style="color:#a1a1aa;">Target: <b style="color:#60a5fa">+{curr_sym}{cur_tp:.2f}</b></span>
+        <span style="color:#a1a1aa;">Target: <b style="color:#60a5fa">+{curr_sym}{active_cycle_target:.2f}</b></span>
         {trail_info_html}
     </div>
 </div>
@@ -1791,15 +1724,15 @@ with config_col:
 
     col_t1, col_t2 = st.columns(2)
     with col_t1:
-        side_harvest = st.toggle(
-            "🎯 Side Harvest",
-            value=bool(cfg.get("side_harvest", True)),
-            help="Take profit on BUY or SELL independently as soon as it wins (1 order at 1.50, 2+ at Target Profit).",
-            key="mgd_side_harvest",
+        cycle_close_all = st.toggle(
+            "🎯 Close All Cycle on Target",
+            value=bool(cfg.get("cycle_close_all", True)),
+            help="When profit target is reached, 100% close ALL active positions (both BUY & SELL) and cancel all pending orders together. Never leave losing opposite side open!",
+            key="mgd_cycle_close_all",
         )
     with col_t2:
         auto_redeploy = st.toggle(
-            "🔄 Auto-Deploy on TP",
+            "🔄 Auto-Deploy (New Start)",
             value=bool(cfg.get("auto_redeploy", True)),
             help="When Target Profit is reached: automatically closes active positions, cancels pending orders, and redeploys a fresh grid.",
             key="mgd_auto_redeploy",
@@ -1808,7 +1741,8 @@ with config_col:
     # Persist config changes
     new_cfg_vals = {
         "auto_redeploy":      auto_redeploy,
-        "side_harvest":       side_harvest,
+        "cycle_close_all":    cycle_close_all,
+        "side_harvest":       False,
         "single_tp":          single_tp,
         "center_mode":        center_mode,
         "center_price":       center_price_input,
