@@ -104,6 +104,34 @@ with st.sidebar:
         engine.config.setdefault("strategy", {})["trailing_atr_multiplier"] = trail_mult
         engine.save_config()
 
+    st.markdown("#### 🌐 Asian Session Volatility Gates")
+    curr_max_asian = float(engine.config.get("strategy", {}).get("max_asian_range_pips", 650.0))
+    max_asian_val = st.slider(
+        "Max Asian Range (pips)",
+        min_value=100.0,
+        max_value=1200.0,
+        value=curr_max_asian,
+        step=25.0,
+        help="Ceiling for Asian range. Default 650 pips ($65) accounts for Gold volatility at $4,300+."
+    )
+    if max_asian_val != curr_max_asian:
+        engine.config.setdefault("strategy", {})["max_asian_range_pips"] = max_asian_val
+        engine.save_config()
+        engine.recalculate_asian_range()
+        st.rerun()
+
+    curr_bypass = bool(engine.config.get("strategy", {}).get("allow_exhausted_breakouts", False))
+    bypass_val = st.toggle(
+        "⚡ Bypass Standby (Trade High Volatility)",
+        value=curr_bypass,
+        help="Enables breakouts even if Asian session range is exhausted."
+    )
+    if bypass_val != curr_bypass:
+        engine.config.setdefault("strategy", {})["allow_exhausted_breakouts"] = bypass_val
+        engine.save_config()
+        engine.recalculate_asian_range()
+        st.rerun()
+
     current_max = int(engine.config.get("max_trades_per_day", 0))
     trade_opts = [0, 3, 5, 10, 20]
     sel_idx = trade_opts.index(current_max) if current_max in trade_opts else 0
@@ -182,8 +210,16 @@ elif status.get("is_buy_locked"):
 elif not box_info.get("valid", False) and box_info.get("range_pips", 0) > 0:
     s_cfg = engine.config.get("strategy", {})
     cfg_min_p = float(s_cfg.get("min_asian_range_pips", 15.0))
-    cfg_max_p = float(s_cfg.get("max_asian_range_pips", 120.0))
-    st.info(f"⏸️ **ASIAN RANGE STANDBY**: {box_info.get('status')}. Trading is paused today because session volatility is outside optimal breakout parameters ({cfg_min_p:.0f}–{cfg_max_p:.0f} pips).")
+    cfg_max_p = float(s_cfg.get("max_asian_range_pips", 650.0))
+    c_b1, c_b2 = st.columns([5, 1])
+    with c_b1:
+        st.info(f"⏸️ **ASIAN RANGE STANDBY**: {box_info.get('status')}. Trading is paused today because session volatility is outside optimal breakout parameters ({cfg_min_p:.0f}–{cfg_max_p:.0f} pips). Use sidebar to raise threshold or enable bypass.")
+    with c_b2:
+        if st.button("⚡ Re-Evaluate", key="btn_reeval_asian", use_container_width=True):
+            engine.recalculate_asian_range()
+            st.rerun()
+elif "BYPASS" in str(box_info.get("status", "")):
+    st.warning(f"⚡ **HIGH VOLATILITY BYPASS ENGAGED**: {box_info.get('status')}. Breakout trading remains active despite extended Asian session range.")
 
 # Top KPI Metric Cards
 m1, m2, m3, m4, m5 = st.columns(5)

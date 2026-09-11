@@ -100,7 +100,8 @@ class TrendRunnerEngine:
                 "be_offset_points": 50,
                 "trailing_atr_multiplier": 2.0,
                 "min_asian_range_pips": 15.0,
-                "max_asian_range_pips": 120.0,
+                "max_asian_range_pips": 650.0,
+                "allow_exhausted_breakouts": False,
                 "buffer_pips": 3.0,
                 "max_spread_pips": 4.5
             }
@@ -241,11 +242,33 @@ class TrendRunnerEngine:
 
         strat_cfg = self.config.get("strategy", {})
         min_pips = float(strat_cfg.get("min_asian_range_pips", 15.0))
-        max_pips = float(strat_cfg.get("max_asian_range_pips", 120.0))
+        max_pips = float(strat_cfg.get("max_asian_range_pips", 650.0))
+        allow_exhausted = bool(strat_cfg.get("allow_exhausted_breakouts", False))
+
+        def _evaluate_box(h: float, l: float, r: float) -> Tuple[bool, str]:
+            if allow_exhausted and r >= min_pips:
+                return True, (f"BYPASS_ACTIVE ({r:.1f} pips — TRADING ENABLED)" if r > max_pips else f"OPTIMAL ({r:.1f} pips)")
+            is_val = (min_pips <= r <= max_pips)
+            if r < min_pips:
+                desc = f"TOO_NARROW ({r:.1f} < {min_pips:.0f} pips — STANDBY)"
+            elif r > max_pips:
+                desc = f"EXHAUSTED ({r:.1f} > {max_pips:.0f} pips — STANDBY)"
+            else:
+                desc = f"OPTIMAL ({r:.1f} pips)"
+            return is_val, desc
 
         if df.empty:
-            box = self.state.get("asian_box", {"valid": False, "high": 0.0, "low": 0.0, "mid": 0.0, "range_pips": 0.0, "status": "WAITING_FOR_DATA"})
-            return box
+            box = self.state.get("asian_box", {})
+            if box.get("high", 0.0) > 0 and box.get("low", 0.0) > 0:
+                h = float(box.get("high", 0.0))
+                l = float(box.get("low", 0.0))
+                r = float(box.get("range_pips", round((h - l) * 10, 1)))
+                v, s = _evaluate_box(h, l, r)
+                box["valid"] = v
+                box["status"] = s
+                self.state["asian_box"] = box
+                return box
+            return box or {"valid": False, "high": 0.0, "low": 0.0, "mid": 0.0, "range_pips": 0.0, "status": "WAITING_FOR_DATA"}
 
         # Filter candles within 00:00 to 07:00 UTC today
         start_utc = datetime.datetime.combine(today_date, datetime.time(0, 0), tzinfo=datetime.timezone.utc)
@@ -257,14 +280,7 @@ class TrendRunnerEngine:
             low_val = float(asian_df["low"].min())
             mid_val = (high_val + low_val) / 2.0
             range_pips = round((high_val - low_val) * 10, 1)  # for Gold, $1 = 10 pips, $0.1 = 1 pip
-
-            is_valid = (min_pips <= range_pips <= max_pips)
-            if range_pips < min_pips:
-                status_desc = f"TOO_NARROW ({range_pips:.1f} < {min_pips:.0f} pips — STANDBY)"
-            elif range_pips > max_pips:
-                status_desc = f"EXHAUSTED ({range_pips:.1f} > {max_pips:.0f} pips — STANDBY)"
-            else:
-                status_desc = f"OPTIMAL ({range_pips:.1f} pips)"
+            is_valid, status_desc = _evaluate_box(high_val, low_val, range_pips)
 
             box = {
                 "high": round(high_val, 2),
@@ -277,19 +293,24 @@ class TrendRunnerEngine:
             self.state["asian_box"] = box
             return box
 
-        # Fallback to last known box if high > 0
+        # Fallback to last known box if high > 0, dynamically re-evaluating validity against current config
         last_box = self.state.get("asian_box", {})
         if last_box.get("high", 0.0) > 0:
+            h = float(last_box.get("high", 0.0))
+            l = float(last_box.get("low", 0.0))
+            r = float(last_box.get("range_pips", round((h - l) * 10, 1)))
+            v, s = _evaluate_box(h, l, r)
+            last_box["valid"] = v
+            last_box["status"] = s
+            self.state["asian_box"] = last_box
             return last_box
 
         # Quick estimate from last 30 candles if within Asian hours
         rec_high = float(df["high"].tail(30).max())
         rec_low = float(df["low"].tail(30).min())
         range_pips = round((rec_high - rec_low) * 10, 1)
-        is_valid = (min_pips <= range_pips <= max_pips)
-        status_desc = f"OPTIMAL ({range_pips:.1f} pips)" if is_valid else (
-            f"EXHAUSTED ({range_pips:.1f} > {max_pips:.0f} pips)" if range_pips > max_pips else f"TOO_NARROW ({range_pips:.1f} < {min_pips:.0f} pips)"
-        )
+        is_valid, status_desc = _evaluate_box(rec_high, rec_low, range_pips)
+
         box = {
             "high": round(rec_high, 2),
             "low": round(rec_low, 2),
@@ -300,6 +321,23 @@ class TrendRunnerEngine:
         }
         self.state["asian_box"] = box
         return box
+
+    def recalculate_asian_range(self) -> Dict[str, Any]:
+        """
+        Forces immediate re-evaluation of Asian range against current config thresholds.
+        Useful when user updates max_asian_range_pips or toggles allow_exhausted_breakouts.
+        """
+        with self._execution_lock:
+            sym = self.config.get("symbol", "XAUUSD")
+            df_raw = self.bridge.get_candles(sym, timeframe="M5", limit=288)
+            if not df_raw.empty:
+                self._cached_candles = self.compute_indicators(df_raw)
+                self._last_candle_fetch = time.time()
+            df = self._cached_candles if self._cached_candles is not None else pd.DataFrame()
+            box = self.get_asian_session_range(df)
+            self.save_state()
+            self.log(f"🔄 Asian range recalculated: {box.get('range_pips', 0)} pips -> {box.get('status')}")
+            return box
 
     def check_trading_window(self) -> Tuple[bool, str]:
         """
@@ -452,9 +490,9 @@ class TrendRunnerEngine:
         # Update stats & circuit breakers
         self._update_daily_stats_and_circuit_breakers(balance)
 
-        # Candle caching (fetch every 15 seconds)
+        # Candle caching (fetch every 15 seconds, 288 candles = 24 hours of M5)
         if self._cached_candles is None or (now_ts - self._last_candle_fetch > 15.0):
-            df_raw = self.bridge.get_candles(sym, timeframe="M5", limit=120)
+            df_raw = self.bridge.get_candles(sym, timeframe="M5", limit=288)
             if not df_raw.empty:
                 self._cached_candles = self.compute_indicators(df_raw)
                 self._last_candle_fetch = now_ts

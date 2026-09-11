@@ -30,7 +30,8 @@
     "trailing_atr_multiplier": 1.2,
     "be_offset_points": 20,
     "min_asian_range_pips": 15.0,
-    "max_asian_range_pips": 220.0,
+    "max_asian_range_pips": 650.0,
+    "allow_exhausted_breakouts": false,
     "buffer_pips": 3.0,
     "max_spread_pips": 4.5
   },
