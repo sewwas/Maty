@@ -46,17 +46,32 @@ echo "Starting Port 80 Command Center Portal (hub.py)..."
 nohup $PYTHON_BIN /root/Maty/hub.py > /root/Maty/logs/hub.log 2>&1 &
 echo "Command Center Portal started."
 
-echo "Starting Bot #1 Auto Grid Dashboard (Port 8501)..."
-nohup $STREAMLIT_BIN run /root/Maty/app.py --server.port 8501 --server.address 0.0.0.0 --server.headless true > /root/Maty/logs/streamlit_8501.log 2>&1 &
-echo "Bot #1 Dashboard started."
+if systemctl is-active bot1.service >/dev/null 2>&1 || systemctl is-enabled bot1.service >/dev/null 2>&1; then
+    echo "Restarting Bot #1 via systemd..."
+    systemctl restart bot1.service
+else
+    echo "Starting Bot #1 Auto Grid Dashboard (Port 8501)..."
+    nohup $STREAMLIT_BIN run /root/Maty/app.py --server.port 8501 --server.address 0.0.0.0 --server.headless true > /root/Maty/logs/streamlit_8501.log 2>&1 &
+    echo "Bot #1 Dashboard started."
+fi
 
-echo "Starting Bot #2 24/7 Grid Engine..."
-nohup $PYTHON_BIN /root/Maty/bot2_manual/grid_engine.py > /root/Maty/logs/bot2_engine.log 2>&1 &
-echo "Bot #2 Engine started."
+if systemctl is-active bot2-engine.service >/dev/null 2>&1 || systemctl is-enabled bot2-engine.service >/dev/null 2>&1; then
+    echo "Restarting Bot #2 24/7 Grid Engine via systemd..."
+    systemctl restart bot2-engine.service
+else
+    echo "Starting Bot #2 24/7 Grid Engine..."
+    nohup $PYTHON_BIN /root/Maty/bot2_manual/grid_engine.py > /root/Maty/logs/bot2_engine.log 2>&1 &
+    echo "Bot #2 Engine started."
+fi
 
-echo "Starting Bot #2 Manual Grid Desk (Port 8502)..."
-nohup $STREAMLIT_BIN run /root/Maty/bot2_manual/panel.py --server.port 8502 --server.address 0.0.0.0 --server.headless true > /root/Maty/logs/streamlit_8502.log 2>&1 &
-echo "Bot #2 Desk started."
+if systemctl is-active bot2-manual.service >/dev/null 2>&1 || systemctl is-enabled bot2-manual.service >/dev/null 2>&1; then
+    echo "Restarting Bot #2 Manual Grid Desk (Port 8502) via systemd..."
+    systemctl restart bot2-manual.service
+else
+    echo "Starting Bot #2 Manual Grid Desk (Port 8502)..."
+    nohup $STREAMLIT_BIN run /root/Maty/bot2_manual/panel.py --server.port 8502 --server.address 0.0.0.0 --server.headless true > /root/Maty/logs/streamlit_8502.log 2>&1 &
+    echo "Bot #2 Desk started."
+fi
 
 echo "Starting Bot #3 Trend Engine..."
 nohup $PYTHON_BIN /root/Maty/bot3_trend/trend_engine.py > /root/Maty/logs/bot3_engine.log 2>&1 &
