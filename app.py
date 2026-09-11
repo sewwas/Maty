@@ -52,9 +52,9 @@ from core.auto_reading import PAIR_SAFETY_BOUNDS
 from core.services import PAMMMasterPool, send_telegram_alert, dispatch_trade_exit_signal
 from core.data import get_live_price, get_default_price, get_historical_klines, get_24h_market_stats
 
-_symbols = ["PAXGUSDT", "ETHUSDT"]
+_symbols = ["PAXGUSDT"]
 _symbol_labels = {
-    "PAXGUSDT": "XAUUSD (Gold — 🛡️ Mon-Fri Shield)",
+    "PAXGUSDT": "XAUUSD (Gold — 🛡️ High-Expectancy Grid)",
     "ETHUSDT": "ETHUSD (Ethereum)"
 }
 

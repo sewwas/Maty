@@ -618,7 +618,7 @@ def check_target_profit(self, current_price: float, timestamp: float) -> Optiona
         # Extreme Drawdown (Catastrophic Fallback Protection)
         if not exit_triggered:
             max_cycle_dd = float(getattr(self, "max_cycle_drawdown", 30.0) or 30.0) * cent_multiplier
-            hard_cap = 25.0 * cent_multiplier if is_cent_account else 25.0
+            hard_cap = 12.0 * cent_multiplier if is_cent_account else 12.0
             extreme_dd = min(hard_cap, max_cycle_dd)
             if total_pnl <= -abs(extreme_dd):
                 exit_triggered = True
@@ -673,7 +673,7 @@ def check_target_profit(self, current_price: float, timestamp: float) -> Optiona
                 total_vol = sum(float(getattr(p, "size", 0.01)) for p in self.broker.open_positions.values())
                 micro_lots = total_vol / 0.01
 
-                hard_cap = 25.0 * cent_multiplier if is_cent_account else 25.0
+                hard_cap = 12.0 * cent_multiplier if is_cent_account else 12.0
                 effective_sl = min(sl_limit * micro_lots, hard_cap)
                 if total_pnl <= -abs(effective_sl):
                     exit_triggered = True
@@ -688,8 +688,8 @@ def check_target_profit(self, current_price: float, timestamp: float) -> Optiona
 
     min_profit_threshold = 0.50 * cent_multiplier * micro_lots  # Minimum gross profit to close a cycle, mitigating fee attrition
     if not exit_triggered:
-        # Base basket target for full cycle (e.g. 5.0 - 8.0 for Gold, 3.0 for others in native account currency)
-        base_target = 8.0 if any(x in sym_u for x in ["XAU", "GOLD", "PAXG"]) else 3.0
+        # Base basket target for full cycle (e.g. 25.0 for Gold, 10.0 for others in native account currency)
+        base_target = 25.0 if any(x in sym_u for x in ["XAU", "GOLD", "PAXG"]) else 10.0
         
         default_target = base_target
         
@@ -702,7 +702,7 @@ def check_target_profit(self, current_price: float, timestamp: float) -> Optiona
         cycle_target = ai_target if ai_target > 0 else (user_target if user_target > 0 else default_target)
         
         is_gold = any(x in sym_u for x in ["XAU", "GOLD", "PAXG"])
-        min_gold_target = 5.0 if is_cent_account else 8.0
+        min_gold_target = 20.0 if is_cent_account else 25.0
         if is_gold and cycle_target < min_gold_target:
             cycle_target = min_gold_target
 
@@ -710,23 +710,24 @@ def check_target_profit(self, current_price: float, timestamp: float) -> Optiona
         effective_cycle_target = max(cycle_target, min_profit_threshold)
             
         # ── 1. Basket Target Profit (Strict Full Target) ──
-        # When floating profit reaches the full cycle target (e.g. $8+ for Gold), exit immediately.
+        # When floating profit reaches the full cycle target (e.g. $25+ for Gold), exit immediately.
         if total_pnl >= effective_cycle_target:
             exit_triggered = True
             exit_reason = "TARGET_PROFIT"
             print(f"[{sym_u}] 💰 [CYCLE TP HIT] Basket reached full target of ${effective_cycle_target:.2f} (Total PnL: ${total_pnl:.2f})! Instant Close All.")
 
         # ── 2. Basket Trailing Profit Lock (Guaranteed Profit Retention) ──
-        # If basket reaches >= 60% of target, track peak PnL and lock in trailing profit floor
+        # Track peak PnL and lock in high trailing profit floor (75% retention) once target is reached
         if not exit_triggered:
             basket_peak = float(getattr(self, "_basket_peak_pnl", 0.0) or 0.0)
             if total_pnl > basket_peak:
                 basket_peak = total_pnl
                 self._basket_peak_pnl = basket_peak
 
-            if basket_peak >= (effective_cycle_target * 0.60):
-                # Lock floor at 50% of peak (at least min_profit_threshold)
-                trailing_floor = max(min_profit_threshold, basket_peak * 0.50)
+            # Only activate trailing floor once PnL has reached the target profit to give trades room to breathe
+            if basket_peak >= effective_cycle_target:
+                # Lock floor at 75% of peak (guarantees retaining 75%+ of peak profit without choking on noise)
+                trailing_floor = max(effective_cycle_target * 0.70, basket_peak * 0.75)
                 if total_pnl <= trailing_floor:
                     exit_triggered = True
                     exit_reason = "TRAILING_PROFIT_LOCK"
@@ -1373,9 +1374,9 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
         gap_ratio = (gap_pct / 100.0) if gap_pct >= 0.50 else (gap_pct if gap_pct < 0.01 else gap_pct / 100.0)
 
         if any(x in sym_name for x in ["XAU", "PAXG", "GOLD"]):
-            # Give Gold more "noise room" so traps aren't placed too close together
-            gap_ratio = min(0.0035, max(0.0015, gap_ratio))
-            off_ratio = min(0.0035, max(0.0015, off_ratio))
+            # Give Gold solid breakout threshold to filter out false wicks during consolidation
+            gap_ratio = min(0.0040, max(0.0020, gap_ratio))
+            off_ratio = min(0.0045, max(0.0025, off_ratio))
         elif "ETH" in sym_name:
             gap_ratio = min(0.0020, max(0.0005, gap_ratio))
             off_ratio = min(0.0025, max(0.0010, off_ratio))
