@@ -643,62 +643,113 @@ with st.expander("⚙️ Account & History Settings (1 MT5 Account per Bot Limit
                 st.error(f"Clear Error: {reset_err}")
 
 # Sync MT5 History & Active Orders/Positions across all brokers
-if MT5_AVAILABLE:
-    try:
-        import MetaTrader5 as mt5_sys
-        if mt5_sys.initialize():
-            for sym_code, m_item in st.session_state.markets.items():
-                brk = m_item.get("broker")
-                if brk and hasattr(brk, "get_exness_symbol"):
-                    ex_s = brk.get_exness_symbol(sym_code) or sym_code
-                    aliases = {ex_s.upper(), sym_code.upper(), f"{ex_s}m".upper(), f"{ex_s}c".upper()}
-                    if any(x in sym_code.upper() for x in ["PAXG", "XAU", "GOLD"]):
-                        aliases.update(["XAUUSD", "GOLD", "PAXGUSDT", "XAUUSDm", "XAUUSDc"])
+_native_mt5_synced = False
+try:
+    import MetaTrader5 as mt5_sys
+    if mt5_sys.initialize():
+        _native_mt5_synced = True
+        for sym_code, m_item in st.session_state.markets.items():
+            brk = m_item.get("broker")
+            if brk and hasattr(brk, "get_exness_symbol"):
+                ex_s = brk.get_exness_symbol(sym_code) or sym_code
+                aliases = {ex_s.upper(), sym_code.upper(), f"{ex_s}m".upper(), f"{ex_s}c".upper()}
+                if any(x in sym_code.upper() for x in ["PAXG", "XAU", "GOLD"]):
+                    aliases.update(["XAUUSD", "GOLD", "PAXGUSDT", "XAUUSDm", "XAUUSDc"])
 
-                    ords = None
-                    for a_sym in aliases:
-                        ords = mt5_sys.orders_get(symbol=a_sym)
-                        if ords:
-                            break
-                    if not ords:
-                        all_o = mt5_sys.orders_get()
-                        if all_o:
-                            ords = [o for o in all_o if any(a_s in str(o.symbol).upper() for a_s in aliases)]
-
+                ords = None
+                for a_sym in aliases:
+                    ords = mt5_sys.orders_get(symbol=a_sym)
                     if ords:
+                        break
+                if not ords:
+                    all_o = mt5_sys.orders_get()
+                    if all_o:
+                        ords = [o for o in all_o if any(a_s in str(o.symbol).upper() for a_s in aliases)]
+
+                if ords:
+                    brk.pending_orders.clear()
+                    for o in ords:
+                        loc_id = f"mt5_{o.ticket}"
+                        t_type = "BUY_STOP" if o.type == 4 else ("SELL_STOP" if o.type == 5 else ("BUY_LIMIT" if o.type == 2 else "SELL_LIMIT"))
+                        ord_obj = Order(t_type, o.price_open, getattr(o, "volume_initial", 0.01), getattr(o, "time_setup", time.time()))
+                        ord_obj.order_id = loc_id
+                        ord_obj.mt5_ticket = o.ticket
+                        brk.pending_orders[loc_id] = ord_obj
+                else:
+                    brk.pending_orders.clear()
+
+                pos_list = None
+                for a_sym in aliases:
+                    pos_list = mt5_sys.positions_get(symbol=a_sym)
+                    if pos_list:
+                        break
+                if not pos_list:
+                    all_p = mt5_sys.positions_get()
+                    if all_p:
+                        pos_list = [p for p in all_p if any(a_s in str(p.symbol).upper() for a_s in aliases)]
+
+                if pos_list:
+                    brk.open_positions.clear()
+                    for p in pos_list:
+                        pos_id = str(p.ticket)
+                        p_type = "BUY" if p.type == 0 else "SELL"
+                        pos_obj = Position(p_type, p.price_open, getattr(p, "volume", 0.01), getattr(p, "time", time.time()), pos_id)
+                        pos_obj.profit = getattr(p, "profit", 0.0)
+                        brk.open_positions[pos_id] = pos_obj
+                else:
+                    brk.open_positions.clear()
+except Exception:
+    _native_mt5_synced = False
+
+if not _native_mt5_synced:
+    # Linux VPS REST Bridge Sync (When native Windows MT5 package is unavailable)
+    try:
+        for sym_code, m_item in st.session_state.markets.items():
+            brk = m_item.get("broker")
+            if brk and hasattr(brk, "_fetch_live_positions"):
+                ex_s = getattr(brk, "get_exness_symbol", lambda x: x)(sym_code) or sym_code
+                chk_aliases = {ex_s.upper(), sym_code.upper()}
+                if any(x in sym_code.upper() for x in ["PAXG", "XAU", "GOLD"]):
+                    chk_aliases.update(["XAUUSD", "GOLD", "PAXGUSDT", "XAUUSDm", "XAUUSDc"])
+
+                # Sync positions via REST
+                p_list = brk._fetch_live_positions(ex_s)
+                if not p_list:
+                    all_p = brk._fetch_live_positions()
+                    if all_p:
+                        p_list = [p for p in all_p if any(a_s in str(getattr(p, "symbol", "")).upper() for a_s in chk_aliases)]
+                if p_list:
+                    brk.open_positions.clear()
+                    for p in p_list:
+                        pos_id = str(getattr(p, "ticket", getattr(p, "position_id", id(p))))
+                        p_type = "BUY" if getattr(p, "type", 0) in (0, "BUY") else "SELL"
+                        pos_obj = Position(p_type, float(getattr(p, "price_open", 0.0)), float(getattr(p, "volume", 0.01)), float(getattr(p, "time", time.time())), pos_id)
+                        pos_obj.profit = float(getattr(p, "profit", 0.0))
+                        brk.open_positions[pos_id] = pos_obj
+                else:
+                    brk.open_positions.clear()
+
+                # Sync orders via REST
+                if hasattr(brk, "_fetch_live_orders"):
+                    o_list = brk._fetch_live_orders(ex_s)
+                    if not o_list:
+                        all_o = brk._fetch_live_orders()
+                        if all_o:
+                            o_list = [o for o in all_o if any(a_s in str(getattr(o, "symbol", "")).upper() for a_s in chk_aliases)]
+                    if o_list:
                         brk.pending_orders.clear()
-                        for o in ords:
+                        for o in o_list:
                             loc_id = f"mt5_{o.ticket}"
-                            t_type = "BUY_STOP" if o.type == 4 else ("SELL_STOP" if o.type == 5 else ("BUY_LIMIT" if o.type == 2 else "SELL_LIMIT"))
-                            ord_obj = Order(t_type, o.price_open, getattr(o, "volume_initial", 0.01), getattr(o, "time_setup", time.time()))
+                            t_val = getattr(o, "type", 2)
+                            t_type = "BUY_STOP" if t_val == 4 else ("SELL_STOP" if t_val == 5 else ("BUY_LIMIT" if t_val == 2 else "SELL_LIMIT"))
+                            ord_obj = Order(t_type, float(getattr(o, "price_open", 0.0)), float(getattr(o, "volume_initial", 0.01)), float(getattr(o, "time_setup", time.time())))
                             ord_obj.order_id = loc_id
-                            ord_obj.mt5_ticket = o.ticket
+                            ord_obj.mt5_ticket = getattr(o, "ticket", 0)
                             brk.pending_orders[loc_id] = ord_obj
                     else:
                         brk.pending_orders.clear()
-
-                    pos_list = None
-                    for a_sym in aliases:
-                        pos_list = mt5_sys.positions_get(symbol=a_sym)
-                        if pos_list:
-                            break
-                    if not pos_list:
-                        all_p = mt5_sys.positions_get()
-                        if all_p:
-                            pos_list = [p for p in all_p if any(a_s in str(p.symbol).upper() for a_s in aliases)]
-
-                    if pos_list:
-                        brk.open_positions.clear()
-                        for p in pos_list:
-                            pos_id = str(p.ticket)
-                            p_type = "BUY" if p.type == 0 else "SELL"
-                            pos_obj = Position(p_type, p.price_open, getattr(p, "volume", 0.01), getattr(p, "time", time.time()), pos_id)
-                            pos_obj.profit = getattr(p, "profit", 0.0)
-                            brk.open_positions[pos_id] = pos_obj
-                    else:
-                        brk.open_positions.clear()
     except Exception as e:
-        import logging; logging.warning(f"Exception: {e}")
+        import logging; logging.warning(f"Linux VPS Sync Exception: {e}")
 
 # ── GLOBAL KPI METRIC STRIP (6 COMPREHENSIVE REAL METRICS) ───────────────────
 _all_real_pnl  = sum(m.get("broker").realized_pnl for m in st.session_state.markets.values() if m.get("broker"))
@@ -1330,28 +1381,48 @@ with tab_desk:
                                     _all_o = brk._fetch_live_orders()
                                     if _all_o:
                                         live_o = [o for o in _all_o if any(_a in str(getattr(o, "symbol", "")).upper() for _a in chk_aliases)]
-                                if live_o:
-                                    pend_ord = max(pend_ord, len(live_o))
+                                if live_o is not None:
+                                    pend_ord = len(live_o)
                                     
                                 live_p = brk._fetch_live_positions(ex_s_chk)
                                 if not live_p:
                                     _all_p = brk._fetch_live_positions()
                                     if _all_p:
                                         live_p = [p for p in _all_p if any(_a in str(getattr(p, "symbol", "")).upper() for _a in chk_aliases)]
-                                if live_p:
-                                    open_pos = max(open_pos, len(live_p))
-                                    pair_pnl = sum(float(getattr(p, "profit", 0.0) or 0.0) for p in live_p)
-                                    if not brk.open_positions:
+                                if live_p is not None:
+                                    if live_p:
+                                        open_pos = len(live_p)
+                                        pair_pnl = sum(float(getattr(p, "profit", 0.0) or 0.0) for p in live_p)
+                                        active_tids = set()
                                         for p in live_p:
                                             pos_id = str(getattr(p, "ticket", getattr(p, "position_id", id(p))))
+                                            active_tids.add(pos_id)
                                             p_type = "BUY" if getattr(p, "type", 0) in (0, "BUY") else "SELL"
                                             p_entry = float(getattr(p, "price_open", getattr(p, "entry_price", 0.0)))
                                             p_vol = float(getattr(p, "volume", getattr(p, "size", 0.01)))
                                             p_pnl = float(getattr(p, "profit", 0.0))
-                                            pos_obj = Position(p_type, p_entry, p_vol, getattr(p, "time", time.time()), pos_id)
+                                            pos_obj = brk.open_positions.get(pos_id)
+                                            if not pos_obj:
+                                                pos_obj = Position(p_type, p_entry, p_vol, getattr(p, "time", time.time()), pos_id)
+                                                brk.open_positions[pos_id] = pos_obj
                                             pos_obj.profit = p_pnl
-                                            brk.open_positions[pos_id] = pos_obj
+                                            pos_obj.entry_price = p_entry
+                                            pos_obj.size = p_vol
+                                            if hasattr(pos_obj, "sl"):
+                                                pos_obj.sl = float(getattr(p, "sl", 0.0) or 0.0)
+                                            if hasattr(pos_obj, "tp"):
+                                                pos_obj.tp = float(getattr(p, "tp", 0.0) or 0.0)
+                                        # Cleanly purge any positions that were closed in MT5
+                                        for old_pid in list(brk.open_positions.keys()):
+                                            if old_pid not in active_tids:
+                                                brk.open_positions.pop(old_pid, None)
+                                    else:
+                                        # Zero open positions reported by MT5 -> clear stale ghost positions immediately
+                                        brk.open_positions.clear()
+                                        open_pos = 0
+                                        pair_pnl = 0.0
                                 else:
+                                    open_pos = len(brk.open_positions)
                                     pair_pnl = sum(float(getattr(p, "profit", 0.0) or 0.0) for p in brk.open_positions.values()) if brk.open_positions else 0.0
                                 
                                 pnl_cls = "pnl-green" if pair_pnl >= 0 else "pnl-red"

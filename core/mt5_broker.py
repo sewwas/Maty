@@ -1467,6 +1467,15 @@ class MT5Broker:
                 if ticket not in active_pos_tickets:
                     self.open_positions.pop(pid, None)
                     self.ticket_to_position_id.pop(ticket, None)
+            # Comprehensive purge: remove any keys in self.open_positions no longer active
+            for pos_key in list(self.open_positions.keys()):
+                raw_ticket_str = str(pos_key).replace("live_", "")
+                if raw_ticket_str.isdigit():
+                    if int(raw_ticket_str) not in active_pos_tickets:
+                        self.open_positions.pop(pos_key, None)
+            if not active_pos_tickets:
+                self.open_positions.clear()
+                self.ticket_to_position_id.clear()
 
         return triggered_positions
 

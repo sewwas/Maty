@@ -610,76 +610,18 @@ def check_target_profit(self, current_price: float, timestamp: float) -> Optiona
     exit_reason = ""
 
     # ─────────────────────────────────────────────────────────────
-    # Cycle Max Drawdown (Hard Stop Loss)
-    # ─────────────────────────────────────────────────────────────
-    is_manual = getattr(self, "manual_override_active", False)
-    
-    if not is_manual:
-        # Extreme Drawdown (Catastrophic Fallback Protection)
-        if not exit_triggered:
-            max_cycle_dd = float(getattr(self, "max_cycle_drawdown", 30.0) or 30.0) * cent_multiplier
-            hard_cap = 12.0 * cent_multiplier if is_cent_account else 12.0
-            extreme_dd = min(hard_cap, max_cycle_dd)
-            if total_pnl <= -abs(extreme_dd):
-                exit_triggered = True
-                exit_reason = "STOP_LOSS"
-                print(f"[{self.symbol}] 🛑 [EXTREME DRAWDOWN HIT] Cycle PnL {total_pnl:.2f} <= -{extreme_dd:.2f}. Forcing market close.")
-    else:
-        # In manual mode, we do NOT enforce the hardcoded auto max drawdown. 
-        # The user's manual SL/TP parameters or manual closures govern risk.
-        pass
-
-    # ─────────────────────────────────────────────────────────────
-    # Standard Stop Loss
+    # Real-Market Structure Governance (No Artificial Hard Cap)
+    # Stop Loss is strictly governed by MT5 broker-level SL anchored at real 5m tops/bottoms.
+    # Emergency Catastrophic Circuit Breaker: Only triggers if account equity faces catastrophic 40%+ loss.
     # ─────────────────────────────────────────────────────────────
     if not exit_triggered:
-        sl_limit = float(getattr(self, "stop_loss", 0.0) or 0.0) * cent_multiplier
-
-        # FIX #1: If no explicit stop_loss is configured (default=0), fall back to
-        # the per-symbol max_cycle_sl safety cap from PAIR_SAFETY_BOUNDS.
-        # This prevents unlimited drawdown cycles like the -$10.10 #201 blowout.
-        if sl_limit <= 0:
-            try:
-                from core.auto_reading import PAIR_SAFETY_BOUNDS
-                _clean = sym_u
-                for s_token in PAIR_SAFETY_BOUNDS.keys():
-                    if s_token in sym_u:
-                        _clean = s_token
-                        break
-                _bounds = PAIR_SAFETY_BOUNDS.get(_clean, {})
-                _fallback_sl = float(_bounds.get("max_cycle_sl", 0.0))
-                if _fallback_sl > 0:
-                    sl_limit = _fallback_sl * cent_multiplier
-            except Exception:
-                pass
-
-        if sl_limit > 0:
-            # FIX #2: Trend-aligned breathing room & Minimum hold time guard.
-            # When open positions are aligned with the confirmed macro trend
-            # (e.g. SELL positions in SELL_ONLY mode or BUY positions in BUY_ONLY mode),
-            # normal pullbacks are expected and should NOT trigger a panic stop loss.
-            open_pos_types = [str(getattr(p, "type", "")).upper() for p in self.broker.open_positions.values()]
-            is_all_sell = bool(open_pos_types and all("SELL" in t for t in open_pos_types))
-            is_all_buy  = bool(open_pos_types and all("BUY" in t for t in open_pos_types))
-            is_trend_aligned = (is_all_sell and "SELL" in auto_uni) or (is_all_buy and "BUY" in auto_uni)
-
-            # Hold at least 60s for trend-aligned positions to survive candle fluctuations
-            _MIN_HOLD_SECS = 60.0 if is_trend_aligned else 30.0
-            _cycle_open_time = getattr(self, "_cycle_start_time", timestamp)
-            _hold_elapsed = timestamp - _cycle_open_time if _cycle_open_time > 0 else _MIN_HOLD_SECS
-
-            if _hold_elapsed >= _MIN_HOLD_SECS:
-                # Re-enabling lot scaling to prevent immediate stop out on deeper grids
-                total_vol = sum(float(getattr(p, "size", 0.01)) for p in self.broker.open_positions.values())
-                micro_lots = total_vol / 0.01
-
-                hard_cap = 12.0 * cent_multiplier if is_cent_account else 12.0
-                effective_sl = min(sl_limit * micro_lots, hard_cap)
-                if total_pnl <= -abs(effective_sl):
-                    exit_triggered = True
-                    exit_reason = "STOP_LOSS"
-                    print(f"[{self.symbol}] 🛑 [CYCLE SL HIT] PnL ${total_pnl:.2f} <= -${effective_sl:.2f} "
-                          f"(SL cap: ${sl_limit:.2f}/lot × {micro_lots:.1f} lots | hold: {_hold_elapsed:.0f}s | trend_aligned: {is_trend_aligned})")
+        acc_bal = float(getattr(self.broker, "balance", 1000.0) or 1000.0)
+        # Emergency catastrophic breaker: 40% of balance (last-resort safety if broker connection fails)
+        catastrophe_limit = max(150.0 * cent_multiplier, acc_bal * 0.40)
+        if total_pnl <= -abs(catastrophe_limit):
+            exit_triggered = True
+            exit_reason = "CATASTROPHIC_EMERGENCY_STOP"
+            print(f"[{self.symbol}] 🛑 [CATASTROPHIC CIRCUIT BREAKER] Floating PnL {total_pnl:.2f} <= -{catastrophe_limit:.2f}. Emergency exit.")
 
     # ─────────────────────────────────────────────────────────────
     # Basket Target Profit (Cycle Exit)
@@ -1441,13 +1383,24 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
 
         is_gold = any(x in sym_name for x in ["XAU", "GOLD", "PAXG"])
         if is_gold:
-            min_sl_dist = max(10.00, current_price * 0.0025, atr_5m * 2.0)
+            min_sl_dist = max(12.00, current_price * 0.0030, atr_5m * 2.2)
         elif "BTC" in sym_name:
             min_sl_dist = max(500.0, current_price * 0.0060, atr_5m * 3.0)
         elif "ETH" in sym_name:
             min_sl_dist = max(35.0, current_price * 0.0120, atr_5m * 3.0)
         else:
             min_sl_dist = max(current_price * 0.005, atr_5m * 2.5)
+
+        # Anti-hunt structural gap buffer: Extra cushion beyond order blocks / swing wicks
+        # Prevents market maker liquidity sweeps from hunting SL before the real move starts
+        if is_gold:
+            anti_hunt_buffer = max(3.50, atr_5m * 0.75)
+        elif "BTC" in sym_name:
+            anti_hunt_buffer = max(60.0, atr_5m * 0.75)
+        elif "ETH" in sym_name:
+            anti_hunt_buffer = max(5.0, atr_5m * 0.75)
+        else:
+            anti_hunt_buffer = max(current_price * 0.0015, atr_5m * 0.75)
 
         acc_eq = self.broker.get_equity() if hasattr(self.broker, "get_equity") else 1000.0
         _cfg_levels = getattr(self, "grid_levels", 5) or 5  # Hard ceiling from bot config
@@ -1605,19 +1558,19 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
         #   • Entry offset tightened to 0.20× ATR → enter as close to price as safe
 
         if (directional_sell or directional_buy) and _is_100pct_grid:
-            dir_tp_dist     = min_tp_dist * 1.77  # Backtest optimal (was 2.5x)
-            # 100% CONFIRMED: 3 orders — 2 Stops (continuation stack) + 1 Limit (DCA dip/spike)
-            effective_levels = min(3, effective_levels)
-            if _is_hedged_override:
-                effective_levels = min(2, effective_levels)
-            _confirmed_offset_mult = 0.20          # Backtest optimal entry — tighter (was 0.35x)
-            _confirmed_gap_mult    = 0.70          # Compressed gap → denser stack
+            dir_tp_dist     = min_tp_dist * 1.77  # Extended TP to ride full confirmed move
+            # 100% CONFIRMED: Deploy ALL 3 orders in trend direction (2 Stops + 1 Limit pullback)
+            effective_levels = 3 if not _is_hedged_override else 2
+            _confirmed_offset_mult = 0.20          # Backtest optimal entry — tight breakout
+            _confirmed_gap_mult    = 0.70          # Compressed gap → denser continuation
         elif directional_sell or directional_buy:
-            dir_tp_dist     = min_tp_dist * 1.15  # Backtest optimal (was 1.5x)
-            # UNCONFIRMED DIRECTIONAL: 3 orders — 2 Stops (cautious stack) + 1 Limit (DCA)
-            # Wider ATR gap guard (0.8×) vs confirmed (0.5×) — trend still weak so space stops further
-            effective_levels = min(3, effective_levels)
-            _confirmed_offset_mult = 0.45          # Backtest optimal (was 0.65x)
+            dir_tp_dist     = min_tp_dist * 1.15  # Scalp/Momentum TP
+            # DIRECTIONAL UNCONFIRMED (<100%): Deploy ONLY 1 single primary STOP order
+            if is_manual:
+                effective_levels = min(3, max(1, _cfg_levels))
+            else:
+                effective_levels = 1  # Auto unconfirmed: only 1 primary stop order fills with momentum
+            _confirmed_offset_mult = 0.25          # Tight entry offset so stop fills quickly
             _confirmed_gap_mult    = 1.00
         else:
             dir_tp_dist     = min_tp_dist
@@ -1635,9 +1588,13 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
         _max_atr_offset     = buy_offset_val * 1.5
         dynamic_atr_offset  = min((atr_5m * _confirmed_offset_mult) if (atr_5m is not None and atr_5m > 0) else 0.0, _max_atr_offset)
         
-        if _is_100pct_grid:
-            # 100% CONFIRMED: Get in fast. Ignore the wider buy_offset_val to allow very tight trap placement.
-            base_start_offset = max(b_min_stop + (current_price * 0.0001), dynamic_atr_offset) + spread_anti_hunt_buffer
+        if directional_sell or directional_buy:
+            if _is_100pct_grid:
+                # 100% CONFIRMED: Get in fast. Ignore wider buy_offset_val to allow very tight trap placement.
+                base_start_offset = max(b_min_stop + (current_price * 0.0001), dynamic_atr_offset) + spread_anti_hunt_buffer
+            else:
+                # Directional mode (<100% confirmed): Single tight STOP entry to capture momentum breakdown/breakout
+                base_start_offset = max(b_min_stop + (current_price * 0.0002), dynamic_atr_offset) + spread_anti_hunt_buffer
         else:
             base_start_offset = max(b_min_stop + (current_price * 0.0004), dynamic_atr_offset, buy_offset_val) + spread_anti_hunt_buffer
         
@@ -1777,11 +1734,11 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
             valid_tps = [c_px for (_, c_px, _) in merged_support if c_px <= px - (dir_tp_dist * 0.85) and c_px >= px - (dir_tp_dist * 2.2)]
             if valid_tps:
                 smart_tp = min(valid_tps, key=lambda c: abs(c - (px - dir_tp_dist)))
-            # Smart SL: protected above nearest structural resistance over entry (furthest candidate for maximum room)
-            smart_sl = round(px + min_sl_dist, digits)
+            # Smart SL: protected above nearest structural resistance over entry + anti-hunt cushion
+            smart_sl = round(px + min_sl_dist + anti_hunt_buffer, digits)
             valid_sls = [c_px for (_, c_px, _) in merged_resistance if c_px >= px + min_sl_dist and c_px <= px + (min_sl_dist * 2.5)]
             if valid_sls:
-                smart_sl = max(valid_sls)
+                smart_sl = round(max(valid_sls) + anti_hunt_buffer, digits)
             # Enforce Institutional R:R (TP distance >= 1.5x SL distance)
             actual_sl_dist = abs(smart_sl - px)
             if abs(px - smart_tp) < actual_sl_dist * 1.50:
@@ -1791,7 +1748,7 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
                 if r:
                     placed_count += 1
                     self.active_sell_levels.append(px)
-                    print(f"[{sym_name}] 🧱 [SELL_LIMIT_BOUNCE|{label}] @ ${px:,.{digits}f}  TP:${smart_tp:,.{digits}f}  SL:${smart_sl:,.{digits}f}  sz:{sz}")
+                    print(f"[{sym_name}] 🧱 [SELL_LIMIT_BOUNCE|{label}] @ ${px:,.{digits}f}  TP:${smart_tp:,.{digits}f}  SL:${smart_sl:,.{digits}f} (+${anti_hunt_buffer:.2f} anti-hunt) sz:{sz}")
             except Exception as e:
                 print(f"[{sym_name}] SELL_LIMIT error @ {px}: {e}")
 
@@ -1805,11 +1762,11 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
             valid_tps = [c_px for (_, c_px, _) in merged_resistance if c_px >= px + (dir_tp_dist * 0.85) and c_px <= px + (dir_tp_dist * 2.2)]
             if valid_tps:
                 smart_tp = min(valid_tps, key=lambda c: abs(c - (px + dir_tp_dist)))
-            # Smart SL: protected below nearest structural support under entry (deepest support for maximum room)
-            smart_sl = round(px - min_sl_dist, digits)
+            # Smart SL: protected below nearest structural support under entry - anti-hunt cushion
+            smart_sl = round(px - min_sl_dist - anti_hunt_buffer, digits)
             valid_sls = [c_px for (_, c_px, _) in merged_support if c_px <= px - min_sl_dist and c_px >= px - (min_sl_dist * 2.5)]
             if valid_sls:
-                smart_sl = min(valid_sls)
+                smart_sl = round(min(valid_sls) - anti_hunt_buffer, digits)
             # Enforce Institutional R:R (TP distance >= 1.5x SL distance)
             actual_sl_dist = abs(px - smart_sl)
             if abs(smart_tp - px) < actual_sl_dist * 1.50:
@@ -1819,7 +1776,7 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
                 if r:
                     placed_count += 1
                     self.active_buy_levels.append(px)
-                    print(f"[{sym_name}] 🧺 [BUY_LIMIT_DIP|{label}] @ ${px:,.{digits}f}  TP:${smart_tp:,.{digits}f}  SL:${smart_sl:,.{digits}f}  sz:{sz}")
+                    print(f"[{sym_name}] 🧺 [BUY_LIMIT_DIP|{label}] @ ${px:,.{digits}f}  TP:${smart_tp:,.{digits}f}  SL:${smart_sl:,.{digits}f} (-${anti_hunt_buffer:.2f} anti-hunt) sz:{sz}")
             except Exception as e:
                 print(f"[{sym_name}] BUY_LIMIT error @ {px}: {e}")
 
@@ -1832,10 +1789,10 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
             valid_tps = [c_px for (_, c_px, _) in merged_support if c_px <= px - (dir_tp_dist * 0.85) and c_px >= px - (dir_tp_dist * 2.2)]
             if valid_tps:
                 smart_tp = min(valid_tps, key=lambda c: abs(c - (px - dir_tp_dist)))
-            smart_sl = round(px + min_sl_dist, digits)
+            smart_sl = round(px + min_sl_dist + anti_hunt_buffer, digits)
             valid_sls = [c_px for (_, c_px, _) in merged_resistance if c_px >= px + min_sl_dist and c_px <= px + (min_sl_dist * 2.5)]
             if valid_sls:
-                smart_sl = max(valid_sls)
+                smart_sl = round(max(valid_sls) + anti_hunt_buffer, digits)
             # Enforce Institutional R:R (TP distance >= 1.5x SL distance)
             actual_sl_dist = abs(smart_sl - px)
             if abs(px - smart_tp) < actual_sl_dist * 1.50:
@@ -1845,7 +1802,7 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
                 if r:
                     placed_count += 1
                     self.active_sell_levels.append(px)
-                    print(f"[{sym_name}] 📉 [SELL_STOP_BREAKDOWN|{label}] @ ${px:,.{digits}f}  TP:${smart_tp:,.{digits}f}  SL:${smart_sl:,.{digits}f}  sz:{sz}")
+                    print(f"[{sym_name}] 📉 [SELL_STOP_BREAKDOWN|{label}] @ ${px:,.{digits}f}  TP:${smart_tp:,.{digits}f}  SL:${smart_sl:,.{digits}f} (+${anti_hunt_buffer:.2f} anti-hunt) sz:{sz}")
             except Exception as e:
                 print(f"[{sym_name}] SELL_STOP error @ {px}: {e}")
 
@@ -1858,10 +1815,10 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
             valid_tps = [c_px for (_, c_px, _) in merged_resistance if c_px >= px + (dir_tp_dist * 0.85) and c_px <= px + (dir_tp_dist * 2.2)]
             if valid_tps:
                 smart_tp = min(valid_tps, key=lambda c: abs(c - (px + dir_tp_dist)))
-            smart_sl = round(px - min_sl_dist, digits)
+            smart_sl = round(px - min_sl_dist - anti_hunt_buffer, digits)
             valid_sls = [c_px for (_, c_px, _) in merged_support if c_px <= px - min_sl_dist and c_px >= px - (min_sl_dist * 2.5)]
             if valid_sls:
-                smart_sl = min(valid_sls)
+                smart_sl = round(min(valid_sls) - anti_hunt_buffer, digits)
             # Enforce Institutional R:R (TP distance >= 1.5x SL distance)
             actual_sl_dist = abs(px - smart_sl)
             if abs(smart_tp - px) < actual_sl_dist * 1.50:
@@ -1871,7 +1828,7 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
                 if r:
                     placed_count += 1
                     self.active_buy_levels.append(px)
-                    print(f"[{sym_name}] 📈 [BUY_STOP_BREAKOUT|{label}] @ ${px:,.{digits}f}  TP:${smart_tp:,.{digits}f}  SL:${smart_sl:,.{digits}f}  sz:{sz}")
+                    print(f"[{sym_name}] 📈 [BUY_STOP_BREAKOUT|{label}] @ ${px:,.{digits}f}  TP:${smart_tp:,.{digits}f}  SL:${smart_sl:,.{digits}f} (-${anti_hunt_buffer:.2f} anti-hunt) sz:{sz}")
             except Exception as e:
                 print(f"[{sym_name}] BUY_STOP error @ {px}: {e}")
 
@@ -1886,55 +1843,77 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
         # ── INSTITUTIONAL PRE-MOVE TRAP DEPLOYMENT ──
         if directional_sell:
             # ── CONFIRMED BEARISH (SELL MODE) ──
-            # INSTITUTIONAL TRAP: Catch price BEFORE the dump by shorting the bounce into supply!
-            # 1. Primary Trap: SELL_LIMIT at nearest Bearish OB / FVG / Resistance above price
-            lim1_px = merged_resistance[0][1] if merged_resistance else round(ask_ref + base_start_offset, digits)
-            lim1_lb = merged_resistance[0][2] if merged_resistance else "Anchor"
-            _place_sell_limit(lim1_px, lim1_lb, 0)
+            # User requirement: Prioritize STOP orders (SELL_STOP) so momentum fills immediately.
+            # Only deploy all 3 orders if 100% confirmed. If unconfirmed, deploy 1 single primary STOP order.
 
-            # 2. Secondary Trap: Higher SELL_LIMIT (DCA Retracement Wick Fade)
-            if effective_levels >= 2:
-                lim2_cand = None
-                for (_, c_px, c_lb) in merged_resistance[1:]:
-                    if c_px >= lim1_px + _min_stop_gap:
-                        lim2_cand = (c_px, c_lb)
+            # 1. Primary Momentum Breakdown Trap: SELL_STOP below market price
+            # Placed tightly below bid so downward momentum fills immediately
+            primary_stop_px = round(bid_ref - base_start_offset, digits)
+            stop1_cand = None
+            if merged_support:
+                for (_, s_px, s_lb) in merged_support:
+                    if s_px <= bid_ref - base_start_offset and s_px >= bid_ref - (base_start_offset * 1.3):
+                        stop1_cand = (s_px, s_lb)
                         break
-                if lim2_cand is None:
-                    _atr_step = atr_5m if (atr_5m and atr_5m > 0) else current_price * 0.006
-                    lim2_cand = (round(lim1_px + _atr_step, digits), "ATR+1")
-                _place_sell_limit(lim2_cand[0], lim2_cand[1], 1)
+            stop1_px = stop1_cand[0] if stop1_cand else primary_stop_px
+            stop1_lb = stop1_cand[1] if stop1_cand else "Momentum"
+            _place_sell_stop(stop1_px, stop1_lb, 0)
 
-            # 3. Continuation Trap: SELL_STOP breakdown at support floor below price
+            # 2. Continuation Breakdown Trap: SELL_STOP further below support floor (rides continuation)
+            if effective_levels >= 2:
+                stop2_cand = None
+                if merged_support:
+                    for (_, s_px, s_lb) in merged_support:
+                        if s_px <= stop1_px - _min_stop_gap:
+                            stop2_cand = (s_px, s_lb)
+                            break
+                stop2_px = stop2_cand[0] if stop2_cand else round(stop1_px - _min_stop_gap, digits)
+                stop2_lb = stop2_cand[1] if stop2_cand else "Continuation"
+                _place_sell_stop(stop2_px, stop2_lb, 1)
+
+            # 3. Pullback / DCA Trap: SELL_LIMIT above market price at resistance / OB (catches retracement wick)
             if effective_levels >= 3:
-                stop_px = merged_support[0][1] if merged_support else round(bid_ref - base_start_offset, digits)
-                stop_lb = merged_support[0][2] if merged_support else "Anchor"
-                _place_sell_stop(stop_px, stop_lb, 2)
+                lim1_px = merged_resistance[0][1] if merged_resistance else round(ask_ref + base_start_offset, digits)
+                lim1_lb = merged_resistance[0][2] if merged_resistance else "Supply"
+                lim1_px = max(lim1_px, round(ask_ref + base_start_offset, digits))
+                _place_sell_limit(lim1_px, lim1_lb, 2)
 
         elif directional_buy:
             # ── CONFIRMED BULLISH (BUY MODE) ──
-            # INSTITUTIONAL TRAP: Catch price BEFORE the pump by buying the dip into demand!
-            # 1. Primary Trap: BUY_LIMIT at nearest Bullish OB / FVG / Support below price
-            lim1_px = merged_support[0][1] if merged_support else round(bid_ref - base_start_offset, digits)
-            lim1_lb = merged_support[0][2] if merged_support else "Anchor"
-            _place_buy_limit(lim1_px, lim1_lb, 0)
+            # User requirement: Prioritize STOP orders (BUY_STOP) so momentum fills immediately.
+            # Only deploy all 3 orders if 100% confirmed. If unconfirmed, deploy 1 single primary STOP order.
 
-            # 2. Secondary Trap: Deeper BUY_LIMIT (DCA Dip Wick Fade)
-            if effective_levels >= 2:
-                lim2_cand = None
-                for (_, c_px, c_lb) in merged_support[1:]:
-                    if c_px <= lim1_px - _min_stop_gap:
-                        lim2_cand = (c_px, c_lb)
+            # 1. Primary Momentum Breakout Trap: BUY_STOP above market price
+            # Placed tightly above ask so upward momentum fills immediately
+            primary_stop_px = round(ask_ref + base_start_offset, digits)
+            stop1_cand = None
+            if merged_resistance:
+                for (_, r_px, r_lb) in merged_resistance:
+                    if r_px >= ask_ref + base_start_offset and r_px <= ask_ref + (base_start_offset * 1.3):
+                        stop1_cand = (r_px, r_lb)
                         break
-                if lim2_cand is None:
-                    _atr_step = atr_5m if (atr_5m and atr_5m > 0) else current_price * 0.006
-                    lim2_cand = (round(lim1_px - _atr_step, digits), "ATR-1")
-                _place_buy_limit(lim2_cand[0], lim2_cand[1], 1)
+            stop1_px = stop1_cand[0] if stop1_cand else primary_stop_px
+            stop1_lb = stop1_cand[1] if stop1_cand else "Momentum"
+            _place_buy_stop(stop1_px, stop1_lb, 0)
 
-            # 3. Continuation Trap: BUY_STOP breakout at resistance ceiling above price
+            # 2. Continuation Breakout Trap: BUY_STOP further above resistance ceiling (rides continuation)
+            if effective_levels >= 2:
+                stop2_cand = None
+                if merged_resistance:
+                    for (_, r_px, r_lb) in merged_resistance:
+                        if r_px >= stop1_px + _min_stop_gap:
+                            stop2_cand = (r_px, r_lb)
+                            break
+                stop2_px = stop2_cand[0] if stop2_cand else round(stop1_px + _min_stop_gap, digits)
+                stop2_lb = stop2_cand[1] if stop2_cand else "Continuation"
+                _place_buy_stop(stop2_px, stop2_lb, 1)
+
+            # 3. Pullback / DCA Trap: BUY_LIMIT below market price at support / OB (catches dip wick)
             if effective_levels >= 3:
-                stop_px = merged_resistance[0][1] if merged_resistance else round(ask_ref + base_start_offset, digits)
-                stop_lb = merged_resistance[0][2] if merged_resistance else "Anchor"
-                _place_buy_stop(stop_px, stop_lb, 2)
+                lim1_px = merged_support[0][1] if merged_support else round(bid_ref - base_start_offset, digits)
+                lim1_lb = merged_support[0][2] if merged_support else "Demand"
+                lim1_px = min(lim1_px, round(bid_ref - base_start_offset, digits))
+                _place_buy_limit(lim1_px, lim1_lb, 2)
 
         else:
             # ── RANGING / DUAL MODE ──
@@ -2609,7 +2588,8 @@ def trail_stop_loss_5m_structure(self, current_price: float, timestamp: float) -
                 continue
 
             # Calculate structure-based SL: swing low minus anti-hunt buffer
-            structure_sl = round(recent_swing_low - (atr_5m * 0.5), digits)
+            anti_hunt_trail = max(atr_5m * 0.8, 3.50 if is_gold else (50.0 if "BTC" in sym_name else 4.0))
+            structure_sl = round(recent_swing_low - anti_hunt_trail, digits)
 
             # Enforce minimum distance from current price to avoid stop hunts
             max_allowed_sl = round(current_price - min_sl_distance, digits)
@@ -2635,7 +2615,8 @@ def trail_stop_loss_5m_structure(self, current_price: float, timestamp: float) -
                 continue
 
             # Calculate structure-based SL: swing high plus anti-hunt buffer
-            structure_sl = round(recent_swing_high + (atr_5m * 0.5), digits)
+            anti_hunt_trail = max(atr_5m * 0.8, 3.50 if is_gold else (50.0 if "BTC" in sym_name else 4.0))
+            structure_sl = round(recent_swing_high + anti_hunt_trail, digits)
 
             # Enforce minimum distance
             min_allowed_sl = round(current_price + min_sl_distance, digits)
