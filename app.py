@@ -2156,16 +2156,6 @@ with tab_desk:
             dep_str = f"${px_fmt.format(dep_px)}" if dep_px > 0 else "-"
             ex_str = f"${px_fmt.format(ex_px)}" if ex_px > 0 else "-"
 
-            # Move delta: positive indicates profit for the side (price drop for SELL, price rise for BUY)
-            if dep_px > 0 and ex_px > 0:
-                if side == "SELL":
-                    delta_px = dep_px - ex_px
-                else:
-                    delta_px = ex_px - dep_px
-                delta_str = f"{delta_px:+,.3f}" if any(x in str(raw_sym) for x in ["XAU", "GOLD", "PAXG"]) else f"{delta_px:+,.2f}"
-            else:
-                delta_str = "-"
-
             # Trade Side (BUY/SELL)
             raw_c_side = str(c.get("type", c.get("side", ""))).strip().upper()
             if "BUY" in raw_c_side and "SELL" not in raw_c_side:
@@ -2181,6 +2171,16 @@ with tab_desk:
             else:
                 side = "BUY"
             side_badge = f"<span style='color:#22c55e;font-weight:700'>BUY 🟢</span>" if side == "BUY" else f"<span style='color:#ef4444;font-weight:700'>SELL 🔴</span>"
+
+            # Move delta: positive indicates profit for the side (price drop for SELL, price rise for BUY)
+            if dep_px > 0 and ex_px > 0:
+                if side == "SELL":
+                    delta_px = dep_px - ex_px
+                else:
+                    delta_px = ex_px - dep_px
+                delta_str = f"{delta_px:+,.3f}" if any(x in str(raw_sym) for x in ["XAU", "GOLD", "PAXG"]) else f"{delta_px:+,.2f}"
+            else:
+                delta_str = "-"
 
             # Duration format
             st_t = float(c.get("start_time", 0.0))
