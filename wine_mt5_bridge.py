@@ -295,55 +295,103 @@ class MT5BridgeHandler(BaseHTTPRequestHandler):
             return
 
         if self.path.startswith("/orders"):
-            sym = None
-            if "symbol=" in self.path:
-                sym = self.path.split("symbol=")[1].split("&")[0]
-            orders = mt5.orders_get(symbol=sym) if sym else mt5.orders_get()
-            res_list = []
-            if orders:
-                for o in orders:
-                    res_list.append({
-                        "ticket": o.ticket,
-                        "symbol": o.symbol,
-                        "type": o.type,
-                        "price_open": o.price_open,
-                        "volume_initial": o.volume_initial,
-                        "sl": o.sl,
-                        "tp": o.tp,
-                        "magic": o.magic,
-                        "time_setup": o.time_setup
-                    })
+            try:
+                query = self.path.split("?")[1] if "?" in self.path else ""
+                params = dict(p.split("=") for p in query.split("&") if "=" in p)
+                sym = params.get("symbol")
+                magic_filter = params.get("magic")
+                
+                orders = []
+                if sym:
+                    cands = resolve_bridge_candidates(sym)
+                    for c_sym in cands:
+                        o_list = mt5.orders_get(symbol=c_sym)
+                        if o_list:
+                            orders.extend(list(o_list))
+                    if not orders:
+                        all_o = mt5.orders_get()
+                        if all_o:
+                            c_base = sym.replace("USDT", "").replace("USDC", "").replace("USD", "").upper()
+                            orders = [o for o in all_o if c_base in str(o.symbol).upper() or any(k in str(o.symbol).upper() for k in ["XAU", "GOLD"] if any(x in sym.upper() for x in ["XAU", "GOLD", "PAXG"]))]
+                else:
+                    all_o = mt5.orders_get()
+                    if all_o:
+                        orders = list(all_o)
+
+                res_list = []
+                if orders:
+                    for o in orders:
+                        if magic_filter and str(getattr(o, "magic", "")) != str(magic_filter):
+                            continue
+                        res_list.append({
+                            "ticket": o.ticket,
+                            "symbol": o.symbol,
+                            "type": o.type,
+                            "price_open": o.price_open,
+                            "volume_initial": o.volume_initial,
+                            "sl": o.sl,
+                            "tp": o.tp,
+                            "magic": o.magic,
+                            "time_setup": o.time_setup
+                        })
+                res = {"orders": res_list}
+            except Exception as e:
+                res = {"orders": [], "error": str(e)}
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
-            self.wfile.write(json.dumps({"orders": res_list}).encode())
+            self.wfile.write(json.dumps(res).encode())
             return
 
         if self.path.startswith("/positions"):
-            sym = None
-            if "symbol=" in self.path:
-                sym = self.path.split("symbol=")[1].split("&")[0]
-            positions = mt5.positions_get(symbol=sym) if sym else mt5.positions_get()
-            res_list = []
-            if positions:
-                for p in positions:
-                    res_list.append({
-                        "ticket": p.ticket,
-                        "symbol": p.symbol,
-                        "type": p.type,
-                        "price_open": p.price_open,
-                        "price_current": p.price_current,
-                        "volume": p.volume,
-                        "sl": p.sl,
-                        "tp": p.tp,
-                        "profit": p.profit,
-                        "magic": p.magic,
-                        "time": p.time
-                    })
+            try:
+                query = self.path.split("?")[1] if "?" in self.path else ""
+                params = dict(p.split("=") for p in query.split("&") if "=" in p)
+                sym = params.get("symbol")
+                magic_filter = params.get("magic")
+
+                positions = []
+                if sym:
+                    cands = resolve_bridge_candidates(sym)
+                    for c_sym in cands:
+                        p_list = mt5.positions_get(symbol=c_sym)
+                        if p_list:
+                            positions.extend(list(p_list))
+                    if not positions:
+                        all_p = mt5.positions_get()
+                        if all_p:
+                            c_base = sym.replace("USDT", "").replace("USDC", "").replace("USD", "").upper()
+                            positions = [p for p in all_p if c_base in str(p.symbol).upper() or any(k in str(p.symbol).upper() for k in ["XAU", "GOLD"] if any(x in sym.upper() for x in ["XAU", "GOLD", "PAXG"]))]
+                else:
+                    all_p = mt5.positions_get()
+                    if all_p:
+                        positions = list(all_p)
+
+                res_list = []
+                if positions:
+                    for p in positions:
+                        if magic_filter and str(getattr(p, "magic", "")) != str(magic_filter):
+                            continue
+                        res_list.append({
+                            "ticket": p.ticket,
+                            "symbol": p.symbol,
+                            "type": p.type,
+                            "price_open": p.price_open,
+                            "price_current": p.price_current,
+                            "volume": p.volume,
+                            "sl": p.sl,
+                            "tp": p.tp,
+                            "profit": p.profit,
+                            "magic": p.magic,
+                            "time": p.time
+                        })
+                res = {"positions": res_list}
+            except Exception as e:
+                res = {"positions": [], "error": str(e)}
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
-            self.wfile.write(json.dumps({"positions": res_list}).encode())
+            self.wfile.write(json.dumps(res).encode())
             return
 
         if self.path.startswith("/order_send"):

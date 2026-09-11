@@ -147,25 +147,39 @@ class Bot3BridgeClient:
         return pd.DataFrame(columns=["timestamp", "open", "high", "low", "close", "volume"])
 
     def get_positions(self, symbol: str = "XAUUSD") -> List[Dict[str, Any]]:
-        """Returns open positions filtered by Bot #3 magic number."""
+        """Returns open positions filtered strictly by Bot #3 magic number."""
         try:
-            r = self.session.get(f"{self.bridge_url}/positions?symbol={symbol}", timeout=self.timeout)
+            url = f"{self.bridge_url}/positions?symbol={symbol}&magic={self.magic_number}"
+            r = self.session.get(url, timeout=self.timeout)
             if r.status_code == 200:
                 data = r.json().get("positions", [])
                 filtered = [p for p in data if int(p.get("magic", 0)) == self.magic_number]
-                return filtered
+                if filtered:
+                    return filtered
+            # Fallback without symbol constraint to guarantee zero symbol naming mismatch (e.g. XAUUSD vs XAUUSDc)
+            r_all = self.session.get(f"{self.bridge_url}/positions?magic={self.magic_number}", timeout=self.timeout)
+            if r_all.status_code == 200:
+                data = r_all.json().get("positions", [])
+                return [p for p in data if int(p.get("magic", 0)) == self.magic_number]
         except Exception as e:
             logger.debug(f"Positions fetch error: {e}")
         return []
 
     def get_orders(self, symbol: str = "XAUUSD") -> List[Dict[str, Any]]:
-        """Returns pending breakout orders filtered by Bot #3 magic number."""
+        """Returns pending breakout orders filtered strictly by Bot #3 magic number."""
         try:
-            r = self.session.get(f"{self.bridge_url}/orders?symbol={symbol}", timeout=self.timeout)
+            url = f"{self.bridge_url}/orders?symbol={symbol}&magic={self.magic_number}"
+            r = self.session.get(url, timeout=self.timeout)
             if r.status_code == 200:
                 data = r.json().get("orders", [])
                 filtered = [o for o in data if int(o.get("magic", 0)) == self.magic_number]
-                return filtered
+                if filtered:
+                    return filtered
+            # Fallback without symbol constraint to guarantee zero symbol naming mismatch
+            r_all = self.session.get(f"{self.bridge_url}/orders?magic={self.magic_number}", timeout=self.timeout)
+            if r_all.status_code == 200:
+                data = r_all.json().get("orders", [])
+                return [o for o in data if int(o.get("magic", 0)) == self.magic_number]
         except Exception as e:
             logger.debug(f"Orders fetch error: {e}")
         return []

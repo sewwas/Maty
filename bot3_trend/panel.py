@@ -71,7 +71,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-engine = get_engine()
+engine = get_engine(start_daemon=False)
 
 # Read-only telemetry: Autonomous execution runs strictly in the background daemon
 status = engine.get_telemetry()
@@ -94,8 +94,8 @@ with st.sidebar:
         engine.config["risk_pct_per_trade"] = risk_pct
         engine.save_config()
 
-    tp1_rr = st.slider("Partial TP Target (R:R)", min_value=1.0, max_value=3.0, value=float(engine.config.get("strategy", {}).get("tp1_rr", 1.5)), step=0.1)
-    if tp1_rr != float(engine.config.get("strategy", {}).get("tp1_rr", 1.5)):
+    tp1_rr = st.slider("Take Profit Target (R:R)", min_value=0.5, max_value=3.0, value=float(engine.config.get("strategy", {}).get("tp1_rr", 1.0)), step=0.1)
+    if tp1_rr != float(engine.config.get("strategy", {}).get("tp1_rr", 1.0)):
         engine.config.setdefault("strategy", {})["tp1_rr"] = tp1_rr
         engine.save_config()
 

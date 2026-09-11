@@ -94,11 +94,13 @@ class TrendRunnerEngine:
                 "slow_ema": 200,
                 "atr_period": 14,
                 "atr_sl_multiplier": 1.5,
-                "tp1_rr": 1.5,
+                "tp1_rr": 1.0,
                 "tp1_close_pct": 50.0,
-                "breakeven_trigger_rr": 1.0,
-                "be_offset_points": 50,
-                "trailing_atr_multiplier": 2.0,
+                "early_be_rr": 0.35,
+                "profit_ratchet_rr": 0.7,
+                "trailing_candle_lookback": 2,
+                "trailing_atr_multiplier": 1.2,
+                "be_offset_points": 20,
                 "min_asian_range_pips": 15.0,
                 "max_asian_range_pips": 650.0,
                 "allow_exhausted_breakouts": False,
@@ -343,20 +345,21 @@ class TrendRunnerEngine:
         """
         Returns (is_active_session, session_name)
         Asian Session: 00:00 - 07:00 UTC (Accumulation)
-        London Breakout Session: 07:00 - 13:00 UTC (Prime Execution window)
-        NY Session: 13:00 - 19:00 UTC (Follow-through / Trailing)
+        London Breakout Session: 07:00 - 12:00 UTC (Prime Execution window)
+        London / NY Overlap: 12:00 - 15:00 UTC (Trend Continuation)
+        After 15:00 UTC: Breakout Window Closed (Trailing / Management Only)
         """
         now_utc = datetime.datetime.now(datetime.timezone.utc)
         curr_hour = now_utc.hour + (now_utc.minute / 60.0)
 
         if 0.0 <= curr_hour < 7.0:
-            return False, "Asian Session (Range Building)"
-        elif 7.0 <= curr_hour < 13.0:
+            return False, "Asian Session (Accumulation)"
+        elif 7.0 <= curr_hour < 12.0:
             return True, "London Open (Prime Breakout Window)"
-        elif 13.0 <= curr_hour < 19.0:
+        elif 12.0 <= curr_hour < 15.0:
             return True, "London / NY Overlap (Trend Continuation)"
         else:
-            return False, "Evening Maintenance (Restricted Entry)"
+            return False, "Post-Breakout Window (No New Entries / Trailing Only)"
 
     # ── Risk Sizing ───────────────────────────────────────────────────────────
     def calculate_lot_size(self, balance: float, stop_distance_points: float) -> float:
@@ -595,21 +598,25 @@ class TrendRunnerEngine:
             is_buy_locked = (now_ts < float(self.state.get("buy_lockout_until", 0.0)))
             not_already_traded_candle = (candle_time != self.state.get("last_breakout_candle_time", ""))
 
+            bullish_trend = (candle_close > slow_ema and fast_ema > slow_ema and m15_trend == "BULLISH")
+            bearish_trend = (candle_close < slow_ema and fast_ema < slow_ema and m15_trend == "BEARISH")
+
             # Bullish Breakout Check:
             # Candle CLOSE must be cleanly above Asian High + buffer, and within max chase
             # ADX must be >= 20.0 (trending, not chop), RSI >= 50.0 (positive momentum)
-            # Strict Institutional Trend: Price > 200 EMA or 50 EMA > 200 EMA, and M15 is NOT Bearish
+            # Strict Institutional Trend: Price > 200 EMA and 50 EMA > 200 EMA on M5, and M15 is BULLISH
             if (not is_buy_locked and not_already_traded_candle and
                     asian_high > 0 and (asian_high + buffer_val) < candle_close < (asian_high + max_chase_dist)):
-                if c_adx >= 20.0 and c_rsi >= 50.0 and (price > slow_ema or fast_ema > slow_ema) and m15_trend != "BEARISH":
+                if c_adx >= 20.0 and c_rsi >= 50.0 and bullish_trend:
                     sl_dist = float(strat_cfg.get("atr_sl_multiplier", 1.5)) * latest_atr
                     sl_price = round(price - sl_dist, 2)
-                    tp1_price = round(price + (sl_dist * float(strat_cfg.get("tp1_rr", 1.5))), 2)
+                    tp_ratio = float(strat_cfg.get("tp1_rr", 1.0))
+                    tp1_price = round(price + (sl_dist * tp_ratio), 2)
                     lot = self.calculate_lot_size(balance, sl_dist)
 
                     signal = {
                         "type": "BUY",
-                        "reason": f"Confirmed M5 Close (${candle_close:.2f} > Asian High ${asian_high:.2f}) | ADX: {c_adx:.1f}, RSI: {c_rsi:.1f} | M15 Trend: {m15_trend}",
+                        "reason": f"Confirmed M5 Close (${candle_close:.2f} > Asian High ${asian_high:.2f}) | ADX: {c_adx:.1f}, RSI: {c_rsi:.1f} | M15 Trend: {m15_trend} | EMA 50/200 Aligned",
                         "price": price,
                         "sl": sl_price,
                         "tp1": tp1_price,
@@ -620,18 +627,19 @@ class TrendRunnerEngine:
             # Bearish Breakout Check:
             # Candle CLOSE must be cleanly below Asian Low - buffer, and within max chase
             # ADX must be >= 20.0 (trending, not chop), RSI <= 50.0 (negative momentum)
-            # Strict Institutional Trend: Price < 200 EMA or 50 EMA < 200 EMA, and M15 is NOT Bullish
+            # Strict Institutional Trend: Price < 200 EMA and 50 EMA < 200 EMA on M5, and M15 is BEARISH
             elif (not is_sell_locked and not_already_traded_candle and
                   asian_low > 0 and (asian_low - max_chase_dist) < candle_close < (asian_low - buffer_val)):
-                if c_adx >= 20.0 and c_rsi <= 50.0 and (price < slow_ema or fast_ema < slow_ema) and m15_trend != "BULLISH":
+                if c_adx >= 20.0 and c_rsi <= 50.0 and bearish_trend:
                     sl_dist = float(strat_cfg.get("atr_sl_multiplier", 1.5)) * latest_atr
                     sl_price = round(price + sl_dist, 2)
-                    tp1_price = round(price - (sl_dist * float(strat_cfg.get("tp1_rr", 1.5))), 2)
+                    tp_ratio = float(strat_cfg.get("tp1_rr", 1.0))
+                    tp1_price = round(price - (sl_dist * tp_ratio), 2)
                     lot = self.calculate_lot_size(balance, sl_dist)
 
                     signal = {
                         "type": "SELL",
-                        "reason": f"Confirmed M5 Close (${candle_close:.2f} < Asian Low ${asian_low:.2f}) | ADX: {c_adx:.1f}, RSI: {c_rsi:.1f} | M15 Trend: {m15_trend}",
+                        "reason": f"Confirmed M5 Close (${candle_close:.2f} < Asian Low ${asian_low:.2f}) | ADX: {c_adx:.1f}, RSI: {c_rsi:.1f} | M15 Trend: {m15_trend} | EMA 50/200 Aligned",
                         "price": price,
                         "sl": sl_price,
                         "tp1": tp1_price,
@@ -800,7 +808,7 @@ class TrendRunnerEngine:
             if risk_dist <= 0.1:
                 risk_dist = atr * 1.5
 
-            # ── Stage 1: Early Risk-Free Lock (Gain >= 0.5 R) ──────────────────
+            # ── Stage 1: Ultra-Early Risk-Free Lock (Gain >= 0.35 R) ───────────
             if not meta.get("be_activated") and gain >= (risk_dist * early_be_rr):
                 be_price = round(open_price + (be_offset if is_buy else -be_offset), 2)
                 should_be = (is_buy and (curr_sl == 0 or be_price > curr_sl)) or (not is_buy and (curr_sl == 0 or be_price < curr_sl))
@@ -810,11 +818,11 @@ class TrendRunnerEngine:
                         meta["be_activated"] = True
                         meta["stage"] = 1
                         curr_sl = be_price
-                        self.log(f"🛡️ [STAGE 1: RISK-FREE] #{ticket}: SL moved to {be_price:.2f} at +{gain:.2f} pts (+{early_be_rr:.1f}R). Zero Risk Guaranteed!")
+                        self.log(f"🛡️ [STAGE 1: RISK-FREE] #{ticket}: SL moved to {be_price:.2f} at +{gain:.2f} pts (+{early_be_rr:.2f}R). Zero Risk Guaranteed!")
 
-            # ── Stage 2: Profit Milestone Lock (Gain >= 1.0 R) ─────────────────
+            # ── Stage 2: Profit Milestone Lock (Gain >= 0.7 R) ─────────────────
             if not meta.get("ratchet_activated") and gain >= (risk_dist * profit_ratchet_rr):
-                locked_gain = round(risk_dist * 0.5, 2)
+                locked_gain = round(risk_dist * 0.35, 2)
                 ratchet_price = round(open_price + (locked_gain if is_buy else -locked_gain), 2)
                 should_ratchet = (is_buy and ratchet_price > curr_sl) or (not is_buy and (curr_sl == 0 or ratchet_price < curr_sl))
                 if should_ratchet:
@@ -823,29 +831,36 @@ class TrendRunnerEngine:
                         meta["ratchet_activated"] = True
                         meta["stage"] = 2
                         curr_sl = ratchet_price
-                        self.log(f"🔒 [STAGE 2: +50% LOCKED] #{ticket}: SL ratcheted to {ratchet_price:.2f} at +{gain:.2f} pts (+{profit_ratchet_rr:.1f}R). Guaranteed profit secured!")
+                        self.log(f"🔒 [STAGE 2: PROFIT LOCKED] #{ticket}: SL ratcheted to {ratchet_price:.2f} at +{gain:.2f} pts (+{profit_ratchet_rr:.2f}R). Guaranteed profit secured!")
 
-            # ── Stage 3: Partial Take Profit / Runner Mode (Gain >= 1.5 R) ─────
+            # ── Stage 3: Take Profit / Partial TP (Gain >= 1.0 R) ─────────────
             if not meta.get("tp1_hit") and gain >= (risk_dist * tp1_rr):
-                close_vol = max(0.01, round(volume * 0.5, 2))
                 if volume > 0.01:
+                    close_vol = max(0.01, round(volume * 0.5, 2))
                     res_cl = self.bridge.close_position(int(ticket), volume=close_vol)
                     if res_cl.get("success"):
                         meta["tp1_hit"] = True
                         meta["trailing_activated"] = True
                         meta["stage"] = 3
-                        r1_sl = round(open_price + (risk_dist * 0.75 if is_buy else -risk_dist * 0.75), 2)
+                        r1_sl = round(open_price + (risk_dist * 0.5 if is_buy else -risk_dist * 0.5), 2)
                         self.bridge.modify_position(int(ticket), sl=r1_sl, tp=0.0)
                         curr_sl = r1_sl
                         self.log(f"💰 [STAGE 3: PARTIAL TP] #{ticket}: Closed 50% ({close_vol}L) at +{tp1_rr:.1f}R! SL moved to {r1_sl:.2f}. Runner active!")
                 else:
-                    meta["tp1_hit"] = True
-                    meta["trailing_activated"] = True
-                    meta["stage"] = 3
-                    tp_sl = round(open_price + (risk_dist * 0.8 if is_buy else -risk_dist * 0.8), 2)
-                    self.bridge.modify_position(int(ticket), sl=tp_sl, tp=0.0)
-                    curr_sl = tp_sl
-                    self.log(f"🎯 [STAGE 3: RUNNER ACTIVATED] #{ticket}: Target reached at +{tp1_rr:.1f}R! Hard TP removed, SL locked to {tp_sl:.2f}. Trend runner mode on!")
+                    # Single micro/cent lot (0.01) -> Full close to secure 100% realized cash profit!
+                    res_cl = self.bridge.close_position(int(ticket))
+                    if res_cl.get("success"):
+                        meta["tp1_hit"] = True
+                        meta["stage"] = 3
+                        self.log(f"💰 [STAGE 3: FULL TP TAKEN] #{ticket}: 100% Profit Realized at +{tp1_rr:.1f}R (+{gain:.2f} pts)! Cash secured!")
+                    else:
+                        meta["tp1_hit"] = True
+                        meta["trailing_activated"] = True
+                        meta["stage"] = 3
+                        tp_sl = round(open_price + (risk_dist * 0.8 if is_buy else -risk_dist * 0.8), 2)
+                        self.bridge.modify_position(int(ticket), sl=tp_sl, tp=0.0)
+                        curr_sl = tp_sl
+                        self.log(f"🎯 [STAGE 3: RUNNER ACTIVATED] #{ticket}: Target reached at +{tp1_rr:.1f}R! SL locked to {tp_sl:.2f}.")
 
             # ── Stage 4: Dynamic M5 Candle Trail (Trend Riding on Runners) ────
             if meta.get("trailing_activated") or meta.get("ratchet_activated"):
@@ -894,7 +909,7 @@ def start_background_daemon():
 
         def _daemon_loop():
             logger.info("⚡ Bot #3 24/7 Autonomous Daemon Started.")
-            eng = get_engine()
+            eng = get_engine(start_daemon=False)
             while True:
                 try:
                     eng.process_tick()
@@ -905,17 +920,18 @@ def start_background_daemon():
         _daemon_thread = threading.Thread(target=_daemon_loop, daemon=True, name="Bot3AutonomousDaemon")
         _daemon_thread.start()
 
-def get_engine() -> TrendRunnerEngine:
+def get_engine(start_daemon: bool = False) -> TrendRunnerEngine:
     global _engine_instance
     if _engine_instance is None:
         _engine_instance = TrendRunnerEngine()
+    if start_daemon:
         start_background_daemon()
     return _engine_instance
 
 
 if __name__ == "__main__":
     print("=== Starting Bot #3 TrendRunnerEngine Standalone Service ===")
-    engine = get_engine()
+    engine = get_engine(start_daemon=True)
     status = engine.process_tick()
     macro = str(status['macro_trend']).encode("ascii", "ignore").decode("ascii")
     print(f"Symbol: {status['symbol']} | Price: {status['price']} | Trend: {macro}")
