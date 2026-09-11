@@ -1866,7 +1866,7 @@ with tab_desk:
                 if any(abs(ts_tr - b_ts) <= 12.0 for b_ts in basket_exit_times):
                     continue
                 existing_records.add((ts_rnd, pnl_rnd))
-                dep_px = float(tr.get("deploy_price", tr.get("entry_price", tr.get("open_price", 0.0))))
+                dep_px = float(tr.get("entry_price", tr.get("open_price", tr.get("deploy_price", 0.0))))
                 ex_px  = float(tr.get("exit_price",  tr.get("close_price",  tr.get("price", 0.0))))
                 fl_cnt = int(tr.get("fills_count",   tr.get("trades_count",  tr.get("size", 1))))
                 base_cid = max((int(c.get("cycle_id", 0)) for c in cycles_list if isinstance(c.get("cycle_id"), (int, float)) or str(c.get("cycle_id", "")).isdigit()), default=len(cycles_list))
@@ -1922,7 +1922,7 @@ with tab_desk:
 
             # Infer and preserve trade side
             raw_side_v = str(rec.get("type", rec.get("side", ""))).strip().upper()
-            en_p = float(rec.get("deploy_price", rec.get("entry_price", 0.0)))
+            en_p = float(rec.get("entry_price", rec.get("open_price", rec.get("deploy_price", 0.0))))
             ex_p = float(rec.get("exit_price", 0.0))
             if "BUY" in raw_side_v and "SELL" not in raw_side_v:
                 side_v = "BUY"
@@ -2156,9 +2156,12 @@ with tab_desk:
             dep_str = f"${px_fmt.format(dep_px)}" if dep_px > 0 else "-"
             ex_str = f"${px_fmt.format(ex_px)}" if ex_px > 0 else "-"
 
-            # Move delta
+            # Move delta: positive indicates profit for the side (price drop for SELL, price rise for BUY)
             if dep_px > 0 and ex_px > 0:
-                delta_px = ex_px - dep_px
+                if side == "SELL":
+                    delta_px = dep_px - ex_px
+                else:
+                    delta_px = ex_px - dep_px
                 delta_str = f"{delta_px:+,.3f}" if any(x in str(raw_sym) for x in ["XAU", "GOLD", "PAXG"]) else f"{delta_px:+,.2f}"
             else:
                 delta_str = "-"
@@ -2199,7 +2202,15 @@ with tab_desk:
                 dur_fmt = "15s"
 
             # PnL String based on f_curr
-            is_cent_account = c.get("is_cent", False) or any(x.endswith("c") or "USC" in x for x in [raw_sym, str(c.get("account_currency", ""))]) or (abs(c_pnl) < 0.25 and abs(raw_pnl) > 0.01)
+            is_cent_account = c.get("is_cent", False) or any(x.endswith("c") or "USC" in x for x in [raw_sym, str(c.get("account_currency", ""))])
+            if is_cent_account:
+                if abs(raw_pnl) > 0.001 and abs(c_pnl) <= 0.001:
+                    c_pnl = raw_pnl / 100.0
+                elif abs(c_pnl) > 0.001 and abs(raw_pnl) <= 0.001:
+                    raw_pnl = c_pnl * 100.0
+                elif abs(raw_pnl - (c_pnl * 100.0)) > 0.05:
+                    c_pnl = raw_pnl / 100.0
+
             if f_curr == "MT5 Account (USC)":
                 pnl_disp = f"{raw_pnl:+,.2f} USC"
             elif f_curr == "USD Exact ($0.0000)":
@@ -2232,7 +2243,7 @@ with tab_desk:
                     <th>Cycle ID</th>
                     <th>Asset</th>
                     <th>Side</th>
-                    <th>Deploy Entry</th>
+                    <th>Entry Price</th>
                     <th>Exit Price</th>
                     <th>Price Move</th>
                     <th>Fills</th>
