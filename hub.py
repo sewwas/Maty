@@ -2,10 +2,15 @@
 """
 Profity AI - Unified VPS Web Portal & Multi-Bot Command Center (Port 80)
 Features:
-- Live Portfolio Aggregate Metrics
-- Multi-Bot Real-Time Profit Comparison Matrix (Today / 7D / 30D / All-Time)
-- Side-by-Side Win Rate, Balance, Equity, and Floating P&L Analytics
-- Direct Links & Live Status to all 3 Trading Desks (:8501, :8502, :8503)
+- Fullscreen Institutional High-Frequency Trading Desk Layout (No Boxed Constraints)
+- Real-Time Global Market Session Ticker (London, NY, Tokyo, Sydney) & Live UTC Clock
+- Live Portfolio Aggregate Metrics (Equity, Balance, Free Margin, Margin Level %, Floating PnL)
+- Multi-Bot Real-Time Profit Comparison Matrix (Today / 7D / 30D / All-Time) across all 5 bots
+- Deep Financial & Risk Metrics (Win/Loss counts, Profit Factor, Payoff Ratio, Avg Win/Loss, ROI %)
+- Net Open Lot Exposure (Long Lots vs Short Lots) per bot and portfolio-wide
+- Live Active Positions & Ticket Inspector with real-time Floating P&L
+- One-Click HTML5 Fullscreen Mode for Wall Displays & Kiosks
+- Direct Launch to all 5 Trading Desks (:8501-:8505) and Wine MT5 Screen (:8006)
 """
 
 import http.server
@@ -86,9 +91,9 @@ BOT_CONFIGS = [
 
 # In-memory cache for live metrics to protect MT5 bridges
 _metrics_cache = {"timestamp": 0.0, "data": None}
-CACHE_TTL = 2.5  # seconds
+CACHE_TTL = 2.0  # seconds
 
-def is_port_listening(port, host="127.0.0.1", timeout=0.4):
+def is_port_listening(port, host="127.0.0.1", timeout=0.3):
     try:
         with socket.create_connection((host, port), timeout=timeout):
             return True
@@ -97,7 +102,8 @@ def is_port_listening(port, host="127.0.0.1", timeout=0.4):
 
 def fetch_single_bot_metrics(cfg):
     bport = cfg["bridge_port"]
-    now = time.time()
+    start_t = time.time()
+    now = start_t
     today_midnight = datetime.datetime.combine(datetime.date.today(), datetime.time.min).timestamp()
     seven_days_ago = now - (7 * 86400)
     thirty_days_ago = now - (30 * 86400)
@@ -115,10 +121,20 @@ def fetch_single_bot_metrics(cfg):
         "account": cfg["default_acc"],
         "server": cfg["server"],
         "currency": "USC",
+        "leverage": 2000,
         "balance": 0.0,
         "equity": 0.0,
+        "margin": 0.0,
+        "margin_free": 0.0,
+        "margin_level": 0.0,
         "floating_pnl": 0.0,
         "active_positions": 0,
+        "open_lots": 0.0,
+        "buy_positions": 0,
+        "sell_positions": 0,
+        "buy_lots": 0.0,
+        "sell_lots": 0.0,
+        "positions_list": [],
         "pnl_today": 0.0,
         "pnl_7d": 0.0,
         "pnl_30d": 0.0,
@@ -131,13 +147,25 @@ def fetch_single_bot_metrics(cfg):
         "wins_7d": 0,
         "wins_30d": 0,
         "wins_all": 0,
+        "losses_today": 0,
+        "losses_7d": 0,
+        "losses_30d": 0,
+        "losses_all": 0,
         "win_rate_today": 0.0,
         "win_rate_7d": 0.0,
         "win_rate_30d": 0.0,
         "win_rate_all": 0.0,
+        "gross_profit_30d": 0.0,
+        "gross_loss_30d": 0.0,
         "profit_factor_30d": 1.0,
+        "avg_win_30d": 0.0,
+        "avg_loss_30d": 0.0,
+        "payoff_ratio_30d": 1.0,
         "best_trade_30d": 0.0,
-        "worst_trade_30d": 0.0
+        "worst_trade_30d": 0.0,
+        "roi_30d_pct": 0.0,
+        "latency_ms": 0.0,
+        "last_trade_time": 0
     }
 
     try:
@@ -149,8 +177,12 @@ def fetch_single_bot_metrics(cfg):
             res["account"] = acc_data.get("login", cfg["default_acc"])
             res["server"] = acc_data.get("server", cfg["server"])
             res["currency"] = acc_data.get("currency", "USC")
+            res["leverage"] = acc_data.get("leverage", 2000)
             res["balance"] = round(float(acc_data.get("balance", 0.0)), 2)
             res["equity"] = round(float(acc_data.get("equity", 0.0)), 2)
+            res["margin"] = round(float(acc_data.get("margin", 0.0)), 2)
+            res["margin_free"] = round(float(acc_data.get("margin_free", res["balance"])), 2)
+            res["margin_level"] = round(float(acc_data.get("margin_level", 0.0)), 1)
     except Exception:
         pass
 
@@ -161,6 +193,38 @@ def fetch_single_bot_metrics(cfg):
             pos_data = json.loads(resp.read().decode("utf-8")).get("positions", [])
             res["active_positions"] = len(pos_data)
             res["floating_pnl"] = round(sum(float(p.get("profit", 0.0)) for p in pos_data), 2)
+
+            for p in pos_data:
+                vol = round(float(p.get("volume", 0.0)), 2)
+                res["open_lots"] += vol
+                is_buy = p.get("type") in (0, "BUY", "buy")
+                if is_buy:
+                    res["buy_positions"] += 1
+                    res["buy_lots"] += vol
+                else:
+                    res["sell_positions"] += 1
+                    res["sell_lots"] += vol
+
+                res["positions_list"].append({
+                    "ticket": p.get("ticket"),
+                    "bot_id": cfg["id"],
+                    "bot_name": cfg["name"],
+                    "bot_tag": cfg["tag"],
+                    "bot_color": cfg["color"],
+                    "symbol": p.get("symbol", "XAUUSDm"),
+                    "type": "BUY" if is_buy else "SELL",
+                    "volume": vol,
+                    "price_open": round(float(p.get("price_open", 0.0)), 3),
+                    "price_current": round(float(p.get("price_current", 0.0)), 3),
+                    "sl": round(float(p.get("sl", 0.0)), 3),
+                    "tp": round(float(p.get("tp", 0.0)), 3),
+                    "profit": round(float(p.get("profit", 0.0)), 2),
+                    "time": p.get("time", 0)
+                })
+
+            res["open_lots"] = round(res["open_lots"], 2)
+            res["buy_lots"] = round(res["buy_lots"], 2)
+            res["sell_lots"] = round(res["sell_lots"], 2)
     except Exception:
         pass
 
@@ -183,6 +247,8 @@ def fetch_single_bot_metrics(cfg):
                 res["trades_all"] += 1
                 if is_win:
                     res["wins_all"] += 1
+                if t_time > res["last_trade_time"]:
+                    res["last_trade_time"] = int(t_time)
 
                 if t_time >= thirty_days_ago:
                     res["pnl_30d"] += pnl
@@ -215,6 +281,14 @@ def fetch_single_bot_metrics(cfg):
             res["pnl_7d"] = round(res["pnl_7d"], 2)
             res["pnl_today"] = round(res["pnl_today"], 2)
 
+            res["losses_today"] = res["trades_today"] - res["wins_today"]
+            res["losses_7d"] = res["trades_7d"] - res["wins_7d"]
+            res["losses_30d"] = res["trades_30d"] - res["wins_30d"]
+            res["losses_all"] = res["trades_all"] - res["wins_all"]
+
+            res["gross_profit_30d"] = round(gross_profit_30d, 2)
+            res["gross_loss_30d"] = round(gross_loss_30d, 2)
+
             if res["trades_today"] > 0:
                 res["win_rate_today"] = round((res["wins_today"] / res["trades_today"]) * 100, 1)
             if res["trades_7d"] > 0:
@@ -228,9 +302,22 @@ def fetch_single_bot_metrics(cfg):
                 res["profit_factor_30d"] = round(gross_profit_30d / gross_loss_30d, 2)
             elif gross_profit_30d > 0:
                 res["profit_factor_30d"] = 9.99
+
+            if res["wins_30d"] > 0:
+                res["avg_win_30d"] = round(gross_profit_30d / res["wins_30d"], 2)
+            if res["losses_30d"] > 0:
+                res["avg_loss_30d"] = round(gross_loss_30d / res["losses_30d"], 2)
+
+            if res["avg_loss_30d"] > 0:
+                res["payoff_ratio_30d"] = round(res["avg_win_30d"] / res["avg_loss_30d"], 2)
+
+            init_cap = max(100.0, res["balance"] - res["pnl_30d"])
+            res["roi_30d_pct"] = round((res["pnl_30d"] / init_cap) * 100, 1)
+
     except Exception:
         pass
 
+    res["latency_ms"] = round((time.time() - start_t) * 1000, 1)
     return res
 
 def get_all_bot_metrics():
@@ -239,11 +326,13 @@ def get_all_bot_metrics():
     if _metrics_cache["data"] is not None and (now - _metrics_cache["timestamp"] < CACHE_TTL):
         return _metrics_cache["data"]
 
-    with ThreadPoolExecutor(max_workers=3) as executor:
+    with ThreadPoolExecutor(max_workers=5) as executor:
         bots_metrics = list(executor.map(fetch_single_bot_metrics, BOT_CONFIGS))
 
     total_balance = sum(b["balance"] for b in bots_metrics)
     total_equity = sum(b["equity"] for b in bots_metrics)
+    total_margin = sum(b["margin"] for b in bots_metrics)
+    total_margin_free = sum(b["margin_free"] for b in bots_metrics)
     total_floating = sum(b["floating_pnl"] for b in bots_metrics)
     total_pnl_today = sum(b["pnl_today"] for b in bots_metrics)
     total_pnl_7d = sum(b["pnl_7d"] for b in bots_metrics)
@@ -254,6 +343,10 @@ def get_all_bot_metrics():
     total_wins_today = sum(b["wins_today"] for b in bots_metrics)
     win_rate_today = round((total_wins_today / total_trades_today * 100), 1) if total_trades_today > 0 else 0.0
 
+    total_trades_7d = sum(b["trades_7d"] for b in bots_metrics)
+    total_wins_7d = sum(b["wins_7d"] for b in bots_metrics)
+    win_rate_7d = round((total_wins_7d / total_trades_7d * 100), 1) if total_trades_7d > 0 else 0.0
+
     total_trades_30d = sum(b["trades_30d"] for b in bots_metrics)
     total_wins_30d = sum(b["wins_30d"] for b in bots_metrics)
     win_rate_30d = round((total_wins_30d / total_trades_30d * 100), 1) if total_trades_30d > 0 else 0.0
@@ -263,15 +356,37 @@ def get_all_bot_metrics():
     win_rate_all = round((total_wins_all / total_trades_all * 100), 1) if total_trades_all > 0 else 0.0
 
     active_positions_count = sum(b["active_positions"] for b in bots_metrics)
+    total_open_lots = round(sum(b["open_lots"] for b in bots_metrics), 2)
+    total_buy_lots = round(sum(b["buy_lots"] for b in bots_metrics), 2)
+    total_sell_lots = round(sum(b["sell_lots"] for b in bots_metrics), 2)
+
+    total_margin_level = round((total_equity / total_margin * 100), 1) if total_margin > 0 else 0.0
+
+    all_positions = []
+    for b in bots_metrics:
+        all_positions.extend(b.get("positions_list", []))
+    all_positions.sort(key=lambda x: x["profit"])
+
+    gross_profit_30d = sum(b.get("gross_profit_30d", 0.0) for b in bots_metrics)
+    gross_loss_30d = sum(b.get("gross_loss_30d", 0.0) for b in bots_metrics)
+    profit_factor_30d = round(gross_profit_30d / gross_loss_30d, 2) if gross_loss_30d > 0 else (9.99 if gross_profit_30d > 0 else 1.0)
 
     portfolio = {
         "total_balance_usc": round(total_balance, 2),
         "total_equity_usc": round(total_equity, 2),
         "total_balance_usd": round(total_balance / 100.0, 2),
         "total_equity_usd": round(total_equity / 100.0, 2),
+        "total_margin_usc": round(total_margin, 2),
+        "total_margin_usd": round(total_margin / 100.0, 2),
+        "total_margin_free_usc": round(total_margin_free, 2),
+        "total_margin_free_usd": round(total_margin_free / 100.0, 2),
+        "total_margin_level": total_margin_level,
         "total_floating_usc": round(total_floating, 2),
         "total_floating_usd": round(total_floating / 100.0, 2),
         "active_positions": active_positions_count,
+        "total_open_lots": total_open_lots,
+        "total_buy_lots": total_buy_lots,
+        "total_sell_lots": total_sell_lots,
         "pnl_today_usc": round(total_pnl_today, 2),
         "pnl_today_usd": round(total_pnl_today / 100.0, 2),
         "pnl_7d_usc": round(total_pnl_7d, 2),
@@ -281,11 +396,25 @@ def get_all_bot_metrics():
         "pnl_all_usc": round(total_pnl_all, 2),
         "pnl_all_usd": round(total_pnl_all / 100.0, 2),
         "trades_today": total_trades_today,
+        "trades_7d": total_trades_7d,
         "trades_30d": total_trades_30d,
         "trades_all": total_trades_all,
+        "wins_today": total_wins_today,
+        "wins_7d": total_wins_7d,
+        "wins_30d": total_wins_30d,
+        "wins_all": total_wins_all,
+        "losses_today": total_trades_today - total_wins_today,
+        "losses_7d": total_trades_7d - total_wins_7d,
+        "losses_30d": total_trades_30d - total_wins_30d,
+        "losses_all": total_trades_all - total_wins_all,
         "win_rate_today": win_rate_today,
+        "win_rate_7d": win_rate_7d,
         "win_rate_30d": win_rate_30d,
         "win_rate_all": win_rate_all,
+        "profit_factor_30d": profit_factor_30d,
+        "gross_profit_30d_usc": round(gross_profit_30d, 2),
+        "gross_loss_30d_usc": round(gross_loss_30d, 2),
+        "all_positions": all_positions
     }
 
     result = {
@@ -306,20 +435,23 @@ PORTAL_HTML = """<!DOCTYPE html>
     <title>Profity AI — Trading Systems Command Hub</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600;700;800&display=swap" rel="stylesheet">
     <style>
         :root {
-            --bg: #070a12;
-            --card-bg: rgba(18, 24, 38, 0.75);
-            --card-border: rgba(255, 255, 255, 0.07);
-            --card-hover-border: rgba(56, 189, 248, 0.35);
-            --text-main: #f8fafc;
-            --text-muted: #94a3b8;
-            --accent-blue: #38bdf8;
+            --bg-dark: #07090e;
+            --bg-card: rgba(15, 21, 37, 0.72);
+            --bg-card-hover: rgba(22, 31, 54, 0.85);
+            --border-card: rgba(255, 255, 255, 0.07);
+            --border-card-hover: rgba(56, 189, 248, 0.4);
+            --text-primary: #f8fafc;
+            --text-secondary: #94a3b8;
+            --text-muted: #64748b;
+            --accent-cyan: #38bdf8;
             --accent-green: #10b981;
-            --accent-red: #f43f5e;
+            --accent-rose: #f43f5e;
             --accent-purple: #a855f7;
-            --accent-gold: #f59e0b;
+            --accent-amber: #f59e0b;
+            --accent-pink: #ec4899;
         }
 
         * {
@@ -329,111 +461,189 @@ PORTAL_HTML = """<!DOCTYPE html>
         }
 
         body {
-            background-color: var(--bg);
+            background-color: var(--bg-dark);
             background-image: 
-                radial-gradient(at 0% 0%, rgba(56, 189, 248, 0.12) 0px, transparent 45%),
-                radial-gradient(at 100% 0%, rgba(168, 85, 247, 0.1) 0px, transparent 45%),
-                radial-gradient(at 50% 100%, rgba(16, 185, 129, 0.06) 0px, transparent 50%);
-            color: var(--text-main);
+                radial-gradient(at 0% 0%, rgba(56, 189, 248, 0.12) 0px, transparent 40%),
+                radial-gradient(at 100% 0%, rgba(168, 85, 247, 0.1) 0px, transparent 40%),
+                radial-gradient(at 50% 100%, rgba(16, 185, 129, 0.07) 0px, transparent 50%),
+                linear-gradient(rgba(255, 255, 255, 0.015) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(255, 255, 255, 0.015) 1px, transparent 1px);
+            background-size: 100% 100%, 100% 100%, 100% 100%, 32px 32px, 32px 32px;
+            color: var(--text-primary);
             font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
             min-height: 100vh;
+            width: 100%;
             display: flex;
             flex-direction: column;
-            justify-content: space-between;
-            align-items: center;
-            padding: 2rem 1.25rem;
+            overflow-x: hidden;
         }
 
-        .container {
-            max-width: 1200px;
+        /* ── Fullscreen Main Shell ── */
+        .fullscreen-shell {
             width: 100%;
+            padding: 1rem 1.5rem;
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            gap: 1.25rem;
         }
 
-        /* ── Header ── */
-        header {
-            text-align: center;
-            margin-bottom: 2.25rem;
-            position: relative;
-        }
-
-        .top-bar {
+        /* ── Header Navigation Ribbon ── */
+        .nav-ribbon {
             display: flex;
             justify-content: space-between;
             align-items: center;
             flex-wrap: wrap;
             gap: 1rem;
-            margin-bottom: 1.25rem;
+            background: rgba(13, 18, 30, 0.85);
+            border: 1px solid var(--border-card);
+            border-radius: 14px;
+            padding: 0.75rem 1.25rem;
+            backdrop-filter: blur(16px);
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
         }
 
-        .badge-live {
+        .brand-group {
+            display: flex;
+            align-items: center;
+            gap: 0.85rem;
+        }
+
+        .brand-icon {
+            width: 38px;
+            height: 38px;
+            border-radius: 10px;
+            background: linear-gradient(135deg, rgba(56, 189, 248, 0.25), rgba(168, 85, 247, 0.25));
+            border: 1px solid rgba(56, 189, 248, 0.4);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.25rem;
+            box-shadow: 0 0 16px rgba(56, 189, 248, 0.2);
+        }
+
+        .brand-title {
+            font-size: 1.25rem;
+            font-weight: 800;
+            letter-spacing: -0.02em;
+            background: linear-gradient(135deg, #ffffff 0%, #cbd5e1 60%, #94a3b8 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .vps-status-pill {
             display: inline-flex;
             align-items: center;
-            gap: 0.5rem;
+            gap: 0.45rem;
             background: rgba(16, 185, 129, 0.12);
-            border: 1px solid rgba(16, 185, 129, 0.3);
             color: var(--accent-green);
-            padding: 0.35rem 0.85rem;
-            border-radius: 9999px;
-            font-size: 0.8rem;
-            font-weight: 600;
-            letter-spacing: 0.05em;
-            text-transform: uppercase;
+            border: 1px solid rgba(16, 185, 129, 0.3);
+            border-radius: 999px;
+            padding: 0.25rem 0.65rem;
+            font-size: 0.75rem;
+            font-weight: 700;
+            letter-spacing: 0.03em;
         }
 
-        .dot-pulse {
-            width: 8px;
-            height: 8px;
+        .dot-live {
+            width: 7px;
+            height: 7px;
             border-radius: 50%;
-            background-color: var(--accent-green);
-            box-shadow: 0 0 10px var(--accent-green);
-            animation: pulse 1.8s infinite;
+            background: var(--accent-green);
+            box-shadow: 0 0 8px var(--accent-green);
+            animation: pulse-live 1.8s infinite;
         }
-
-        @keyframes pulse {
+        @keyframes pulse-live {
             0%, 100% { transform: scale(1); opacity: 1; }
-            50% { transform: scale(1.4); opacity: 0.6; }
+            50% { transform: scale(1.35); opacity: 0.6; }
         }
 
-        .controls-top {
+        /* ── Market Session Clocks ── */
+        .market-sessions {
             display: flex;
             align-items: center;
             gap: 0.75rem;
+            flex-wrap: wrap;
         }
 
-        .unit-toggle {
+        .session-badge {
             display: inline-flex;
-            background: rgba(255, 255, 255, 0.06);
-            border: 1px solid var(--card-border);
+            align-items: center;
+            gap: 0.35rem;
+            padding: 0.25rem 0.55rem;
+            border-radius: 6px;
+            background: rgba(255, 255, 255, 0.04);
+            border: 1px solid rgba(255, 255, 255, 0.07);
+            font-size: 0.73rem;
+            color: var(--text-secondary);
+        }
+
+        .session-open {
+            background: rgba(16, 185, 129, 0.15);
+            border-color: rgba(16, 185, 129, 0.35);
+            color: #34d399;
+            font-weight: 600;
+        }
+
+        .clock-utc {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.78rem;
+            font-weight: 700;
+            color: var(--accent-cyan);
+            background: rgba(56, 189, 248, 0.1);
+            border: 1px solid rgba(56, 189, 248, 0.25);
+            padding: 0.25rem 0.6rem;
+            border-radius: 6px;
+        }
+
+        /* ── Action Controls (Unit, Period, Refresh, Fullscreen) ── */
+        .controls-ribbon {
+            display: flex;
+            align-items: center;
+            gap: 0.55rem;
+            flex-wrap: wrap;
+        }
+
+        .toggle-group {
+            display: inline-flex;
+            background: rgba(0, 0, 0, 0.35);
+            border: 1px solid var(--border-card);
             border-radius: 8px;
             padding: 2px;
+            gap: 2px;
         }
 
-        .unit-btn {
+        .toggle-btn {
             background: transparent;
             border: none;
             color: var(--text-muted);
-            padding: 0.3rem 0.7rem;
+            padding: 0.35rem 0.75rem;
             border-radius: 6px;
             font-size: 0.78rem;
-            font-weight: 600;
+            font-weight: 700;
             cursor: pointer;
             transition: all 0.2s;
         }
 
-        .unit-btn.active {
-            background: rgba(56, 189, 248, 0.2);
-            color: #38bdf8;
-            border: 1px solid rgba(56, 189, 248, 0.3);
+        .toggle-btn:hover {
+            color: #fff;
         }
 
-        .btn-refresh {
+        .toggle-btn.active {
+            background: rgba(56, 189, 248, 0.22);
+            color: var(--accent-cyan);
+            border: 1px solid rgba(56, 189, 248, 0.4);
+            box-shadow: 0 0 10px rgba(56, 189, 248, 0.2);
+        }
+
+        .btn-action {
             display: inline-flex;
             align-items: center;
             gap: 0.4rem;
-            background: rgba(255, 255, 255, 0.06);
-            border: 1px solid var(--card-border);
-            color: var(--text-muted);
-            padding: 0.35rem 0.75rem;
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid var(--border-card);
+            color: var(--text-secondary);
+            padding: 0.4rem 0.8rem;
             border-radius: 8px;
             font-size: 0.78rem;
             font-weight: 600;
@@ -441,9 +651,21 @@ PORTAL_HTML = """<!DOCTYPE html>
             transition: all 0.2s;
         }
 
-        .btn-refresh:hover {
+        .btn-action:hover {
+            background: rgba(255, 255, 255, 0.1);
             color: #fff;
             border-color: rgba(255, 255, 255, 0.2);
+        }
+
+        .btn-fullscreen {
+            background: linear-gradient(135deg, rgba(56, 189, 248, 0.2), rgba(168, 85, 247, 0.2));
+            color: #fff;
+            border: 1px solid rgba(56, 189, 248, 0.4);
+        }
+
+        .btn-fullscreen:hover {
+            border-color: var(--accent-cyan);
+            box-shadow: 0 0 14px rgba(56, 189, 248, 0.3);
         }
 
         .spin {
@@ -451,142 +673,112 @@ PORTAL_HTML = """<!DOCTYPE html>
         }
         @keyframes spin { 100% { transform: rotate(360deg); } }
 
-        h1 {
-            font-size: 2.5rem;
-            font-weight: 800;
-            letter-spacing: -0.03em;
-            background: linear-gradient(135deg, #ffffff 0%, #cbd5e1 50%, #94a3b8 100%);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            margin-bottom: 0.5rem;
-        }
-
-        .subtitle {
-            color: var(--text-muted);
-            font-size: 1.05rem;
-            max-width: 680px;
-            margin: 0 auto;
-            line-height: 1.6;
-        }
-
-        /* ── Portfolio Overview Banner ── */
-        .portfolio-overview {
+        /* ── Institutional KPI Strip (6 Cards) ── */
+        .kpi-strip {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-            gap: 1rem;
-            margin-bottom: 2rem;
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            gap: 0.9rem;
         }
 
-        .kpi-card {
-            background: var(--card-bg);
-            border: 1px solid var(--card-border);
+        .kpi-tile {
+            background: var(--bg-card);
+            border: 1px solid var(--border-card);
             border-radius: 14px;
-            padding: 1.25rem 1.4rem;
-            backdrop-filter: blur(12px);
+            padding: 1.1rem 1.25rem;
+            backdrop-filter: blur(14px);
             position: relative;
             overflow: hidden;
             transition: all 0.25s;
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
         }
 
-        .kpi-card:hover {
-            border-color: var(--card-hover-border);
+        .kpi-tile:hover {
+            border-color: var(--border-card-hover);
             transform: translateY(-2px);
+            background: var(--bg-card-hover);
         }
 
-        .kpi-card::before {
+        .kpi-tile::before {
             content: '';
             position: absolute;
-            top: 0; left: 0; right: 0; height: 3px;
-            background: linear-gradient(90deg, transparent, rgba(56, 189, 248, 0.4), transparent);
+            top: 0; left: 0; right: 0; height: 2.5px;
+            background: linear-gradient(90deg, transparent, rgba(56, 189, 248, 0.5), transparent);
         }
 
-        .kpi-title {
-            font-size: 0.78rem;
-            font-weight: 600;
+        .kpi-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 0.45rem;
+        }
+
+        .kpi-label {
+            font-size: 0.74rem;
+            font-weight: 700;
             text-transform: uppercase;
             letter-spacing: 0.06em;
-            color: var(--text-muted);
-            margin-bottom: 0.4rem;
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
+            color: var(--text-secondary);
         }
 
-        .kpi-value {
+        .kpi-icon {
+            font-size: 1.1rem;
+            opacity: 0.85;
+        }
+
+        .kpi-val {
             font-family: 'JetBrains Mono', monospace;
-            font-size: 1.7rem;
-            font-weight: 700;
+            font-size: 1.65rem;
+            font-weight: 800;
             letter-spacing: -0.02em;
-            margin-bottom: 0.25rem;
+            margin-bottom: 0.35rem;
+            color: #fff;
         }
 
-        .kpi-sub {
-            font-size: 0.8rem;
-            color: #64748b;
+        .kpi-footer {
+            font-size: 0.78rem;
+            color: var(--text-muted);
             display: flex;
+            justify-content: space-between;
             align-items: center;
-            gap: 0.4rem;
+            font-family: 'Inter', sans-serif;
+        }
+
+        .mono {
+            font-family: 'JetBrains Mono', monospace;
+            font-weight: 600;
         }
 
         .val-positive { color: var(--accent-green) !important; }
-        .val-negative { color: var(--accent-red) !important; }
-        .val-neutral { color: var(--accent-blue) !important; }
+        .val-negative { color: var(--accent-rose) !important; }
+        .val-neutral { color: var(--accent-cyan) !important; }
+        .val-warning { color: var(--accent-amber) !important; }
 
-        /* ── Comparison Section ── */
-        .section-header {
+        /* ── Multi-Bot Comparison Section ── */
+        .section-bar {
             display: flex;
             justify-content: space-between;
             align-items: center;
             flex-wrap: wrap;
-            gap: 1rem;
-            margin-bottom: 1rem;
+            gap: 0.75rem;
+            margin-top: 0.5rem;
         }
 
-        .section-title {
+        .section-heading {
             font-size: 1.25rem;
-            font-weight: 700;
+            font-weight: 800;
             display: flex;
             align-items: center;
             gap: 0.6rem;
+            letter-spacing: -0.01em;
         }
 
-        .period-tabs {
-            display: inline-flex;
-            background: rgba(255, 255, 255, 0.05);
-            border: 1px solid var(--card-border);
-            border-radius: 9px;
-            padding: 3px;
-            gap: 2px;
-        }
-
-        .period-tab {
-            background: transparent;
-            border: none;
-            color: var(--text-muted);
-            padding: 0.4rem 0.85rem;
-            border-radius: 7px;
-            font-size: 0.8rem;
-            font-weight: 600;
-            cursor: pointer;
-            transition: all 0.2s;
-        }
-
-        .period-tab.active {
-            background: rgba(56, 189, 248, 0.2);
-            color: #fff;
-            border: 1px solid rgba(56, 189, 248, 0.4);
-            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
-        }
-
-        /* ── Comparison Matrix Table Card ── */
         .table-card {
-            background: var(--card-bg);
-            border: 1px solid var(--card-border);
+            background: var(--bg-card);
+            border: 1px solid var(--border-card);
             border-radius: 16px;
-            backdrop-filter: blur(14px);
+            backdrop-filter: blur(16px);
             overflow: hidden;
-            margin-bottom: 2rem;
-            box-shadow: 0 10px 30px -10px rgba(0, 0, 0, 0.5);
+            box-shadow: 0 12px 36px rgba(0, 0, 0, 0.45);
         }
 
         .table-responsive {
@@ -598,34 +790,34 @@ PORTAL_HTML = """<!DOCTYPE html>
             width: 100%;
             border-collapse: collapse;
             text-align: left;
-            font-size: 0.88rem;
+            font-size: 0.86rem;
         }
 
         table.comparison-table th {
-            background: rgba(255, 255, 255, 0.03);
-            color: var(--text-muted);
-            font-size: 0.74rem;
+            background: rgba(255, 255, 255, 0.025);
+            color: var(--text-secondary);
+            font-size: 0.72rem;
             font-weight: 700;
             text-transform: uppercase;
-            letter-spacing: 0.07em;
-            padding: 1rem 1.25rem;
-            border-bottom: 1px solid var(--card-border);
+            letter-spacing: 0.06em;
+            padding: 1rem 1.15rem;
+            border-bottom: 1px solid var(--border-card);
             white-space: nowrap;
         }
 
         table.comparison-table td {
-            padding: 1.1rem 1.25rem;
+            padding: 1rem 1.15rem;
             border-bottom: 1px solid rgba(255, 255, 255, 0.04);
             vertical-align: middle;
             white-space: nowrap;
         }
 
-        table.comparison-table tr:last-child td {
-            border-bottom: none;
-        }
-
         table.comparison-table tr:hover td {
             background: rgba(255, 255, 255, 0.02);
+        }
+
+        table.comparison-table tr:last-child td {
+            border-bottom: none;
         }
 
         .bot-cell {
@@ -635,43 +827,44 @@ PORTAL_HTML = """<!DOCTYPE html>
         }
 
         .bot-avatar {
-            width: 40px;
-            height: 40px;
+            width: 42px;
+            height: 42px;
             border-radius: 10px;
             display: flex;
             align-items: center;
             justify-content: center;
-            font-size: 1.3rem;
+            font-size: 1.35rem;
             flex-shrink: 0;
         }
 
-        .bot-info-title {
+        .icon-bot1 { background: rgba(56, 189, 248, 0.15); border: 1px solid rgba(56, 189, 248, 0.35); }
+        .icon-bot2 { background: rgba(245, 158, 11, 0.15); border: 1px solid rgba(245, 158, 11, 0.35); }
+        .icon-bot3 { background: rgba(168, 85, 247, 0.15); border: 1px solid rgba(168, 85, 247, 0.35); }
+        .icon-bot4 { background: rgba(16, 185, 129, 0.15); border: 1px solid rgba(16, 185, 129, 0.35); }
+        .icon-bot5 { background: rgba(236, 72, 153, 0.15); border: 1px solid rgba(236, 72, 153, 0.35); }
+
+        .bot-name {
             font-weight: 700;
             color: #fff;
-            font-size: 0.95rem;
+            font-size: 0.96rem;
             display: flex;
             align-items: center;
-            gap: 0.4rem;
-        }
-
-        .bot-info-sub {
-            font-size: 0.78rem;
-            color: var(--text-muted);
-            margin-top: 2px;
+            gap: 0.45rem;
         }
 
         .badge-strategy {
             display: inline-block;
-            font-size: 0.68rem;
-            padding: 0.15rem 0.45rem;
+            font-size: 0.65rem;
+            padding: 0.12rem 0.45rem;
             border-radius: 4px;
             font-weight: 700;
             letter-spacing: 0.04em;
         }
 
-        .mono {
-            font-family: 'JetBrains Mono', monospace;
-            font-weight: 600;
+        .bot-strategy-desc {
+            font-size: 0.77rem;
+            color: var(--text-muted);
+            margin-top: 2px;
         }
 
         .pnl-badge {
@@ -681,7 +874,7 @@ PORTAL_HTML = """<!DOCTYPE html>
             padding: 0.35rem 0.75rem;
             border-radius: 8px;
             font-family: 'JetBrains Mono', monospace;
-            font-size: 0.95rem;
+            font-size: 0.92rem;
             font-weight: 700;
         }
 
@@ -700,11 +893,11 @@ PORTAL_HTML = """<!DOCTYPE html>
         .pnl-badge.zero {
             background: rgba(255, 255, 255, 0.05);
             color: var(--text-muted);
-            border: 1px solid var(--card-border);
+            border: 1px solid var(--border-card);
         }
 
         .win-bar-wrap {
-            width: 110px;
+            width: 120px;
         }
 
         .win-bar-bg {
@@ -726,7 +919,7 @@ PORTAL_HTML = """<!DOCTYPE html>
             align-items: center;
             gap: 0.35rem;
             padding: 0.25rem 0.55rem;
-            border-radius: 9999px;
+            border-radius: 999px;
             font-size: 0.72rem;
             font-weight: 600;
             background: rgba(16, 185, 129, 0.12);
@@ -734,548 +927,655 @@ PORTAL_HTML = """<!DOCTYPE html>
             border: 1px solid rgba(16, 185, 129, 0.25);
         }
 
-        .btn-desk-action {
+        .btn-desk {
             display: inline-flex;
             align-items: center;
             gap: 0.35rem;
-            padding: 0.45rem 0.85rem;
+            padding: 0.45rem 0.9rem;
             border-radius: 8px;
             font-size: 0.8rem;
-            font-weight: 600;
+            font-weight: 700;
             text-decoration: none;
             transition: all 0.2s;
             cursor: pointer;
         }
 
-        .btn-desk-action:hover {
-            transform: translateY(-1px);
-            filter: brightness(1.15);
+        .btn-blue { background: #0284c7; color: #fff; }
+        .btn-blue:hover { background: #0369a1; box-shadow: 0 0 12px rgba(2, 132, 199, 0.4); }
+        .btn-gold { background: #d97706; color: #fff; }
+        .btn-gold:hover { background: #b45309; box-shadow: 0 0 12px rgba(217, 119, 6, 0.4); }
+        .btn-purple { background: #9333ea; color: #fff; }
+        .btn-purple:hover { background: #7e22ce; box-shadow: 0 0 12px rgba(147, 51, 234, 0.4); }
+        .btn-emerald { background: #059669; color: #fff; }
+        .btn-emerald:hover { background: #047857; box-shadow: 0 0 12px rgba(5, 150, 105, 0.4); }
+        .btn-pink { background: #db2777; color: #fff; }
+        .btn-pink:hover { background: #be185d; box-shadow: 0 0 12px rgba(219, 39, 119, 0.4); }
+
+        /* ── Volume & Distribution Card ── */
+        .dist-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border-card);
+            border-radius: 14px;
+            padding: 1rem 1.25rem;
+            backdrop-filter: blur(14px);
         }
 
-        /* ── Visual Comparison Contribution Bar ── */
-        .comparison-bars-card {
-            background: var(--card-bg);
-            border: 1px solid var(--card-border);
-            border-radius: 16px;
-            padding: 1.5rem;
-            backdrop-filter: blur(12px);
-            margin-bottom: 2.25rem;
-        }
-
-        .bar-container {
-            margin-top: 1rem;
-            display: flex;
-            height: 24px;
-            border-radius: 8px;
-            overflow: hidden;
+        .dist-bar {
+            height: 10px;
             background: rgba(255, 255, 255, 0.05);
-            border: 1px solid var(--card-border);
+            border-radius: 999px;
+            overflow: hidden;
+            display: flex;
+            margin: 0.75rem 0;
+            border: 1px solid rgba(255, 255, 255, 0.08);
         }
 
-        .bar-slice {
+        .dist-slice {
             height: 100%;
             transition: width 0.5s ease;
-            position: relative;
         }
 
-        .bar-legend {
+        .dist-legend {
             display: flex;
             flex-wrap: wrap;
-            gap: 1.5rem;
-            margin-top: 1rem;
-            font-size: 0.82rem;
+            gap: 1rem;
+            font-size: 0.78rem;
+            color: var(--text-secondary);
         }
 
-        .legend-item {
-            display: flex;
+        .legend-tag {
+            display: inline-flex;
             align-items: center;
-            gap: 0.5rem;
-            color: var(--text-muted);
+            gap: 0.45rem;
         }
 
-        .legend-color {
-            width: 10px;
-            height: 10px;
-            border-radius: 3px;
+        .legend-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
         }
 
-        /* ── Grid Cards for Direct Launch ── */
-        .grid-cards {
+        /* ── 5 Bot Command Cards (Responsive Full Grid) ── */
+        .bots-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(330px, 1fr));
-            gap: 1.5rem;
-            margin-bottom: 2.5rem;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 1rem;
         }
 
-        .card {
-            background: var(--card-bg);
-            border: 1px solid var(--card-border);
+        .bot-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border-card);
             border-radius: 16px;
-            padding: 1.75rem;
-            backdrop-filter: blur(12px);
-            transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
-            position: relative;
+            padding: 1.25rem;
             display: flex;
             flex-direction: column;
             justify-content: space-between;
+            transition: all 0.25s;
+            position: relative;
+            overflow: hidden;
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
         }
 
-        .card:hover {
-            transform: translateY(-4px);
-            border-color: var(--card-hover-border);
-            box-shadow: 0 12px 30px -10px rgba(0, 0, 0, 0.5);
+        .bot-card:hover {
+            border-color: var(--border-card-hover);
+            transform: translateY(-2px);
+            background: var(--bg-card-hover);
         }
 
-        .card-header {
+        .bot-card-top {
             display: flex;
             justify-content: space-between;
             align-items: flex-start;
-            margin-bottom: 1.25rem;
+            margin-bottom: 0.85rem;
         }
 
-        .card-icon {
-            width: 48px;
-            height: 48px;
-            border-radius: 12px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 1.5rem;
-        }
-
-        .icon-bot1 { background: rgba(56, 189, 248, 0.15); border: 1px solid rgba(56, 189, 248, 0.25); }
-        .icon-bot2 { background: rgba(245, 158, 11, 0.15); border: 1px solid rgba(245, 158, 11, 0.25); }
-        .icon-bot3 { background: rgba(168, 85, 247, 0.15); border: 1px solid rgba(168, 85, 247, 0.25); }
-        .icon-bot4 { background: rgba(16, 185, 129, 0.15); border: 1px solid rgba(16, 185, 129, 0.25); }
-        .icon-bot5 { background: rgba(236, 72, 153, 0.15); border: 1px solid rgba(236, 72, 153, 0.25); }
-
-        .port-tag {
+        .port-badge {
             font-family: 'JetBrains Mono', monospace;
-            font-size: 0.8rem;
+            font-size: 0.72rem;
             color: var(--text-muted);
             background: rgba(255, 255, 255, 0.05);
-            padding: 0.3rem 0.6rem;
+            padding: 0.25rem 0.55rem;
             border-radius: 6px;
             border: 1px solid rgba(255, 255, 255, 0.08);
         }
 
-        .card-title {
-            font-size: 1.35rem;
-            font-weight: 700;
-            margin-bottom: 0.5rem;
+        .bot-card-title {
+            font-size: 1.15rem;
+            font-weight: 800;
+            margin-bottom: 0.35rem;
+            color: #fff;
         }
 
-        .card-desc {
+        .bot-card-desc {
             color: var(--text-muted);
-            font-size: 0.92rem;
-            line-height: 1.55;
-            margin-bottom: 1.25rem;
+            font-size: 0.82rem;
+            line-height: 1.45;
+            margin-bottom: 1rem;
+            min-height: 2.4rem;
         }
 
-        .card-stats-grid {
+        .bot-stats-grid {
             display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 0.75rem;
-            background: rgba(0, 0, 0, 0.25);
+            grid-template-columns: repeat(2, 1fr);
+            gap: 0.65rem;
+            background: rgba(0, 0, 0, 0.3);
             border: 1px solid rgba(255, 255, 255, 0.04);
             border-radius: 10px;
-            padding: 0.9rem;
-            margin-bottom: 1.25rem;
+            padding: 0.85rem;
+            margin-bottom: 1.15rem;
         }
 
-        .card-stat-label {
-            font-size: 0.72rem;
-            color: #64748b;
+        .stat-item-label {
+            font-size: 0.68rem;
+            color: var(--text-muted);
             text-transform: uppercase;
             letter-spacing: 0.05em;
             margin-bottom: 2px;
         }
 
-        .card-stat-value {
+        .stat-item-val {
             font-family: 'JetBrains Mono', monospace;
-            font-size: 1.05rem;
+            font-size: 0.98rem;
             font-weight: 700;
         }
 
-        .btn-launch {
-            display: block;
-            text-align: center;
-            text-decoration: none;
-            padding: 0.85rem 1.25rem;
-            border-radius: 10px;
-            font-weight: 600;
-            font-size: 0.95rem;
-            transition: all 0.2s ease;
-            cursor: pointer;
+        /* ── Live Positions Inspector ── */
+        .positions-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border-card);
+            border-radius: 16px;
+            padding: 1.25rem;
+            backdrop-filter: blur(16px);
         }
 
-        .btn-blue { background: #0284c7; color: #ffffff; }
-        .btn-blue:hover { background: #0369a1; }
-        .btn-gold { background: #d97706; color: #ffffff; }
-        .btn-gold:hover { background: #b45309; }
-        .btn-purple { background: #9333ea; color: #ffffff; }
-        .btn-purple:hover { background: #7e22ce; }
-        .btn-emerald { background: #059669; color: #ffffff; }
-        .btn-emerald:hover { background: #047857; }
-        .btn-pink { background: #db2777; color: #ffffff; }
-        .btn-pink:hover { background: #be185d; }
-
-        .notice-box {
-            background: rgba(30, 41, 59, 0.6);
-            border: 1px solid rgba(255, 255, 255, 0.07);
-            border-radius: 12px;
-            padding: 1.25rem 1.5rem;
-            font-size: 0.88rem;
-            color: var(--text-muted);
-            line-height: 1.6;
-            margin-bottom: 2rem;
-        }
-
-        .notice-box strong { color: var(--text-main); }
-        .notice-box code {
-            font-family: 'JetBrains Mono', monospace;
-            background: rgba(0, 0, 0, 0.3);
-            padding: 0.15rem 0.4rem;
+        .badge-buy {
+            background: rgba(16, 185, 129, 0.15);
+            color: #10b981;
+            border: 1px solid rgba(16, 185, 129, 0.3);
+            padding: 0.15rem 0.5rem;
             border-radius: 4px;
-            color: var(--accent-blue);
+            font-weight: 700;
+            font-size: 0.72rem;
         }
 
+        .badge-sell {
+            background: rgba(244, 63, 94, 0.15);
+            color: #f43f5e;
+            border: 1px solid rgba(244, 63, 94, 0.3);
+            padding: 0.15rem 0.5rem;
+            border-radius: 4px;
+            font-weight: 700;
+            font-size: 0.72rem;
+        }
+
+        /* ── Footer ── */
         footer {
-            text-align: center;
-            color: #475569;
-            font-size: 0.85rem;
+            margin-top: 1rem;
+            padding: 1rem 0;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 0.75rem;
+            color: var(--text-muted);
+            font-size: 0.8rem;
+            border-top: 1px solid rgba(255, 255, 255, 0.05);
         }
 
-        @media (max-width: 768px) {
-            h1 { font-size: 2rem; }
-            .portfolio-overview { grid-template-columns: 1fr 1fr; }
-            .grid-cards { grid-template-columns: 1fr; }
+        .footer-links {
+            display: flex;
+            gap: 1rem;
         }
-        @media (max-width: 480px) {
-            .portfolio-overview { grid-template-columns: 1fr; }
+
+        .footer-link {
+            color: var(--text-secondary);
+            text-decoration: none;
+            transition: color 0.2s;
+        }
+
+        .footer-link:hover {
+            color: var(--accent-cyan);
+        }
+
+        @media (max-width: 900px) {
+            .fullscreen-shell { padding: 0.75rem 1rem; }
+            .kpi-strip { grid-template-columns: repeat(2, 1fr); }
+            .market-sessions { display: none; }
+        }
+
+        @media (max-width: 580px) {
+            .kpi-strip { grid-template-columns: 1fr; }
+            .controls-ribbon { width: 100%; justify-content: space-between; }
         }
     </style>
 </head>
 <body>
-    <div class="container">
-        <!-- Top Navigation Bar -->
-        <div class="top-bar">
-            <div class="badge-live">
-                <span class="dot-pulse"></span>
-                Institutional VPS Core Active • 3 Bots Linked
-            </div>
-            <div class="controls-top">
-                <div class="unit-toggle">
-                    <button class="unit-btn active" id="btn-unit-usc" onclick="setUnit('USC')">USC (Cents)</button>
-                    <button class="unit-btn" id="btn-unit-usd" onclick="setUnit('USD')">USD ($)</button>
+    <div class="fullscreen-shell">
+
+        <!-- Top Navigation Ribbon -->
+        <header class="nav-ribbon">
+            <div class="brand-group">
+                <div class="brand-icon">⚡</div>
+                <div>
+                    <div class="brand-title">Profity AI Command Hub</div>
+                    <div style="font-size: 0.74rem; color: var(--text-muted);">Institutional Multi-Bot Algorithmic Execution Core</div>
                 </div>
-                <button class="btn-refresh" id="btn-manual-refresh" onclick="refreshData(true)">
-                    <span id="refresh-icon">🔄</span> <span id="refresh-text">Refresh</span>
+                <div class="vps-status-pill">
+                    <span class="dot-live"></span>
+                    <span id="vps-tag">169.58.190.245 • 5 BOTS LINKED</span>
+                </div>
+            </div>
+
+            <!-- Global Market Clocks -->
+            <div class="market-sessions" id="marketSessions">
+                <span class="session-badge" id="sess-london">London: <strong id="london-status">--</strong></span>
+                <span class="session-badge" id="sess-ny">New York: <strong id="ny-status">--</strong></span>
+                <span class="session-badge" id="sess-tokyo">Tokyo: <strong id="tokyo-status">--</strong></span>
+                <span class="clock-utc" id="clockUtc">UTC --:--:--</span>
+            </div>
+
+            <!-- Action Controls -->
+            <div class="controls-ribbon">
+                <div class="toggle-group">
+                    <button class="toggle-btn active" id="btn-unit-usc" onclick="setUnit('USC')">USC (Cents)</button>
+                    <button class="toggle-btn" id="btn-unit-usd" onclick="setUnit('USD')">USD ($)</button>
+                </div>
+
+                <div class="toggle-group">
+                    <button class="toggle-btn" onclick="setPeriod('today')" id="tab-today">Today</button>
+                    <button class="toggle-btn" onclick="setPeriod('7d')" id="tab-7d">7D</button>
+                    <button class="toggle-btn active" onclick="setPeriod('30d')" id="tab-30d">30D</button>
+                    <button class="toggle-btn" onclick="setPeriod('all')" id="tab-all">All</button>
+                </div>
+
+                <button class="btn-action" id="btn-manual-refresh" onclick="refreshData(true)" title="Instant Poll">
+                    <span id="refresh-icon">🔄</span> <span id="refresh-counter">5s</span>
+                </button>
+
+                <button class="btn-action btn-fullscreen" id="btn-fullscreen" onclick="toggleFullscreen()" title="Toggle Fullscreen UI">
+                    <span id="fs-icon">⛶</span> Fullscreen
                 </button>
             </div>
-        </div>
-
-        <!-- Header -->
-        <header>
-            <h1>Profity AI Command Center</h1>
-            <p class="subtitle">Unified real-time multi-bot performance monitor, profit comparison matrix, and high-speed execution desk.</p>
         </header>
 
-        <!-- Portfolio Overview Banner (4 KPIs) -->
-        <div class="portfolio-overview">
-            <div class="kpi-card">
-                <div class="kpi-title">
-                    <span>Combined Equity</span>
-                    <span style="color: var(--accent-blue);">💎</span>
+        <!-- 6-Card Institutional KPI Banner -->
+        <section class="kpi-strip">
+            <!-- 1. Equity -->
+            <div class="kpi-tile">
+                <div class="kpi-header">
+                    <span class="kpi-label">Combined Equity</span>
+                    <span class="kpi-icon" style="color: var(--accent-cyan);">💎</span>
                 </div>
-                <div class="kpi-value" id="kpi-equity">--</div>
-                <div class="kpi-sub">
-                    <span>Balance: <span id="kpi-balance" class="mono">--</span></span>
-                </div>
-            </div>
-
-            <div class="kpi-card">
-                <div class="kpi-title">
-                    <span>Floating Unrealized P&L</span>
-                    <span style="color: var(--accent-green);">⚡</span>
-                </div>
-                <div class="kpi-value" id="kpi-floating">--</div>
-                <div class="kpi-sub">
-                    <span>Active Positions: <strong id="kpi-open-trades" style="color:#fff;">0</strong></span>
+                <div class="kpi-val" id="kpi-equity">--</div>
+                <div class="kpi-footer">
+                    <span>Balance: <strong id="kpi-balance" class="mono" style="color:#fff;">--</strong></span>
+                    <span id="kpi-equity-delta" class="mono">--</span>
                 </div>
             </div>
 
-            <div class="kpi-card">
-                <div class="kpi-title">
-                    <span id="kpi-pnl-label">Realized Profit (30D)</span>
-                    <span style="color: var(--accent-gold);">📊</span>
+            <!-- 2. Margin & Free Margin -->
+            <div class="kpi-tile">
+                <div class="kpi-header">
+                    <span class="kpi-label">Margin Utilization</span>
+                    <span class="kpi-icon" style="color: var(--accent-amber);">🛡️</span>
                 </div>
-                <div class="kpi-value" id="kpi-pnl">--</div>
-                <div class="kpi-sub">
+                <div class="kpi-val" id="kpi-margin-level">--%</div>
+                <div class="kpi-footer">
+                    <span>Free: <strong id="kpi-margin-free" class="mono" style="color:#fff;">--</strong></span>
+                    <span>Used: <strong id="kpi-margin-used" class="mono" style="color:var(--text-muted);">--</strong></span>
+                </div>
+            </div>
+
+            <!-- 3. Floating PnL & Exposure -->
+            <div class="kpi-tile">
+                <div class="kpi-header">
+                    <span class="kpi-label">Unrealized Floating P&L</span>
+                    <span class="kpi-icon" style="color: var(--accent-green);">⚡</span>
+                </div>
+                <div class="kpi-val" id="kpi-floating">--</div>
+                <div class="kpi-footer">
+                    <span><strong id="kpi-open-trades" style="color:#fff;">0</strong> Pos (<span id="kpi-open-lots" class="mono">0.00</span> Lots)</span>
+                    <span id="kpi-bias-pill" style="font-size: 0.72rem; color: var(--text-secondary);">Neutral</span>
+                </div>
+            </div>
+
+            <!-- 4. Realized Period PnL -->
+            <div class="kpi-tile">
+                <div class="kpi-header">
+                    <span class="kpi-label" id="kpi-pnl-label">Realized Profit (30D)</span>
+                    <span class="kpi-icon" style="color: var(--accent-amber);">📊</span>
+                </div>
+                <div class="kpi-val" id="kpi-pnl">--</div>
+                <div class="kpi-footer">
                     <span id="kpi-pnl-sub">All-Time: --</span>
+                    <span id="kpi-roi-pill" class="mono" style="color: var(--accent-cyan);">ROI: --</span>
                 </div>
             </div>
 
-            <div class="kpi-card">
-                <div class="kpi-title">
-                    <span>Portfolio Win Rate</span>
-                    <span style="color: var(--accent-purple);">🎯</span>
+            <!-- 5. Win Rate & Trades -->
+            <div class="kpi-tile">
+                <div class="kpi-header">
+                    <span class="kpi-label">Win Rate & Ratio</span>
+                    <span class="kpi-icon" style="color: var(--accent-purple);">🎯</span>
                 </div>
-                <div class="kpi-value val-neutral" id="kpi-winrate">--</div>
-                <div class="kpi-sub">
-                    <span>Executed: <strong id="kpi-trades-count" style="color:#fff;">--</strong> trades</span>
+                <div class="kpi-val val-neutral" id="kpi-winrate">--%</div>
+                <div class="kpi-footer">
+                    <span><strong id="kpi-wins" class="val-positive">--</strong>W / <strong id="kpi-losses" class="val-negative">--</strong>L</span>
+                    <span>PF: <strong id="kpi-pf" class="mono" style="color:#fff;">--</strong></span>
                 </div>
             </div>
-        </div>
 
-        <!-- Multi-Bot Profit Comparison Section -->
-        <div class="section-header">
-            <div class="section-title">
-                <span>🏆</span> Multi-Bot Profit Comparison Matrix
+            <!-- 6. Total Execution Volume -->
+            <div class="kpi-tile">
+                <div class="kpi-header">
+                    <span class="kpi-label">Volume & Extreme Deals</span>
+                    <span class="kpi-icon" style="color: var(--accent-pink);">📈</span>
+                </div>
+                <div class="kpi-val" id="kpi-trades-count">--</div>
+                <div class="kpi-footer">
+                    <span>Best: <strong id="kpi-best-trade" class="val-positive mono">--</strong></span>
+                    <span>Worst: <strong id="kpi-worst-trade" class="val-negative mono">--</strong></span>
+                </div>
             </div>
-            <div class="period-tabs">
-                <button class="period-tab" onclick="setPeriod('today')" id="tab-today">Today</button>
-                <button class="period-tab" onclick="setPeriod('7d')" id="tab-7d">7 Days</button>
-                <button class="period-tab active" onclick="setPeriod('30d')" id="tab-30d">30 Days</button>
-                <button class="period-tab" onclick="setPeriod('all')" id="tab-all">All Time</button>
-            </div>
-        </div>
+        </section>
 
-        <!-- Comparison Matrix Table -->
-        <div class="table-card">
+        <!-- Multi-Bot Profit Comparison Matrix -->
+        <section>
+            <div class="section-bar">
+                <div class="section-heading">
+                    <span>🏆</span> Multi-Bot Profit Comparison Matrix
+                </div>
+                <div style="font-size: 0.8rem; color: var(--text-muted);">
+                    Live High-Frequency MT5 Bridge Streaming (:8001-:8005)
+                </div>
+            </div>
+
+            <div class="table-card" style="margin-top: 0.75rem;">
+                <div class="table-responsive">
+                    <table class="comparison-table">
+                        <thead>
+                            <tr>
+                                <th>Trading Engine / Strategy</th>
+                                <th>Account & Server</th>
+                                <th>Balance & Equity</th>
+                                <th>Margin / Level</th>
+                                <th>Floating P&L (Lots)</th>
+                                <th id="th-period-pnl">Realized Profit (30D)</th>
+                                <th>Win Rate & Record</th>
+                                <th>Profit Factor / Payoff</th>
+                                <th>Best / Worst Deal</th>
+                                <th>Bridge Ping</th>
+                                <th>Desk Action</th>
+                            </tr>
+                        </thead>
+                        <tbody id="comparison-tbody">
+                            <tr>
+                                <td colspan="11" style="text-align: center; padding: 2.5rem; color: var(--text-muted);">
+                                    Connecting to MT5 terminal bridges...
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </section>
+
+        <!-- Volume & Profit Allocation Bars -->
+        <section class="dist-card">
+            <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.5rem;">
+                <div style="font-weight: 700; font-size: 0.92rem; color: #fff;">
+                    📊 Multi-Bot Volume & Profit Contribution Share
+                </div>
+                <div style="font-size: 0.78rem; color: var(--text-muted);" id="dist-period-label">
+                    30-Day Distribution
+                </div>
+            </div>
+
+            <div class="dist-bar" id="distribution-bar">
+                <div class="dist-slice" style="width: 20%; background: #38bdf8;"></div>
+                <div class="dist-slice" style="width: 20%; background: #f59e0b;"></div>
+                <div class="dist-slice" style="width: 20%; background: #a855f7;"></div>
+                <div class="dist-slice" style="width: 20%; background: #10b981;"></div>
+                <div class="dist-slice" style="width: 20%; background: #ec4899;"></div>
+            </div>
+
+            <div class="dist-legend" id="distribution-legend">
+                <div class="legend-tag"><div class="legend-dot" style="background: #38bdf8;"></div> Bot #1 Auto Grid: --</div>
+                <div class="legend-tag"><div class="legend-dot" style="background: #f59e0b;"></div> Bot #2 Manual Desk: --</div>
+                <div class="legend-tag"><div class="legend-dot" style="background: #a855f7;"></div> Bot #3 Trend Runner: --</div>
+                <div class="legend-tag"><div class="legend-dot" style="background: #10b981;"></div> Bot #4 SMC Hunter: --</div>
+                <div class="legend-tag"><div class="legend-dot" style="background: #ec4899;"></div> Bot #5 AI Ensemble: --</div>
+            </div>
+        </section>
+
+        <!-- 5 Bot Dedicated Command Cards -->
+        <section>
+            <div class="section-bar">
+                <div class="section-heading">
+                    <span>🚀</span> Individual Bot Control Desks
+                </div>
+                <div style="font-size: 0.8rem; color: var(--text-muted);">
+                    Direct Port Handshakes: 8501, 8502, 8503, 8504, 8505
+                </div>
+            </div>
+
+            <div class="bots-grid" style="margin-top: 0.75rem;">
+                <!-- Bot 1: Auto Grid -->
+                <div class="bot-card">
+                    <div>
+                        <div class="bot-card-top">
+                            <div class="bot-avatar icon-bot1">⚡</div>
+                            <span class="port-badge">PORT 8501</span>
+                        </div>
+                        <div class="bot-card-title">Bot #1 — Auto Grid</div>
+                        <div class="bot-card-desc">Breakout Grid Engine with Smart Runner Mode, Auto-Regime Reading, and Hardened Risk Ceilings.</div>
+                        <div class="bot-stats-grid">
+                            <div>
+                                <div class="stat-item-label">Live Equity</div>
+                                <div class="stat-item-val mono" id="b1-equity">--</div>
+                            </div>
+                            <div>
+                                <div class="stat-item-label">Floating P&L</div>
+                                <div class="stat-item-val mono" id="b1-floating">--</div>
+                            </div>
+                            <div>
+                                <div class="stat-item-label" id="b1-pnl-label">30D Realized</div>
+                                <div class="stat-item-val mono" id="b1-pnl">--</div>
+                            </div>
+                            <div>
+                                <div class="stat-item-label">Win Rate</div>
+                                <div class="stat-item-val mono val-neutral" id="b1-winrate">--</div>
+                            </div>
+                        </div>
+                    </div>
+                    <a id="link-bot1" href="http://" class="btn-desk btn-blue" style="justify-content: center;">Open Auto Grid Desk &rarr;</a>
+                </div>
+
+                <!-- Bot 2: Manual Desk -->
+                <div class="bot-card">
+                    <div>
+                        <div class="bot-card-top">
+                            <div class="bot-avatar icon-bot2">🕹️</div>
+                            <span class="port-badge">PORT 8502</span>
+                        </div>
+                        <div class="bot-card-title">Bot #2 — Manual Grid Desk</div>
+                        <div class="bot-card-desc">Interactive manual control panel for precision trap deployment, live monitoring, and manual cycle executions.</div>
+                        <div class="bot-stats-grid">
+                            <div>
+                                <div class="stat-item-label">Live Equity</div>
+                                <div class="stat-item-val mono" id="b2-equity">--</div>
+                            </div>
+                            <div>
+                                <div class="stat-item-label">Floating P&L</div>
+                                <div class="stat-item-val mono" id="b2-floating">--</div>
+                            </div>
+                            <div>
+                                <div class="stat-item-label" id="b2-pnl-label">30D Realized</div>
+                                <div class="stat-item-val mono" id="b2-pnl">--</div>
+                            </div>
+                            <div>
+                                <div class="stat-item-label">Win Rate</div>
+                                <div class="stat-item-val mono val-neutral" id="b2-winrate">--</div>
+                            </div>
+                        </div>
+                    </div>
+                    <a id="link-bot2" href="http://" class="btn-desk btn-gold" style="justify-content: center;">Open Manual Desk &rarr;</a>
+                </div>
+
+                <!-- Bot 3: Trend Runner -->
+                <div class="bot-card">
+                    <div>
+                        <div class="bot-card-top">
+                            <div class="bot-avatar icon-bot3">📈</div>
+                            <span class="port-badge">PORT 8503</span>
+                        </div>
+                        <div class="bot-card-title">Bot #3 — London Asian Trend</div>
+                        <div class="bot-card-desc">24/7 autonomous Asian session box breakout & London trend confirmation trading system.</div>
+                        <div class="bot-stats-grid">
+                            <div>
+                                <div class="stat-item-label">Live Equity</div>
+                                <div class="stat-item-val mono" id="b3-equity">--</div>
+                            </div>
+                            <div>
+                                <div class="stat-item-label">Floating P&L</div>
+                                <div class="stat-item-val mono" id="b3-floating">--</div>
+                            </div>
+                            <div>
+                                <div class="stat-item-label" id="b3-pnl-label">30D Realized</div>
+                                <div class="stat-item-val mono" id="b3-pnl">--</div>
+                            </div>
+                            <div>
+                                <div class="stat-item-label">Win Rate</div>
+                                <div class="stat-item-val mono val-neutral" id="b3-winrate">--</div>
+                            </div>
+                        </div>
+                    </div>
+                    <a id="link-bot3" href="http://" class="btn-desk btn-purple" style="justify-content: center;">Open Trend Panel &rarr;</a>
+                </div>
+
+                <!-- Bot 4: SMC Hunter -->
+                <div class="bot-card">
+                    <div>
+                        <div class="bot-card-top">
+                            <div class="bot-avatar icon-bot4">🎯</div>
+                            <span class="port-badge">PORT 8504</span>
+                        </div>
+                        <div class="bot-card-title">Bot #4 — SMC Liquidity Hunter</div>
+                        <div class="bot-card-desc">Institutional liquidity sweep & FVG reversal engine fading fakeouts at session highs/lows.</div>
+                        <div class="bot-stats-grid">
+                            <div>
+                                <div class="stat-item-label">Live Equity</div>
+                                <div class="stat-item-val mono" id="b4-equity">--</div>
+                            </div>
+                            <div>
+                                <div class="stat-item-label">Floating P&L</div>
+                                <div class="stat-item-val mono" id="b4-floating">--</div>
+                            </div>
+                            <div>
+                                <div class="stat-item-label" id="b4-pnl-label">30D Realized</div>
+                                <div class="stat-item-val mono" id="b4-pnl">--</div>
+                            </div>
+                            <div>
+                                <div class="stat-item-label">Win Rate</div>
+                                <div class="stat-item-val mono val-neutral" id="b4-winrate">--</div>
+                            </div>
+                        </div>
+                    </div>
+                    <a id="link-bot4" href="http://" class="btn-desk btn-emerald" style="justify-content: center;">Open SMC Panel &rarr;</a>
+                </div>
+
+                <!-- Bot 5: AI Ensemble -->
+                <div class="bot-card">
+                    <div>
+                        <div class="bot-card-top">
+                            <div class="bot-avatar icon-bot5">🤖</div>
+                            <span class="port-badge">PORT 8505</span>
+                        </div>
+                        <div class="bot-card-title">Bot #5 — AI/ML Neural Trader</div>
+                        <div class="bot-card-desc">Multi-model Deep RL ensemble & institutional market regime detection engine for Gold.</div>
+                        <div class="bot-stats-grid">
+                            <div>
+                                <div class="stat-item-label">Live Equity</div>
+                                <div class="stat-item-val mono" id="b5-equity">--</div>
+                            </div>
+                            <div>
+                                <div class="stat-item-label">Floating P&L</div>
+                                <div class="stat-item-val mono" id="b5-floating">--</div>
+                            </div>
+                            <div>
+                                <div class="stat-item-label" id="b5-pnl-label">30D Realized</div>
+                                <div class="stat-item-val mono" id="b5-pnl">--</div>
+                            </div>
+                            <div>
+                                <div class="stat-item-label">Win Rate</div>
+                                <div class="stat-item-val mono val-neutral" id="b5-winrate">--</div>
+                            </div>
+                        </div>
+                    </div>
+                    <a id="link-bot5" href="http://" class="btn-desk btn-pink" style="justify-content: center;">Open AI Panel &rarr;</a>
+                </div>
+            </div>
+        </section>
+
+        <!-- Live Active Market Positions Feed -->
+        <section class="positions-card">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.85rem; flex-wrap: wrap; gap: 0.5rem;">
+                <div style="font-weight: 800; font-size: 1.05rem; display: flex; align-items: center; gap: 0.5rem;">
+                    <span>⚡</span> Live Active Market Positions
+                    <span class="vps-status-pill" id="pos-count-pill" style="font-size: 0.7rem; padding: 0.15rem 0.5rem;">0 Open</span>
+                </div>
+                <div style="font-size: 0.8rem; color: var(--text-muted);">
+                    Real-time floating P&L synchronized across all 5 MT5 instances
+                </div>
+            </div>
+
             <div class="table-responsive">
-                <table class="comparison-table">
+                <table class="comparison-table" style="font-size: 0.83rem;">
                     <thead>
                         <tr>
-                            <th>Trading Engine / Strategy</th>
-                            <th>Account / Server</th>
-                            <th>Balance & Equity</th>
+                            <th>Ticket</th>
+                            <th>Engine Source</th>
+                            <th>Symbol</th>
+                            <th>Direction</th>
+                            <th>Volume (Lots)</th>
+                            <th>Open Price</th>
+                            <th>Current Price</th>
+                            <th>SL / TP</th>
                             <th>Floating P&L</th>
-                            <th id="th-period-pnl">Realized Profit (30D)</th>
-                            <th>Win Rate & Trades</th>
-                            <th>Profit Factor</th>
-                            <th>Status</th>
-                            <th>Action</th>
                         </tr>
                     </thead>
-                    <tbody id="comparison-tbody">
+                    <tbody id="positions-tbody">
                         <tr>
-                            <td colspan="9" style="text-align: center; padding: 2.5rem; color: var(--text-muted);">
-                                Loading live MT5 bridge statistics...
+                            <td colspan="9" style="text-align: center; padding: 1.5rem; color: var(--text-muted);">
+                                No open positions active across engines. Market scanner standing by.
                             </td>
                         </tr>
                     </tbody>
                 </table>
             </div>
-        </div>
+        </section>
 
-        <!-- Visual Contribution & Distribution Bar -->
-        <div class="comparison-bars-card">
-            <div style="display: flex; justify-content: space-between; align-items: center;">
-                <div style="font-weight: 700; font-size: 0.95rem; color: #fff;">
-                    📊 Relative Trade Volume & Equity Distribution
-                </div>
-                <div style="font-size: 0.8rem; color: var(--text-muted);" id="dist-period-label">
-                    30-Day Contribution
-                </div>
+        <!-- Footer -->
+        <footer>
+            <div>
+                Profity AI Systems &bull; High Frequency / Low Latency Deployment &bull; <strong>169.58.190.245</strong>
             </div>
-            <div class="bar-container" id="distribution-bar">
-                <div class="bar-slice" style="width: 25%; background: #38bdf8;"></div>
-                <div class="bar-slice" style="width: 25%; background: #f59e0b;"></div>
-                <div class="bar-slice" style="width: 25%; background: #a855f7;"></div>
-                <div class="bar-slice" style="width: 25%; background: #10b981;"></div>
+            <div class="footer-links">
+                <a id="link-vnc" href="http://169.58.190.245:8006" target="_blank" class="footer-link">🖥️ Wine MT5 Screen (:8006)</a>
+                <a href="#marketSessions" class="footer-link">Market Sessions</a>
+                <a href="#comparison-tbody" class="footer-link">Comparison Matrix</a>
             </div>
-            <div class="bar-legend" id="distribution-legend">
-                <div class="legend-item"><div class="legend-color" style="background: #38bdf8;"></div> Bot #1 Auto Grid: --</div>
-                <div class="legend-item"><div class="legend-color" style="background: #f59e0b;"></div> Bot #2 Manual Desk: --</div>
-                <div class="legend-item"><div class="legend-color" style="background: #a855f7;"></div> Bot #3 Trend Runner: --</div>
-                <div class="legend-item"><div class="legend-color" style="background: #10b981;"></div> Bot #4 SMC Hunter: --</div>
-            </div>
-        </div>
+        </footer>
 
-        <!-- Bot Launch Cards with Embedded Live Stats -->
-        <div class="section-header">
-            <div class="section-title">
-                <span>🚀</span> Live Supervision Desks
-            </div>
-        </div>
-
-        <div class="grid-cards">
-            <!-- Bot 1: Auto Grid -->
-            <div class="card">
-                <div>
-                    <div class="card-header">
-                        <div class="card-icon icon-bot1">⚡</div>
-                        <div class="port-tag">PORT 8501</div>
-                    </div>
-                    <div class="card-title">Bot #1 — Auto Grid</div>
-                    <div class="card-desc">Breakout Grid Engine with Smart Runner Mode, Auto-Regime Reading, and Hardened Risk Ceilings.</div>
-                    
-                    <div class="card-stats-grid">
-                        <div>
-                            <div class="card-stat-label">Live Equity</div>
-                            <div class="card-stat-value" id="b1-equity">--</div>
-                        </div>
-                        <div>
-                            <div class="card-stat-label">Floating P&L</div>
-                            <div class="card-stat-value" id="b1-floating">--</div>
-                        </div>
-                        <div>
-                            <div class="card-stat-label" id="b1-pnl-label">30D Realized</div>
-                            <div class="card-stat-value" id="b1-pnl">--</div>
-                        </div>
-                        <div>
-                            <div class="card-stat-label">Win Rate</div>
-                            <div class="card-stat-value val-neutral" id="b1-winrate">--</div>
-                        </div>
-                    </div>
-                </div>
-                <a id="link-bot1" href="http://" class="btn-launch btn-blue">Open Auto Grid Desk &rarr;</a>
-            </div>
-
-            <!-- Bot 2: Manual Grid Desk -->
-            <div class="card">
-                <div>
-                    <div class="card-header">
-                        <div class="card-icon icon-bot2">🕹️</div>
-                        <div class="port-tag">PORT 8502</div>
-                    </div>
-                    <div class="card-title">Bot #2 — Manual Grid Desk</div>
-                    <div class="card-desc">Interactive manual control panel for precision trap deployment, live monitoring, and manual cycle executions.</div>
-                    
-                    <div class="card-stats-grid">
-                        <div>
-                            <div class="card-stat-label">Live Equity</div>
-                            <div class="card-stat-value" id="b2-equity">--</div>
-                        </div>
-                        <div>
-                            <div class="card-stat-label">Floating P&L</div>
-                            <div class="card-stat-value" id="b2-floating">--</div>
-                        </div>
-                        <div>
-                            <div class="card-stat-label" id="b2-pnl-label">30D Realized</div>
-                            <div class="card-stat-value" id="b2-pnl">--</div>
-                        </div>
-                        <div>
-                            <div class="card-stat-label">Win Rate</div>
-                            <div class="card-stat-value val-neutral" id="b2-winrate">--</div>
-                        </div>
-                    </div>
-                </div>
-                <a id="link-bot2" href="http://" class="btn-launch btn-gold">Open Manual Desk &rarr;</a>
-            </div>
-
-            <!-- Bot 3: Trend System -->
-            <div class="card">
-                <div>
-                    <div class="card-header">
-                        <div class="card-icon icon-bot3">📈</div>
-                        <div class="port-tag">PORT 8503</div>
-                    </div>
-                    <div class="card-title">Bot #3 — London Asian Trend</div>
-                    <div class="card-desc">24/7 autonomous Asian session box breakout & London trend confirmation trading system.</div>
-                    
-                    <div class="card-stats-grid">
-                        <div>
-                            <div class="card-stat-label">Live Equity</div>
-                            <div class="card-stat-value" id="b3-equity">--</div>
-                        </div>
-                        <div>
-                            <div class="card-stat-label">Floating P&L</div>
-                            <div class="card-stat-value" id="b3-floating">--</div>
-                        </div>
-                        <div>
-                            <div class="card-stat-label" id="b3-pnl-label">30D Realized</div>
-                            <div class="card-stat-value" id="b3-pnl">--</div>
-                        </div>
-                        <div>
-                            <div class="card-stat-label">Win Rate</div>
-                            <div class="card-stat-value val-neutral" id="b3-winrate">--</div>
-                        </div>
-                    </div>
-                </div>
-                <a id="link-bot3" href="http://" class="btn-launch btn-purple">Open Trend Panel &rarr;</a>
-            </div>
-
-            <!-- Bot 4: SMC Liquidity Hunter -->
-            <div class="card">
-                <div>
-                    <div class="card-header">
-                        <div class="card-icon icon-bot4">🎯</div>
-                        <div class="port-tag">PORT 8504</div>
-                    </div>
-                    <div class="card-title">Bot #4 — SMC Liquidity Hunter</div>
-                    <div class="card-desc">Institutional liquidity sweep & FVG reversal engine fading fakeouts at session highs/lows.</div>
-                    
-                    <div class="card-stats-grid">
-                        <div>
-                            <div class="card-stat-label">Live Equity</div>
-                            <div class="card-stat-value" id="b4-equity">--</div>
-                        </div>
-                        <div>
-                            <div class="card-stat-label">Floating P&L</div>
-                            <div class="card-stat-value" id="b4-floating">--</div>
-                        </div>
-                        <div>
-                            <div class="card-stat-label" id="b4-pnl-label">30D Realized</div>
-                            <div class="card-stat-value" id="b4-pnl">--</div>
-                        </div>
-                        <div>
-                            <div class="card-stat-label">Win Rate</div>
-                            <div class="card-stat-value val-neutral" id="b4-winrate">--</div>
-                        </div>
-                    </div>
-                </div>
-                <a id="link-bot4" href="http://" class="btn-launch btn-emerald">Open SMC Panel &rarr;</a>
-            </div>
-
-            <!-- Bot 5: AI/ML Neural Trader -->
-            <div class="card">
-                <div>
-                    <div class="card-header">
-                        <div class="card-icon icon-bot5">🤖</div>
-                        <div class="port-tag">PORT 8505</div>
-                    </div>
-                    <div class="card-title">Bot #5 — AI/ML Neural Trader</div>
-                    <div class="card-desc">Multi-model Deep RL ensemble & institutional market regime detection engine for Gold.</div>
-                    
-                    <div class="card-stats-grid">
-                        <div>
-                            <div class="card-stat-label">Live Equity</div>
-                            <div class="card-stat-value" id="b5-equity">--</div>
-                        </div>
-                        <div>
-                            <div class="card-stat-label">Floating P&L</div>
-                            <div class="card-stat-value" id="b5-floating">--</div>
-                        </div>
-                        <div>
-                            <div class="card-stat-label" id="b5-pnl-label">30D Realized</div>
-                            <div class="card-stat-value" id="b5-pnl">--</div>
-                        </div>
-                        <div>
-                            <div class="card-stat-label">Win Rate</div>
-                            <div class="card-stat-value val-neutral" id="b5-winrate">--</div>
-                        </div>
-                    </div>
-                </div>
-                <a id="link-bot5" href="http://" class="btn-launch btn-pink">Open AI Panel &rarr;</a>
-            </div>
-        </div>
-
-        <div class="notice-box">
-            💡 <strong>Connection & Profit Tracking:</strong> All metrics are fetched live from MetaTrader 5 terminal bridges under Wine prefixes (<code>8001</code>, <code>8002</code>, <code>8003</code>, <code>8004</code>, <code>8005</code>). To access individual bot dashboards, connect via <code>http://</code> (not <code>https://</code>). Auto-refresh is synchronized every 5 seconds.
-        </div>
     </div>
-
-    <footer>
-        Profity AI Systems &bull; High Frequency / Low Latency Deployment &bull; 169.58.190.245
-    </footer>
 
     <script>
         // State
-        let currentUnit = 'USC'; // 'USC' or 'USD'
-        let currentPeriod = '30d'; // 'today', '7d', '30d', 'all'
+        let currentUnit = 'USC';
+        let currentPeriod = '30d';
         let liveData = null;
+        let refreshSeconds = 5;
+        let timerInterval = null;
 
         // Dynamic target links
         const host = window.location.hostname || "169.58.190.245";
@@ -1284,6 +1584,59 @@ PORTAL_HTML = """<!DOCTYPE html>
         document.getElementById("link-bot3").href = "http://" + host + ":8503";
         document.getElementById("link-bot4").href = "http://" + host + ":8504";
         document.getElementById("link-bot5").href = "http://" + host + ":8505";
+        document.getElementById("link-vnc").href = "http://" + host + ":8006";
+
+        // Fullscreen API toggle
+        function toggleFullscreen() {
+            if (!document.fullscreenElement) {
+                document.documentElement.requestFullscreen().catch(err => {
+                    console.warn("Fullscreen request error:", err);
+                });
+                document.getElementById("fs-icon").innerText = "🗗";
+            } else {
+                if (document.exitFullscreen) {
+                    document.exitFullscreen();
+                    document.getElementById("fs-icon").innerText = "⛶";
+                }
+            }
+        }
+
+        document.addEventListener("fullscreenchange", () => {
+            const isFs = !!document.fullscreenElement;
+            document.getElementById("fs-icon").innerText = isFs ? "🗗" : "⛶";
+            document.getElementById("btn-fullscreen").classList.toggle("active", isFs);
+        });
+
+        // Market Clocks & UTC Ticker
+        function updateClocks() {
+            const now = new Date();
+            const utcHours = now.getUTCHours();
+            const utcMins = now.getUTCMinutes();
+            const utcSecs = now.getUTCSeconds();
+            
+            const pad = (n) => n < 10 ? '0' + n : n;
+            document.getElementById("clockUtc").innerText = `UTC ${pad(utcHours)}:${pad(utcMins)}:${pad(utcSecs)}`;
+
+            // London (08:00 - 16:30 UTC)
+            const londonOpen = (utcHours >= 8 && (utcHours < 16 || (utcHours === 16 && utcMins <= 30)));
+            const elLon = document.getElementById("sess-london");
+            document.getElementById("london-status").innerText = londonOpen ? "OPEN" : "CLOSED";
+            elLon.className = "session-badge " + (londonOpen ? "session-open" : "");
+
+            // New York (13:00 - 21:30 UTC)
+            const nyOpen = (utcHours >= 13 && (utcHours < 21 || (utcHours === 21 && utcMins <= 30)));
+            const elNy = document.getElementById("sess-ny");
+            document.getElementById("ny-status").innerText = nyOpen ? "OPEN" : "CLOSED";
+            elNy.className = "session-badge " + (nyOpen ? "session-open" : "");
+
+            // Tokyo (00:00 - 09:00 UTC)
+            const tokyoOpen = (utcHours >= 0 && utcHours < 9);
+            const elTok = document.getElementById("sess-tokyo");
+            document.getElementById("tokyo-status").innerText = tokyoOpen ? "OPEN" : "CLOSED";
+            elTok.className = "session-badge " + (tokyoOpen ? "session-open" : "");
+        }
+        setInterval(updateClocks, 1000);
+        updateClocks();
 
         function setUnit(unit) {
             currentUnit = unit;
@@ -1307,6 +1660,7 @@ PORTAL_HTML = """<!DOCTYPE html>
             };
             document.getElementById("kpi-pnl-label").innerText = labels[period];
             document.getElementById("th-period-pnl").innerText = labels[period];
+            document.getElementById("dist-period-label").innerText = period.toUpperCase() + " Distribution";
             
             ['b1', 'b2', 'b3', 'b4', 'b5'].forEach(id => {
                 const el = document.getElementById(id + "-pnl-label");
@@ -1318,7 +1672,7 @@ PORTAL_HTML = """<!DOCTYPE html>
 
         function formatMoney(amountUsc, showSign = false) {
             const val = currentUnit === 'USD' ? (amountUsc / 100.0) : amountUsc;
-            const sign = (showSign && val > 0) ? "+" : "";
+            const sign = (showSign && val > 0.001) ? "+" : "";
             const unitSuffix = currentUnit === 'USD' ? "" : " USC";
             const prefix = currentUnit === 'USD' ? "$" : "";
             return sign + prefix + val.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + unitSuffix;
@@ -1350,6 +1704,7 @@ PORTAL_HTML = """<!DOCTYPE html>
                 console.error("Failed to fetch profit data:", err);
             } finally {
                 if (icon) icon.classList.remove("spin");
+                refreshSeconds = 5;
             }
         }
 
@@ -1358,138 +1713,207 @@ PORTAL_HTML = """<!DOCTYPE html>
             const p = liveData.portfolio;
             const bots = liveData.bots || [];
 
-            // 1. KPI Banner
+            // 1. KPI Strip
             document.getElementById("kpi-equity").innerText = formatMoney(p.total_equity_usc);
-            document.getElementById("kpi-equity").className = "kpi-value " + getPnlColorClass(p.total_equity_usc - p.total_balance_usc);
             document.getElementById("kpi-balance").innerText = formatMoney(p.total_balance_usc);
+            
+            const deltaUsc = p.total_equity_usc - p.total_balance_usc;
+            const deltaEl = document.getElementById("kpi-equity-delta");
+            deltaEl.innerText = formatMoney(deltaUsc, true);
+            deltaEl.className = "mono " + getPnlColorClass(deltaUsc);
 
+            // Margin
+            const mLevel = p.total_margin_level || 0;
+            const mLevelEl = document.getElementById("kpi-margin-level");
+            mLevelEl.innerText = mLevel > 0 ? mLevel.toFixed(1) + "%" : "100.0%";
+            mLevelEl.className = "kpi-val " + (mLevel > 500 || mLevel === 0 ? "val-positive" : (mLevel > 200 ? "val-warning" : "val-negative"));
+            document.getElementById("kpi-margin-free").innerText = formatMoney(p.total_margin_free_usc || p.total_balance_usc);
+            document.getElementById("kpi-margin-used").innerText = formatMoney(p.total_margin_usc || 0);
+
+            // Floating
             const floatingEl = document.getElementById("kpi-floating");
             floatingEl.innerText = formatMoney(p.total_floating_usc, true);
-            floatingEl.className = "kpi-value " + getPnlColorClass(p.total_floating_usc);
+            floatingEl.className = "kpi-val " + getPnlColorClass(p.total_floating_usc);
             document.getElementById("kpi-open-trades").innerText = p.active_positions;
+            document.getElementById("kpi-open-lots").innerText = (p.total_open_lots || 0).toFixed(2);
 
+            const buyLots = p.total_buy_lots || 0;
+            const sellLots = p.total_sell_lots || 0;
+            const biasEl = document.getElementById("kpi-bias-pill");
+            if (buyLots > sellLots) {
+                biasEl.innerText = `Long Bias (${buyLots.toFixed(2)} vs ${sellLots.toFixed(2)}L)`;
+                biasEl.style.color = "var(--accent-green)";
+            } else if (sellLots > buyLots) {
+                biasEl.innerText = `Short Bias (${sellLots.toFixed(2)} vs ${buyLots.toFixed(2)}L)`;
+                biasEl.style.color = "var(--accent-rose)";
+            } else {
+                biasEl.innerText = `Neutral (0.00 L)`;
+                biasEl.style.color = "var(--text-secondary)";
+            }
+
+            // Period PnL
             let periodPnl = p.pnl_30d_usc;
             let periodTrades = p.trades_30d;
+            let periodWins = p.wins_30d;
+            let periodLosses = p.losses_30d;
             let periodWinRate = p.win_rate_30d;
 
             if (currentPeriod === 'today') {
                 periodPnl = p.pnl_today_usc;
                 periodTrades = p.trades_today;
+                periodWins = p.wins_today;
+                periodLosses = p.losses_today;
                 periodWinRate = p.win_rate_today;
             } else if (currentPeriod === '7d') {
                 periodPnl = p.pnl_7d_usc;
+                periodTrades = p.trades_7d;
+                periodWins = p.wins_7d;
+                periodLosses = p.losses_7d;
+                periodWinRate = p.win_rate_7d;
             } else if (currentPeriod === 'all') {
                 periodPnl = p.pnl_all_usc;
                 periodTrades = p.trades_all;
+                periodWins = p.wins_all;
+                periodLosses = p.losses_all;
                 periodWinRate = p.win_rate_all;
             }
 
             const pnlEl = document.getElementById("kpi-pnl");
             pnlEl.innerText = formatMoney(periodPnl, true);
-            pnlEl.className = "kpi-value " + getPnlColorClass(periodPnl);
+            pnlEl.className = "kpi-val " + getPnlColorClass(periodPnl);
             document.getElementById("kpi-pnl-sub").innerText = "All-Time: " + formatMoney(p.pnl_all_usc, true);
 
+            // Estimated ROI %
+            const baseBal = Math.max(100.0, p.total_balance_usc - periodPnl);
+            const roiPct = ((periodPnl / baseBal) * 100).toFixed(1);
+            document.getElementById("kpi-roi-pill").innerText = "ROI: " + (roiPct > 0 ? "+" : "") + roiPct + "%";
+            document.getElementById("kpi-roi-pill").className = "mono " + getPnlColorClass(periodPnl);
+
+            // Win Rate & Trades
             document.getElementById("kpi-winrate").innerText = periodWinRate.toFixed(1) + "%";
-            document.getElementById("kpi-trades-count").innerText = periodTrades.toLocaleString();
+            document.getElementById("kpi-wins").innerText = periodWins;
+            document.getElementById("kpi-losses").innerText = periodLosses;
+            document.getElementById("kpi-pf").innerText = (p.profit_factor_30d || 1.0).toFixed(2);
+            document.getElementById("kpi-trades-count").innerText = periodTrades.toLocaleString() + " Deals";
+
+            // Extreme Deals across bots
+            let bestDeal = Math.max(...bots.map(b => b.best_trade_30d || 0));
+            let worstDeal = Math.min(...bots.map(b => b.worst_trade_30d || 0));
+            document.getElementById("kpi-best-trade").innerText = formatMoney(bestDeal, true);
+            document.getElementById("kpi-worst-trade").innerText = formatMoney(worstDeal, true);
 
             // 2. Comparison Table
             const tbody = document.getElementById("comparison-tbody");
             tbody.innerHTML = "";
 
+            const btnColors = {
+                1: "btn-blue",
+                2: "btn-gold",
+                3: "btn-purple",
+                4: "btn-emerald",
+                5: "btn-pink"
+            };
+
             bots.forEach(b => {
-                let botPeriodPnl = b.pnl_30d;
-                let botPeriodTrades = b.trades_30d;
-                let botPeriodWins = b.wins_30d;
-                let botPeriodWinRate = b.win_rate_30d;
+                let botPnl = b.pnl_30d;
+                let botTrades = b.trades_30d;
+                let botWins = b.wins_30d;
+                let botLosses = b.losses_30d;
+                let botWinRate = b.win_rate_30d;
 
                 if (currentPeriod === 'today') {
-                    botPeriodPnl = b.pnl_today;
-                    botPeriodTrades = b.trades_today;
-                    botPeriodWins = b.wins_today;
-                    botPeriodWinRate = b.win_rate_today;
+                    botPnl = b.pnl_today;
+                    botTrades = b.trades_today;
+                    botWins = b.wins_today;
+                    botLosses = b.losses_today;
+                    botWinRate = b.win_rate_today;
                 } else if (currentPeriod === '7d') {
-                    botPeriodPnl = b.pnl_7d;
-                    botPeriodTrades = b.trades_7d;
-                    botPeriodWins = b.wins_7d;
-                    botPeriodWinRate = b.win_rate_7d;
+                    botPnl = b.pnl_7d;
+                    botTrades = b.trades_7d;
+                    botWins = b.wins_7d;
+                    botLosses = b.losses_7d;
+                    botWinRate = b.win_rate_7d;
                 } else if (currentPeriod === 'all') {
-                    botPeriodPnl = b.pnl_all;
-                    botPeriodTrades = b.trades_all;
-                    botPeriodWins = b.wins_all;
-                    botPeriodWinRate = b.win_rate_all;
+                    botPnl = b.pnl_all;
+                    botTrades = b.trades_all;
+                    botWins = b.wins_all;
+                    botLosses = b.losses_all;
+                    botWinRate = b.win_rate_all;
                 }
 
                 const tr = document.createElement("tr");
-
-                const btnColors = {
-                    1: "btn-blue",
-                    2: "btn-gold",
-                    3: "btn-purple",
-                    4: "btn-emerald",
-                    5: "btn-pink"
-                };
-
                 tr.innerHTML = `
                     <td>
                         <div class="bot-cell">
                             <div class="bot-avatar icon-bot${b.id}">${b.icon}</div>
                             <div>
-                                <div class="bot-info-title">
+                                <div class="bot-name">
                                     ${b.name}
                                     <span class="badge-strategy" style="background: ${b.color}22; color: ${b.color}; border: 1px solid ${b.color}44;">${b.tag}</span>
                                 </div>
-                                <div class="bot-info-sub">${b.strategy}</div>
+                                <div class="bot-strategy-desc">${b.strategy}</div>
                             </div>
                         </div>
                     </td>
                     <td>
                         <div class="mono" style="color: #fff; font-size: 0.9rem;">#${b.account}</div>
-                        <div style="font-size: 0.75rem; color: var(--text-muted);">${b.server}</div>
+                        <div style="font-size: 0.74rem; color: var(--text-muted);">${b.server} &bull; 1:${b.leverage || 2000}</div>
                     </td>
                     <td>
                         <div class="mono" style="color: #fff; font-size: 0.95rem;">${formatMoney(b.equity)}</div>
                         <div style="font-size: 0.75rem; color: var(--text-muted);">Bal: ${formatMoney(b.balance)}</div>
                     </td>
                     <td>
+                        <div class="mono" style="color: ${(b.margin_level > 500 || b.margin_level === 0) ? 'var(--accent-green)' : 'var(--accent-amber)'}; font-size: 0.9rem;">
+                            ${b.margin_level > 0 ? b.margin_level.toFixed(1) + '%' : '100.0%'}
+                        </div>
+                        <div style="font-size: 0.74rem; color: var(--text-muted);">Used: ${formatMoney(b.margin || 0)}</div>
+                    </td>
+                    <td>
                         <span class="mono ${getPnlColorClass(b.floating_pnl)}" style="font-size: 0.95rem;">
                             ${formatMoney(b.floating_pnl, true)}
                         </span>
-                        <div style="font-size: 0.75rem; color: var(--text-muted);">${b.active_positions} Open</div>
+                        <div style="font-size: 0.75rem; color: var(--text-muted);">${b.active_positions} Pos (${(b.open_lots || 0).toFixed(2)}L)</div>
                     </td>
                     <td>
-                        <div class="${getPnlBadgeClass(botPeriodPnl)}">
-                            ${formatMoney(botPeriodPnl, true)}
+                        <div class="${getPnlBadgeClass(botPnl)}">
+                            ${formatMoney(botPnl, true)}
                         </div>
                     </td>
                     <td>
                         <div class="win-bar-wrap">
                             <div style="display: flex; justify-content: space-between; font-size: 0.8rem;">
-                                <span class="mono" style="color: #fff; font-weight: 700;">${botPeriodWinRate.toFixed(1)}%</span>
-                                <span style="color: var(--text-muted); font-size: 0.75rem;">${botPeriodWins}/${botPeriodTrades}</span>
+                                <span class="mono" style="color: #fff; font-weight: 700;">${botWinRate.toFixed(1)}%</span>
+                                <span style="color: var(--text-muted); font-size: 0.74rem;">${botWins}W/${botLosses}L</span>
                             </div>
                             <div class="win-bar-bg">
-                                <div class="win-bar-fill" style="width: ${Math.min(100, Math.max(0, botPeriodWinRate))}%; background: ${b.color};"></div>
+                                <div class="win-bar-fill" style="width: ${Math.min(100, Math.max(0, botWinRate))}%; background: ${b.color};"></div>
                             </div>
                         </div>
                     </td>
                     <td>
-                        <span class="mono" style="color: #cbd5e1;">${b.profit_factor_30d || '1.0'}</span>
+                        <span class="mono" style="color: #cbd5e1; font-size: 0.9rem;">PF: ${b.profit_factor_30d || '1.0'}</span>
+                        <div style="font-size: 0.74rem; color: var(--text-muted);">Payoff: ${b.payoff_ratio_30d || '1.0'}x</div>
+                    </td>
+                    <td>
+                        <div class="val-positive mono" style="font-size: 0.82rem;">${formatMoney(b.best_trade_30d || 0, true)}</div>
+                        <div class="val-negative mono" style="font-size: 0.82rem;">${formatMoney(b.worst_trade_30d || 0, true)}</div>
                     </td>
                     <td>
                         <span class="status-pill">
-                            <span class="dot-pulse" style="width: 6px; height: 6px;"></span>
-                            Online
+                            <span class="dot-live" style="width: 5px; height: 5px;"></span>
+                            ${b.latency_ms || 12}ms
                         </span>
                     </td>
                     <td>
-                        <a href="http://${host}:${b.panel_port}" class="btn-desk-action ${btnColors[b.id] || 'btn-blue'}">
-                            Open &rarr;
+                        <a href="http://${host}:${b.panel_port}" class="btn-desk ${btnColors[b.id] || 'btn-blue'}">
+                            Open Desk &rarr;
                         </a>
                     </td>
                 `;
                 tbody.appendChild(tr);
 
-                // 3. Update Individual Bot Cards
+                // Update Bot Card
                 const bId = "b" + b.id;
                 const eqEl = document.getElementById(bId + "-equity");
                 if (eqEl) eqEl.innerText = formatMoney(b.equity);
@@ -1497,23 +1921,23 @@ PORTAL_HTML = """<!DOCTYPE html>
                 const flEl = document.getElementById(bId + "-floating");
                 if (flEl) {
                     flEl.innerText = formatMoney(b.floating_pnl, true);
-                    flEl.className = "card-stat-value " + getPnlColorClass(b.floating_pnl);
+                    flEl.className = "stat-item-val mono " + getPnlColorClass(b.floating_pnl);
                 }
 
                 const pnlCardEl = document.getElementById(bId + "-pnl");
                 if (pnlCardEl) {
-                    pnlCardEl.innerText = formatMoney(botPeriodPnl, true);
-                    pnlCardEl.className = "card-stat-value " + getPnlColorClass(botPeriodPnl);
+                    pnlCardEl.innerText = formatMoney(botPnl, true);
+                    pnlCardEl.className = "stat-item-val mono " + getPnlColorClass(botPnl);
                 }
 
                 const wrCardEl = document.getElementById(bId + "-winrate");
-                if (wrCardEl) wrCardEl.innerText = botPeriodWinRate.toFixed(1) + "%";
+                if (wrCardEl) wrCardEl.innerText = botWinRate.toFixed(1) + "%";
             });
 
-            // 4. Update Distribution Bar
+            // 3. Update Volume Distribution Bar
             const distContainer = document.getElementById("distribution-bar");
             const legendContainer = document.getElementById("distribution-legend");
-            
+
             const totalTradesCount = bots.reduce((sum, b) => {
                 if (currentPeriod === 'today') return sum + b.trades_today;
                 if (currentPeriod === '7d') return sum + b.trades_7d;
@@ -1532,23 +1956,79 @@ PORTAL_HTML = """<!DOCTYPE html>
                     let pct = ((bTrades / totalTradesCount) * 100).toFixed(1);
 
                     const slice = document.createElement("div");
-                    slice.className = "bar-slice";
+                    slice.className = "dist-slice";
                     slice.style.width = pct + "%";
                     slice.style.background = b.color;
-                    slice.title = `${b.name}: ${pct}% (${bTrades} trades)`;
+                    slice.title = `${b.name}: ${pct}% (${bTrades} deals)`;
                     distContainer.appendChild(slice);
 
                     const leg = document.createElement("div");
-                    leg.className = "legend-item";
-                    leg.innerHTML = `<div class="legend-color" style="background: ${b.color};"></div> ${b.name}: <strong>${pct}%</strong> (${bTrades} trades)`;
+                    leg.className = "legend-tag";
+                    leg.innerHTML = `<div class="legend-dot" style="background: ${b.color};"></div> ${b.name}: <strong>${pct}%</strong> (${bTrades} deals)`;
                     legendContainer.appendChild(leg);
+                });
+            }
+
+            // 4. Update Live Positions Feed
+            const posTbody = document.getElementById("positions-tbody");
+            const posCountPill = document.getElementById("pos-count-pill");
+            const allPositions = p.all_positions || [];
+
+            posCountPill.innerText = `${allPositions.length} Open (${(p.total_open_lots || 0).toFixed(2)} Lots)`;
+
+            if (allPositions.length === 0) {
+                posTbody.innerHTML = `
+                    <tr>
+                        <td colspan="9" style="text-align: center; padding: 2rem; color: var(--text-muted);">
+                            ✨ All 5 engines are flat. No floating drawdown. Standing by for high-probability setups.
+                        </td>
+                    </tr>
+                `;
+            } else {
+                posTbody.innerHTML = "";
+                allPositions.forEach(pos => {
+                    const tr = document.createElement("tr");
+                    tr.innerHTML = `
+                        <td class="mono" style="color: #fff; font-size: 0.85rem;">#${pos.ticket}</td>
+                        <td>
+                            <span class="badge-strategy" style="background: ${pos.bot_color}22; color: ${pos.bot_color}; border: 1px solid ${pos.bot_color}44;">
+                                ${pos.bot_tag}
+                            </span>
+                        </td>
+                        <td class="mono" style="font-weight: 700; color: #fff;">${pos.symbol}</td>
+                        <td>
+                            <span class="${pos.type === 'BUY' ? 'badge-buy' : 'badge-sell'}">${pos.type}</span>
+                        </td>
+                        <td class="mono">${pos.volume.toFixed(2)}</td>
+                        <td class="mono">${pos.price_open.toFixed(3)}</td>
+                        <td class="mono" style="color: #fff;">${pos.price_current.toFixed(3)}</td>
+                        <td class="mono" style="font-size: 0.76rem; color: var(--text-muted);">
+                            SL: ${pos.sl > 0 ? pos.sl.toFixed(3) : '--'} / TP: ${pos.tp > 0 ? pos.tp.toFixed(3) : '--'}
+                        </td>
+                        <td>
+                            <span class="mono ${getPnlColorClass(pos.profit)}" style="font-weight: 700; font-size: 0.95rem;">
+                                ${formatMoney(pos.profit, true)}
+                            </span>
+                        </td>
+                    `;
+                    posTbody.appendChild(tr);
                 });
             }
         }
 
-        // Initial fetch & set 5-second polling
+        // Auto-refresh countdown interval
+        setInterval(() => {
+            refreshSeconds--;
+            if (refreshSeconds <= 0) {
+                refreshData();
+                refreshSeconds = 5;
+            }
+            const cnt = document.getElementById("refresh-counter");
+            if (cnt) cnt.innerText = refreshSeconds + "s";
+        }, 1000);
+
+        // Initial fetch
         refreshData();
-        setInterval(refreshData, 5000);
     </script>
 </body>
 </html>
@@ -1574,6 +2054,8 @@ class PortalHandler(http.server.BaseHTTPRequestHandler):
                 "bot1": is_port_listening(8501),
                 "bot2": is_port_listening(8502),
                 "bot3": is_port_listening(8503),
+                "bot4": is_port_listening(8504),
+                "bot5": is_port_listening(8505),
             }
             body = json.dumps(status).encode("utf-8")
             self.send_response(HTTPStatus.OK)
@@ -1592,13 +2074,12 @@ class PortalHandler(http.server.BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def log_message(self, format, *args):
-        # Suppress verbose terminal access logs
         pass
 
 def run():
     socketserver.TCPServer.allow_reuse_address = True
     with socketserver.TCPServer(("0.0.0.0", PORT), PortalHandler) as httpd:
-        print(f"Profity AI Portal & Command Center running on http://0.0.0.0:{PORT}")
+        print(f"Profity AI Fullscreen Command Hub running on http://0.0.0.0:{PORT}")
         httpd.serve_forever()
 
 if __name__ == "__main__":

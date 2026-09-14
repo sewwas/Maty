@@ -163,6 +163,10 @@ class MT5BridgeHandler(BaseHTTPRequestHandler):
                     "server": acc.server,
                     "balance": acc.balance,
                     "equity": acc.equity,
+                    "profit": getattr(acc, "profit", 0.0),
+                    "margin": getattr(acc, "margin", 0.0),
+                    "margin_free": getattr(acc, "margin_free", 0.0),
+                    "margin_level": getattr(acc, "margin_level", 0.0),
                     "leverage": acc.leverage,
                     "currency": acc.currency,
                     "port": port
