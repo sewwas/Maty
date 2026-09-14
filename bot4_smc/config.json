@@ -7,11 +7,11 @@
   "max_risk_ceiling_pct": 2.5,
   "min_risk_floor_pct": 0.25,
   "max_daily_risk_pct": 3.0,
-  "max_trades_per_day": 4,
+  "max_trades_per_day": 8,
   "auto_trading": true,
   "strategy": {
     "lookback_candles": 120,
-    "min_wick_ratio": 0.38,
+    "min_wick_ratio": 0.30,
     "fvg_min_pips": 3.5,
     "tp1_rr": 1.5,
     "tp1_close_pct": 50.0,

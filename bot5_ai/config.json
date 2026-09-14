@@ -9,11 +9,11 @@
   "max_risk_ceiling_pct": 2.5,
   "min_risk_floor_pct": 0.25,
   "max_daily_risk_pct": 3.0,
-  "max_trades_per_day": 6,
+  "max_trades_per_day": 8,
   "max_positions": 2,
   "auto_trading": true,
   "algorithm": "ensemble",
-  "confidence_threshold": 0.60,
+  "confidence_threshold": 0.55,
   "strategy": {
     "timeframe": "M5",
     "regime_timeframe": "M15",

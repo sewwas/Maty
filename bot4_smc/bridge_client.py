@@ -260,3 +260,14 @@ class Bot4BridgeClient:
             return {"success": False, "error": f"HTTP {r.status_code}"}
         except Exception as e:
             return {"success": False, "error": str(e)}
+
+    def get_history(self, days: int = 1) -> List[Dict[str, Any]]:
+        """Returns closed trades/deals filtered by Bot #4 magic number."""
+        try:
+            r = self.session.get(f"{self.bridge_url}/history?days={days}", timeout=self.timeout)
+            if r.status_code == 200:
+                deals = r.json().get("deals", [])
+                return [d for d in deals if int(d.get("magic", 0)) == self.magic_number]
+        except Exception as e:
+            logger.debug(f"History fetch error: {e}")
+        return []

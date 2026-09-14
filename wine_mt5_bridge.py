@@ -458,6 +458,11 @@ class MT5BridgeHandler(BaseHTTPRequestHandler):
                 elif filling_flags & 1: best_filling = mt5.ORDER_FILLING_FOK
                 elif filling_flags & 2: best_filling = mt5.ORDER_FILLING_IOC
 
+                if is_market:
+                    t_now = mt5.symbol_info_tick(sym)
+                    if t_now and (t_now.ask > 0 or t_now.bid > 0):
+                        price = float(t_now.ask if mt5_type == mt5.ORDER_TYPE_BUY else t_now.bid)
+
                 request = {
                     "action": action,
                     "symbol": sym,
@@ -466,6 +471,7 @@ class MT5BridgeHandler(BaseHTTPRequestHandler):
                     "price": price,
                     "sl": sl,
                     "tp": tp,
+                    "deviation": 100,
                     "magic": magic,
                     "comment": "Maty Bridge Order",
                     "type_filling": best_filling,

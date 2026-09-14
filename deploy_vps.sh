@@ -23,6 +23,7 @@ pkill -9 -f 'app.py' 2>/dev/null || true
 pkill -9 -f 'hub.py' 2>/dev/null || true
 pkill -9 -f 'bot3_trend' 2>/dev/null || true
 pkill -9 -f 'bot4_smc' 2>/dev/null || true
+pkill -9 -f 'smc_engine.py' 2>/dev/null || true
 pkill -9 -f 'bot5_ai' 2>/dev/null || true
 pkill -9 -f 'ai_engine.py' 2>/dev/null || true
 pkill -9 -f 'mt5-ai-xauusd-trader' 2>/dev/null || true

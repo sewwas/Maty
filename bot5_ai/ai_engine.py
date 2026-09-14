@@ -54,6 +54,7 @@ class AIEngine:
         self._last_stats_update = 0.0
         self._last_tick_time = 0.0
         self._last_candle_fetch = 0.0
+        self._last_log_time = 0.0
 
         # Cached telemetry & analytical outputs
         self._cached_candles: Optional[pd.DataFrame] = None
@@ -444,22 +445,34 @@ class AIEngine:
             factors["trend"] = "NEUTRAL"
 
         # Factor 2: RSI Oscillator Confluence (30% weight)
-        if regime == "TRENDING":
-            # Pullback buy in bull trend
-            if ema20 > ema50 and 42 <= rsi <= 55:
-                bull_score += 0.30
-                factors["rsi"] = f"Bullish Pullback ({rsi:.1f}) (+30%)"
-            elif ema20 < ema50 and 45 <= rsi <= 58:
-                bear_score += 0.30
-                factors["rsi"] = f"Bearish Pullback ({rsi:.1f}) (+30%)"
-            else:
-                factors["rsi"] = f"RSI Neutral ({rsi:.1f})"
+        if regime in ("TRENDING", "VOLATILE_BREAKOUT"):
+            # Strong trend momentum OR healthy pullback
+            if ema20 > ema50:
+                if 40 <= rsi <= 60:
+                    bull_score += 0.30
+                    factors["rsi"] = f"Bullish Pullback ({rsi:.1f}) (+30%)"
+                elif rsi > 60:
+                    bull_score += 0.35
+                    factors["rsi"] = f"Bullish Trend Momentum ({rsi:.1f}) (+35%)"
+                elif rsi < 35:
+                    bull_score += 0.20
+                    factors["rsi"] = f"Deep Dip Buy Opportunity ({rsi:.1f}) (+20%)"
+            elif ema20 < ema50:
+                if 40 <= rsi <= 60:
+                    bear_score += 0.30
+                    factors["rsi"] = f"Bearish Pullback ({rsi:.1f}) (+30%)"
+                elif rsi < 40:
+                    bear_score += 0.35
+                    factors["rsi"] = f"Bearish Trend Momentum ({rsi:.1f}) (+35%)"
+                elif rsi > 65:
+                    bear_score += 0.20
+                    factors["rsi"] = f"High Resistance Sell Opportunity ({rsi:.1f}) (+20%)"
         else:
-            # Mean-reversion at boundaries
-            if rsi < 32 and curr_price <= bb_lower + (atr * 0.25):
+            # Mean-reversion at boundaries (Ranging)
+            if rsi < 38 or curr_price <= bb_lower + (atr * 0.35):
                 bull_score += 0.35
                 factors["rsi"] = f"Oversold Bounce ({rsi:.1f}) (+35%)"
-            elif rsi > 68 and curr_price >= bb_upper - (atr * 0.25):
+            elif rsi > 62 or curr_price >= bb_upper - (atr * 0.35):
                 bear_score += 0.35
                 factors["rsi"] = f"Overbought Rejection ({rsi:.1f}) (+35%)"
             else:
@@ -468,14 +481,27 @@ class AIEngine:
         # Factor 3: Candle Action & Price Envelope (30% weight)
         candle_range = latest["high"] - latest["low"]
         if candle_range > 0:
-            lower_wick = min(latest["open"], latest["close"]) - latest["low"]
-            upper_wick = latest["high"] - max(latest["open"], latest["close"])
-            if lower_wick / candle_range > 0.35 and curr_price >= ema20:
+            c_open = float(latest["open"])
+            c_close = float(latest["close"])
+            lower_wick = min(c_open, c_close) - float(latest["low"])
+            upper_wick = float(latest["high"]) - max(c_open, c_close)
+            body_size = abs(c_close - c_open)
+
+            # Wick absorption rejection
+            if lower_wick / candle_range > 0.30:
                 bull_score += 0.25
-                factors["candle"] = "Rejection Wick Down (+25%)"
-            elif upper_wick / candle_range > 0.35 and curr_price <= ema20:
+                factors["candle"] = "Bullish Absorption Wick (+25%)"
+            elif upper_wick / candle_range > 0.30:
                 bear_score += 0.25
-                factors["candle"] = "Rejection Wick Up (+25%)"
+                factors["candle"] = "Bearish Absorption Wick (+25%)"
+            # Strong directional momentum candle
+            elif body_size / candle_range > 0.45:
+                if c_close > c_open and curr_price >= ema20:
+                    bull_score += 0.25
+                    factors["candle"] = "Bullish Momentum Bar (+25%)"
+                elif c_close < c_open and curr_price <= ema20:
+                    bear_score += 0.25
+                    factors["candle"] = "Bearish Momentum Bar (+25%)"
 
         # Regime suppression
         if regime == "LOW_VOLATILITY_DRIFT":
@@ -617,12 +643,34 @@ class AIEngine:
                         trail_mult=float(dyn_risk["trailing_atr_multiplier"])
                     )
 
+                # Synchronize daily trades from actual history
+                if now - self._last_stats_update > 30.0:
+                    try:
+                        hist = self.bridge.get_history(days=1)
+                        today_str = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
+                        today_deals = [d for d in hist if datetime.datetime.fromtimestamp(d.get("time", 0), datetime.timezone.utc).strftime("%Y-%m-%d") == today_str and d.get("entry") == 0]
+                        self.state["daily_trades"] = len(today_deals)
+                        self._last_stats_update = now
+                    except Exception:
+                        pass
+
                 # 5. Entry Signal Execution Guard (Conditioned on Dynamic Risk)
                 auto_trading = self.config.get("auto_trading", True)
                 threshold = float(dyn_risk["confidence_threshold"])
                 sig_dir = self._cached_signal.get("direction", "NEUTRAL")
                 conf = float(self._cached_signal.get("confidence", 0.0))
                 max_pos = int(dyn_risk["max_positions"])
+                curr_p = float(tick.get("price", 0.0))
+
+                # Periodic scanning heartbeat log
+                if now - self._last_log_time >= 30.0:
+                    logger.info(
+                        f"🤖 [Bot #5 AI] Scanning {symbol} @ {curr_p:.2f} | "
+                        f"Regime: {self._cached_regime['name']} | Signal: {sig_dir} ({conf*100:.0f}%) | "
+                        f"AutoTrading: {auto_trading} | Active Positions: {len(positions)}/{max_pos} | "
+                        f"Today Trades: {self.state.get('daily_trades', 0)}"
+                    )
+                    self._last_log_time = now
 
                 # Circuit breaker checks
                 can_enter = (
@@ -631,13 +679,12 @@ class AIEngine:
                     conf >= threshold and
                     len(positions) < max_pos and
                     now > self._order_in_flight_until and
-                    now - self.state.get("last_trade_time", 0.0) >= 180.0  # 3 min cooldown
+                    now - self.state.get("last_trade_time", 0.0) >= 120.0  # 2 min cooldown
                 )
 
                 if can_enter:
                     with self._execution_lock:
                         self._order_in_flight_until = now + 15.0
-                        curr_p = float(tick.get("price", 2900.0))
                         sl_dist = atr * float(dyn_risk["atr_sl_multiplier"])
                         tp_dist = sl_dist * float(dyn_risk["tp_rr"])
                         lot_size = self._calculate_lot_size(account, sl_dist, risk_pct=float(dyn_risk["risk_pct"]))
@@ -663,10 +710,11 @@ class AIEngine:
                             take_profit=tp,
                             comment=f"Bot5_AI_DYN_{int(conf*100)}"
                         )
-                        if res and (res.get("success") or res.get("order", 0) > 0):
+                        if res and (res.get("success") or res.get("ticket", 0) > 0 or res.get("order", 0) > 0):
                             self.state["last_trade_time"] = now
                             self.state["daily_trades"] = self.state.get("daily_trades", 0) + 1
                             self._save_state()
+                            logger.info(f"✅ Bot #5 Position opened successfully! Ticket: {res.get('ticket')}")
 
             except Exception as e:
                 logger.error(f"Error in Bot 5 AI engine loop: {e}", exc_info=True)

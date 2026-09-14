@@ -193,40 +193,43 @@ class Bot5BridgeClient:
         comment: str = "Bot5_AI"
     ) -> Dict[str, Any]:
         """
-        Executes a live market order via the MT5 bridge with Bot 5 magic number.
+        Executes a live market order via the MT5 bridge with Bot 5 magic number using GET /order_send.
         """
-        payload = {
+        params = {
             "symbol": symbol,
-            "action": action.upper(),
+            "type": action.upper(),
+            "price": 0.0,
             "volume": round(float(volume), 2),
             "sl": round(float(stop_loss), 2) if stop_loss > 0 else 0.0,
             "tp": round(float(take_profit), 2) if take_profit > 0 else 0.0,
-            "magic": self.magic_number,
-            "comment": comment
+            "magic": self.magic_number
         }
         try:
-            r = self.session.post(f"{self.bridge_url}/order", json=payload, timeout=self.timeout)
-            if r.status_code in [200, 201]:
+            r = self.session.get(f"{self.bridge_url}/order_send", params=params, timeout=self.timeout)
+            if r.status_code == 200:
                 res = r.json()
-                logger.info(f"🚀 Bot #5 Order Executed: {action} {volume} {symbol} @ SL={stop_loss}, TP={take_profit} | Result: {res}")
+                if res.get("success", False) or res.get("ticket"):
+                    logger.info(f"🚀 Bot #5 Order Executed: {action} {volume} {symbol} @ SL={stop_loss}, TP={take_profit} | Ticket: {res.get('ticket')}")
+                else:
+                    logger.error(f"❌ Bot #5 Order Failed: {res.get('error')}")
                 return res
-            logger.error(f"❌ Order failed with status {r.status_code}: {r.text}")
-            return {"success": False, "error": r.text}
+            logger.error(f"❌ Order failed with HTTP {r.status_code}: {r.text}")
+            return {"success": False, "error": f"HTTP {r.status_code}"}
         except Exception as e:
             logger.error(f"❌ Exception sending order to bridge: {e}")
             return {"success": False, "error": str(e)}
 
     def modify_position(self, ticket: int, sl: float = 0.0, tp: float = 0.0) -> bool:
         """
-        Modifies Stop Loss and Take Profit of an existing position.
+        Modifies Stop Loss and Take Profit of an existing position using GET /modify_sl_tp.
         """
-        payload = {
-            "ticket": ticket,
+        params = {
+            "ticket": int(ticket),
             "sl": round(float(sl), 2),
             "tp": round(float(tp), 2)
         }
         try:
-            r = self.session.post(f"{self.bridge_url}/modify", json=payload, timeout=self.timeout)
+            r = self.session.get(f"{self.bridge_url}/modify_sl_tp", params=params, timeout=self.timeout)
             return r.status_code == 200 and r.json().get("success", False)
         except Exception as e:
             logger.debug(f"Error modifying position #{ticket}: {e}")
@@ -234,10 +237,11 @@ class Bot5BridgeClient:
 
     def close_position(self, ticket: int) -> bool:
         """
-        Closes an open position by ticket.
+        Closes an open position by ticket using GET /position_close.
         """
+        params = {"ticket": int(ticket)}
         try:
-            r = self.session.post(f"{self.bridge_url}/close", json={"ticket": ticket}, timeout=self.timeout)
+            r = self.session.get(f"{self.bridge_url}/position_close", params=params, timeout=self.timeout)
             return r.status_code == 200 and r.json().get("success", False)
         except Exception as e:
             logger.error(f"Error closing position #{ticket}: {e}")
@@ -245,12 +249,13 @@ class Bot5BridgeClient:
 
     def close_all_positions(self, symbol: str = "XAUUSD") -> int:
         """
-        Emergency kill-switch: Closes all active positions belonging to Bot 5.
+        Emergency kill-switch: Closes all active positions belonging to Bot 5 using GET /close_all.
         """
-        positions = self.get_positions(symbol)
-        closed_count = 0
-        for p in positions:
-            ticket = p.get("ticket")
-            if ticket and self.close_position(ticket):
-                closed_count += 1
-        return closed_count
+        try:
+            r = self.session.get(f"{self.bridge_url}/close_all?symbol={symbol}&magic={self.magic_number}", timeout=self.timeout)
+            if r.status_code == 200:
+                res = r.json()
+                return int(res.get("closed_count", 0))
+        except Exception as e:
+            logger.error(f"Error in close_all_positions: {e}")
+        return 0

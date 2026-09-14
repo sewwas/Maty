@@ -67,6 +67,7 @@ class SMCEngine:
         self._last_tick_time = 0.0
         self._last_m5_fetch = 0.0
         self._last_m15_fetch = 0.0
+        self._last_heartbeat_log = 0.0
 
         # Cached analytics & telemetry
         self._cached_m5: Optional[pd.DataFrame] = None
@@ -632,8 +633,37 @@ class SMCEngine:
             if now_ts < float(self.state.get("lockout_until", 0.0)):
                 return
 
+            # Synchronize daily trades from actual broker history
+            if (now_ts - self._last_stats_update) > 30.0:
+                try:
+                    hist = self.bridge.get_history(days=1)
+                    today_str = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
+                    today_deals = [
+                        d for d in hist
+                        if datetime.datetime.fromtimestamp(d.get("time", 0), datetime.timezone.utc).strftime("%Y-%m-%d") == today_str
+                        and d.get("entry") == 0
+                    ]
+                    self.state["daily_trades_count"] = len(today_deals)
+                    self._last_stats_update = now_ts
+                except Exception:
+                    pass
+
             # Max trades per day
-            max_trades = int(self.config.get("max_trades_per_day", 4))
+            max_trades = int(self.config.get("max_trades_per_day", 8))
+            auto_trading = self.config.get("auto_trading", True)
+
+            # Heartbeat telemetry log
+            if (now_ts - self._last_heartbeat_log) >= 30.0:
+                cur_sweep = self.state.get("swept_level")
+                sweep_desc = f"{cur_sweep['direction']} ({cur_sweep['level_name']})" if cur_sweep else "None"
+                logger.info(
+                    f"🏹 [Bot #4 SMC] Scanning {symbol} @ {tick.get('price', 0.0):.2f} | "
+                    f"Regime: {dyn_risk.get('regime_mode')} | AutoTrading: {auto_trading} | "
+                    f"Active Positions: {len(open_positions)} | Today Trades: {self.state.get('daily_trades_count', 0)}/{max_trades} | "
+                    f"Active Sweep: {sweep_desc}"
+                )
+                self._last_heartbeat_log = now_ts
+
             if max_trades > 0 and self.state.get("daily_trades_count", 0) >= max_trades:
                 return
 
@@ -641,52 +671,70 @@ class SMCEngine:
             if now_ts < self._order_in_flight_until or open_positions:
                 return
 
-            if not self.config.get("auto_trading", True):
+            if not auto_trading:
                 return
 
-            # 4. Scan for New Liquidity Sweep & FVG Setup with dynamic wick absorption
+            # 4. Scan for Liquidity Sweeps (Turtle Soup Reversals & FVG Retests)
             closed_candle = df_m5.iloc[-2]
-            min_wick_ratio = float(dyn_risk.get("min_wick_ratio", 0.38))
-            sweep = self._check_liquidity_sweep(closed_candle, pools, min_wick_ratio=min_wick_ratio)
+            closed_candle_ts = str(closed_candle.get("timestamp", ""))
+            min_wick = float(dyn_risk.get("min_wick_ratio", 0.30))
 
-            if sweep:
+            sweep = self._check_liquidity_sweep(closed_candle, pools, min_wick_ratio=min_wick)
+            if sweep and sweep.get("candle_timestamp") != self.state.get("last_swept_candle_ts"):
+                sweep["detected_at"] = now_ts
                 self.state["swept_level"] = sweep
-                logger.info(f"🎯 [Bot #4] {sweep['direction']} detected on {sweep['level_name']} @ {sweep['level_price']} | Wick Ratio: {sweep['wick_ratio']}")
+                self.state["last_swept_candle_ts"] = closed_candle_ts
+                logger.info(
+                    f"🎯 [Bot #4 SMC] {sweep['direction']} detected on {sweep['level_name']} @ {sweep['level_price']} | "
+                    f"Extreme: {sweep['sweep_extreme']} | Wick Ratio: {sweep['wick_ratio']:.2f}"
+                )
                 self._save_state()
+
+                # DIRECT TURTLE SOUP REJECTION ENTRY:
+                # The institutional sweep candle has confirmed absorption and rejected back inside
+                ask = float(tick.get("ask", 0.0))
+                bid = float(tick.get("bid", 0.0))
+                entry_price = bid if sweep["direction"] == "BEARISH_SWEEP" else ask
+                if entry_price > 0:
+                    logger.info(f"⚡ [Bot #4 SMC] Firing Direct Turtle Soup Reversal on {sweep['level_name']} rejection @ {entry_price:.2f}")
+                    self._execute_smc_entry(sweep, None, entry_price, equity, symbol, dyn_risk=dyn_risk)
+                    return
 
             active_sweep = self.state.get("swept_level")
             if not active_sweep:
+                return
+
+            # Expire active sweep after 15 minutes (~3 M5 candles) if no entry
+            if (now_ts - float(active_sweep.get("detected_at", now_ts))) > 900.0:
+                self.state["swept_level"] = None
+                self._save_state()
                 return
 
             # Check Market Structure Shift (MSS)
             if not self._check_mss(df_m5, active_sweep):
                 return
 
-            # Check for matching Fair Value Gap
+            # Check for matching Fair Value Gap Retest
             target_fvg_type = "BEARISH_FVG" if active_sweep["direction"] == "BEARISH_SWEEP" else "BULLISH_FVG"
             matching_fvgs = [f for f in fvgs if f["type"] == target_fvg_type]
-
             if not matching_fvgs:
                 return
 
-            best_fvg = matching_fvgs[-1]  # Most recent FVG
+            best_fvg = matching_fvgs[-1]
             self.state["active_fvg"] = best_fvg
 
-            # Current price check (tap into FVG)
             ask = float(tick.get("ask", 0.0))
             bid = float(tick.get("bid", 0.0))
             current_price = bid if active_sweep["direction"] == "BEARISH_SWEEP" else ask
-
             if current_price <= 0:
                 return
 
-            # Price inside FVG bounds
-            inside_fvg = (best_fvg["bottom"] <= current_price <= best_fvg["top"])
-            # Or tapped the midpoint (within 0.30)
-            tapped_midpoint = abs(current_price - best_fvg["midpoint"]) <= 0.35
+            # Price inside FVG bounds or near midpoint (within 1.0 point on Gold)
+            inside_fvg = (best_fvg["bottom"] - 0.50 <= current_price <= best_fvg["top"] + 0.50)
+            tapped_midpoint = abs(current_price - best_fvg["midpoint"]) <= 1.0
 
             if inside_fvg or tapped_midpoint:
-                # Fire the trade!
+                logger.info(f"⚡ [Bot #4 SMC] Firing FVG Mitigation Retest Entry @ {current_price:.2f} (FVG {best_fvg['bottom']:.2f}-{best_fvg['top']:.2f})")
                 self._execute_smc_entry(active_sweep, best_fvg, current_price, equity, symbol, dyn_risk=dyn_risk)
 
     def _execute_smc_entry(
