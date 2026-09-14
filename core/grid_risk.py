@@ -148,9 +148,9 @@ def enforce_profit_lock(self, current_price: float, timestamp: float) -> int:
     actions = 0
     
     if is_gold:
-        breakeven_trigger_dist = max(6.00, atr * 1.8)
-        breakeven_buffer = max(1.00, min(current_price * 0.0003, 1.50))
-        min_room_from_price = 3.50
+        breakeven_trigger_dist = max(2.50, atr * 0.60)
+        breakeven_buffer = max(0.80, min(current_price * 0.0002, 1.20))
+        min_room_from_price = 1.50
     elif "BTC" in sym_name:
         breakeven_trigger_dist = max(350.0, atr * 2.5)
         breakeven_buffer = max(50.0, atr * 0.5)
@@ -165,9 +165,9 @@ def enforce_profit_lock(self, current_price: float, timestamp: float) -> int:
         min_room_from_price = atr * 1.5
     
     for pos_id, pos_obj in list(self.broker.open_positions.items()):
-        # Minimum 30-second breathing room before moving SL to breakeven
+        # Minimum 15-second breathing room before moving SL to breakeven
         pos_open_time = float(getattr(pos_obj, "entry_time", getattr(pos_obj, "time_setup", 0.0)) or 0.0)
-        if pos_open_time > 0 and (timestamp - pos_open_time) < 30.0:
+        if pos_open_time > 0 and (timestamp - pos_open_time) < 15.0:
             continue
 
         pos_type = str(getattr(pos_obj, "type", "")).upper()
@@ -432,8 +432,8 @@ def check_target_profit(self, current_price: float, timestamp: float) -> Optiona
 
     min_profit_threshold = 0.50 * cent_multiplier * micro_lots  # Minimum gross profit to close a cycle, mitigating fee attrition
     if not exit_triggered:
-        # Base basket target for full cycle (e.g. 25.0 for Gold, 10.0 for others in native account currency)
-        base_target = 25.0 if any(x in sym_u for x in ["XAU", "GOLD", "PAXG"]) else 10.0
+        # Base basket target for full cycle (e.g. 4.0 for Gold, 10.0 for others in native account currency)
+        base_target = 4.0 if any(x in sym_u for x in ["XAU", "GOLD", "PAXG"]) else 10.0
         
         default_target = base_target
         
@@ -446,8 +446,8 @@ def check_target_profit(self, current_price: float, timestamp: float) -> Optiona
         cycle_target = ai_target if ai_target > 0 else (user_target if user_target > 0 else default_target)
         
         is_gold = any(x in sym_u for x in ["XAU", "GOLD", "PAXG"])
-        min_gold_target = 20.0 if is_cent_account else 25.0
-        if is_gold and cycle_target < min_gold_target:
+        min_gold_target = 3.50 if is_cent_account else 5.00
+        if is_gold and (cycle_target < min_gold_target or cycle_target > 8.00):
             cycle_target = min_gold_target
 
         # Enforce minimum profit threshold
@@ -942,6 +942,14 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
                 force = args[1]
 
     sym_name = str(getattr(self.broker, "symbol", getattr(self, "symbol_code", "BTCUSDT"))).upper()
+    is_gold = any(x in sym_name for x in ["XAU", "GOLD", "PAXG"])
+
+    # Strict single position / trap discipline on Gold:
+    if is_gold and not force:
+        if len(getattr(self.broker, "open_positions", {})) > 0:
+            return
+        if len(getattr(self.broker, "pending_orders", {})) >= 1:
+            return
 
     if getattr(self, "_is_deploying", False):
         return
@@ -951,7 +959,7 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
     if not force and (timestamp - _last_deploy_ts) < 2.0:
         return
 
-    max_capacity = (getattr(self, "grid_levels", 5) or 5) * 2
+    max_capacity = 1 if is_gold else ((getattr(self, "grid_levels", 5) or 5) * 2)
     if not force and len(getattr(self.broker, "pending_orders", {})) >= max_capacity:
         return
 
@@ -1113,7 +1121,7 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
 
         is_gold = any(x in sym_name for x in ["XAU", "GOLD", "PAXG"])
         if is_gold:
-            min_sl_dist = max(12.00, current_price * 0.0030, atr_5m * 2.2)
+            min_sl_dist = min(5.50, max(4.00, atr_5m * 1.0))
         elif "BTC" in sym_name:
             min_sl_dist = max(500.0, current_price * 0.0060, atr_5m * 3.0)
         elif "ETH" in sym_name:
@@ -1124,7 +1132,7 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
         # Anti-hunt structural gap buffer: Extra cushion beyond order blocks / swing wicks
         # Prevents market maker liquidity sweeps from hunting SL before the real move starts
         if is_gold:
-            anti_hunt_buffer = max(3.50, atr_5m * 0.75)
+            anti_hunt_buffer = 0.80
         elif "BTC" in sym_name:
             anti_hunt_buffer = max(60.0, atr_5m * 0.75)
         elif "ETH" in sym_name:
@@ -1141,17 +1149,17 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
             effective_levels = _cfg_levels
 
         if is_gold:
-            effective_levels = min(effective_levels, 3)
+            effective_levels = 1
 
         dyn_tp_factor = max(3.0, float(effective_levels * 1.0))
         calculated_dynamic_tp = gap_val * dyn_tp_factor
 
-        # Guarantee minimum 1.5x R:R over stop loss so every win outpaces average loss
-        rr_min_tp = min_sl_dist * 1.50
+        # Guarantee minimum positive R:R over stop loss so every win outpaces average loss
+        rr_min_tp = min_sl_dist * 1.30
 
         if is_gold:
-            # On Gold / PAXG: Enforce minimum $16-$25 distance (at least 1.5x SL and 3.0x ATR for institutional R:R)
-            min_tp_dist = max(16.0, current_price * 0.0035, atr_5m * 3.0, calculated_dynamic_tp, rr_min_tp)
+            # On Gold / PAXG: Enforce realistic scalp TP ($6.00-$8.50) with positive 1:1.3+ R:R
+            min_tp_dist = max(6.00, min_sl_dist * 1.30, calculated_dynamic_tp)
         elif "ETH" in sym_name:
             # On ETH: Enforce minimum $15-$25 distance (0.5% - 1.0% move), at least 3x ATR
             min_tp_dist = max(15.0, current_price * 0.0050, atr_5m * 3.0, calculated_dynamic_tp, rr_min_tp)
@@ -1469,10 +1477,13 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
             valid_sls = [c_px for (_, c_px, _) in merged_resistance if c_px >= px + min_sl_dist and c_px <= px + (min_sl_dist * 2.5)]
             if valid_sls:
                 smart_sl = round(max(valid_sls) + anti_hunt_buffer, digits)
-            # Enforce Institutional R:R (TP distance >= 1.5x SL distance)
+            if is_gold:
+                smart_sl = round(min(smart_sl, px + 6.50), digits)
+            # Enforce Institutional R:R (TP distance >= 1.3x SL distance, min $6.00 on Gold)
             actual_sl_dist = abs(smart_sl - px)
-            if abs(px - smart_tp) < actual_sl_dist * 1.50:
-                smart_tp = round(px - (actual_sl_dist * 1.50), digits)
+            target_min_tp = max(6.00 if is_gold else 0.0, actual_sl_dist * 1.30)
+            if abs(px - smart_tp) < target_min_tp:
+                smart_tp = round(px - target_min_tp, digits)
             try:
                 r = self.broker.place_order("SELL_LIMIT", px, sz, timestamp, tp=smart_tp, sl=smart_sl)
                 if r:
@@ -1497,10 +1508,13 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
             valid_sls = [c_px for (_, c_px, _) in merged_support if c_px <= px - min_sl_dist and c_px >= px - (min_sl_dist * 2.5)]
             if valid_sls:
                 smart_sl = round(min(valid_sls) - anti_hunt_buffer, digits)
-            # Enforce Institutional R:R (TP distance >= 1.5x SL distance)
+            if is_gold:
+                smart_sl = round(max(smart_sl, px - 6.50), digits)
+            # Enforce Institutional R:R (TP distance >= 1.3x SL distance, min $6.00 on Gold)
             actual_sl_dist = abs(px - smart_sl)
-            if abs(smart_tp - px) < actual_sl_dist * 1.50:
-                smart_tp = round(px + (actual_sl_dist * 1.50), digits)
+            target_min_tp = max(6.00 if is_gold else 0.0, actual_sl_dist * 1.30)
+            if abs(smart_tp - px) < target_min_tp:
+                smart_tp = round(px + target_min_tp, digits)
             try:
                 r = self.broker.place_order("BUY_LIMIT", px, sz, timestamp, tp=smart_tp, sl=smart_sl)
                 if r:
@@ -1523,10 +1537,13 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
             valid_sls = [c_px for (_, c_px, _) in merged_resistance if c_px >= px + min_sl_dist and c_px <= px + (min_sl_dist * 2.5)]
             if valid_sls:
                 smart_sl = round(max(valid_sls) + anti_hunt_buffer, digits)
-            # Enforce Institutional R:R (TP distance >= 1.5x SL distance)
+            if is_gold:
+                smart_sl = round(min(smart_sl, px + 6.50), digits)
+            # Enforce Institutional R:R (TP distance >= 1.3x SL distance, min $6.00 on Gold)
             actual_sl_dist = abs(smart_sl - px)
-            if abs(px - smart_tp) < actual_sl_dist * 1.50:
-                smart_tp = round(px - (actual_sl_dist * 1.50), digits)
+            target_min_tp = max(6.00 if is_gold else 0.0, actual_sl_dist * 1.30)
+            if abs(px - smart_tp) < target_min_tp:
+                smart_tp = round(px - target_min_tp, digits)
             try:
                 r = self.broker.place_order("SELL_STOP", px, sz, timestamp, tp=smart_tp, sl=smart_sl)
                 if r:
@@ -1549,10 +1566,13 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
             valid_sls = [c_px for (_, c_px, _) in merged_support if c_px <= px - min_sl_dist and c_px >= px - (min_sl_dist * 2.5)]
             if valid_sls:
                 smart_sl = round(min(valid_sls) - anti_hunt_buffer, digits)
-            # Enforce Institutional R:R (TP distance >= 1.5x SL distance)
+            if is_gold:
+                smart_sl = round(max(smart_sl, px - 6.50), digits)
+            # Enforce Institutional R:R (TP distance >= 1.3x SL distance, min $6.00 on Gold)
             actual_sl_dist = abs(px - smart_sl)
-            if abs(smart_tp - px) < actual_sl_dist * 1.50:
-                smart_tp = round(px + (actual_sl_dist * 1.50), digits)
+            target_min_tp = max(6.00 if is_gold else 0.0, actual_sl_dist * 1.30)
+            if abs(smart_tp - px) < target_min_tp:
+                smart_tp = round(px + target_min_tp, digits)
             try:
                 r = self.broker.place_order("BUY_STOP", px, sz, timestamp, tp=smart_tp, sl=smart_sl)
                 if r:
@@ -2082,12 +2102,17 @@ def enforce_trend_aware_position_guard(self, current_price: float, timestamp: fl
 
             if trend_against:
                 # ❌ Trend has flipped against this position
-                # Only close if in solid profit (>= profit_lock_threshold) to lock gains before a real reversal.
-                # Never cut positions at a loss on trend noise; let the strategy SL protect risk.
+                # 1. In solid profit (>= profit_lock_threshold) -> lock gains before reversal
                 if floating_pnl >= profit_lock_threshold:
                     should_close = True
                     tag    = "💰 [PULLBACK — PROFIT SECURED]"
                     detail = f"locking +{floating_pnl:.{digits}f} price points before reversal"
+                # 2. Early Invalidation Cut: if market structure turned against us and trade duration >= 45s,
+                # cut early if floating loss exceeds -1.50 points (saving from full hard SL!)
+                elif floating_pnl <= -1.50 and (now_ts - pos_open_time) >= 45.0:
+                    should_close = True
+                    tag    = "✂️ [EARLY INVALIDATION CUT]"
+                    detail = f"cutting invalid trade at {floating_pnl:.{digits}f} pts (saving from full SL)"
                 else:
                     should_close = False
 
@@ -2212,10 +2237,10 @@ def trail_stop_loss_5m_structure(self, current_price: float, timestamp: float) -
     _trail_atr_mult  = 0.8 if _is_100pct_trail else 1.5
 
     if is_gold:
-        min_sl_distance  = max(20.00, min(45.00, atr_5m * (2.0 if _is_100pct_trail else 3.0)))
-        breakeven_buffer = 3.00 if _is_100pct_trail else 5.00
-        min_profit_to_trail = 10.00
-        min_required_trail_gap = max(15.00, atr_5m * 2.0)
+        min_sl_distance  = max(4.50, min(7.00, atr_5m * 1.1))
+        breakeven_buffer = 0.80
+        min_profit_to_trail = 2.50
+        min_required_trail_gap = max(3.00, atr_5m * 0.8)
     elif "BTC" in sym_name:
         min_sl_distance  = max(350.0 if _is_100pct_trail else 550.0, atr_5m * _trail_atr_mult * 2.0)
         breakeven_buffer = 50.0 if _is_100pct_trail else 100.0
@@ -2252,7 +2277,7 @@ def trail_stop_loss_5m_structure(self, current_price: float, timestamp: float) -
                 continue
 
             # Calculate structure-based SL: swing low minus anti-hunt buffer
-            anti_hunt_trail = max(atr_5m * 0.8, 3.50 if is_gold else (50.0 if "BTC" in sym_name else 4.0))
+            anti_hunt_trail = 0.80 if is_gold else max(atr_5m * 0.8, (50.0 if "BTC" in sym_name else 4.0))
             structure_sl = round(recent_swing_low - anti_hunt_trail, digits)
 
             # Enforce minimum distance from current price to avoid stop hunts
@@ -2279,7 +2304,7 @@ def trail_stop_loss_5m_structure(self, current_price: float, timestamp: float) -
                 continue
 
             # Calculate structure-based SL: swing high plus anti-hunt buffer
-            anti_hunt_trail = max(atr_5m * 0.8, 3.50 if is_gold else (50.0 if "BTC" in sym_name else 4.0))
+            anti_hunt_trail = 0.80 if is_gold else max(atr_5m * 0.8, (50.0 if "BTC" in sym_name else 4.0))
             structure_sl = round(recent_swing_high + anti_hunt_trail, digits)
 
             # Enforce minimum distance
@@ -2375,8 +2400,8 @@ def align_basket_take_profits(self, current_price: float, timestamp: float) -> i
     _tp_atr_mult  = 3.5 if _is_100pct_tp else 2.5
 
     if is_gold:
-        min_tp_dist = max(16.0, atr_5m * 2.5, current_price * 0.0035)
-        optimal_tp_dist = max(min_tp_dist, atr_5m * _tp_atr_mult)
+        min_tp_dist = max(5.50, atr_5m * 1.1)
+        optimal_tp_dist = max(min_tp_dist, atr_5m * (2.0 if _is_100pct_tp else 1.3))
     else:
         min_tp_dist = max(current_price * 0.002, atr_5m * 1.5)
         optimal_tp_dist = max(min_tp_dist, atr_5m * _tp_atr_mult)

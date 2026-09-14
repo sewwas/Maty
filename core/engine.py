@@ -117,7 +117,12 @@ class BreakoutGridBot:
         self.symbol_code = symbol_code or symbol
         self.symbol = self.symbol_code
         self.broker = broker
-        self.grid_levels = min(5, max(1, int(grid_levels)))
+        sym_name = str(self.symbol_code or symbol).upper()
+        is_gold = any(x in sym_name for x in ["XAU", "GOLD", "PAXG"])
+        if is_gold:
+            self.grid_levels = 1
+        else:
+            self.grid_levels = min(5, max(1, int(grid_levels)))
         self.grid_gap = grid_gap
         self.trap_offset = trap_offset
         self.order_size = order_size
