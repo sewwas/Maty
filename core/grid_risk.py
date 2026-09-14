@@ -847,9 +847,9 @@ def process_engine_tick(self, previous_price: float, current_price: float, times
         self._cycle_recorded = True
         pnl_val = float(summary.get("total_pnl", 0.0))
         if exit_reason == "STOP_LOSS" or pnl_val < 0:
-            self._post_loss_cooldown = timestamp + (3 * 60)  # 3 min cooldown on Stop Loss
-            self._post_cycle_cooldown_until = timestamp + (3 * 60)
-            print(f"[{self.symbol}] ⏳ [COOLDOWN] Stop Loss hit (-${abs(pnl_val):.2f}). Halting grid deployment for 3 minutes.")
+            self._post_loss_cooldown = timestamp + (20 * 60)  # 20 min cooldown on Stop Loss
+            self._post_cycle_cooldown_until = timestamp + (20 * 60)
+            print(f"[{self.symbol}] ⏳ [COOLDOWN] Stop Loss hit (-${abs(pnl_val):.2f}). Halting grid deployment for 20 minutes to allow market chop to dissipate.")
         elif exit_reason in ("TARGET_PROFIT", "PARTIAL_TP") or pnl_val > 0:
             self._post_cycle_cooldown_until = timestamp + 90.0
             print(f"[{self.symbol}] ⏳ [COOLDOWN] Profit secured (+${pnl_val:.2f}). Cooling down for 90s before next grid deployment to avoid chasing momentum.")
@@ -943,6 +943,21 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
 
     sym_name = str(getattr(self.broker, "symbol", getattr(self, "symbol_code", "BTCUSDT"))).upper()
     is_gold = any(x in sym_name for x in ["XAU", "GOLD", "PAXG"])
+
+    # ── Daily Loss Circuit Breaker Protection (-20 USC ceiling) ──
+    if getattr(self, "daily_circuit_breaker_tripped", False):
+        return
+
+    if hasattr(self.broker, "get_today_realized_pnl"):
+        try:
+            today_pnl = float(self.broker.get_today_realized_pnl())
+            max_daily_loss = float(getattr(self, "max_daily_drawdown", 20.0) or 20.0)
+            if max_daily_loss > 0 and today_pnl <= -abs(max_daily_loss):
+                self.daily_circuit_breaker_tripped = True
+                print(f"[{sym_name}] 🚨 [CIRCUIT BREAKER] Daily loss limit reached ({today_pnl:.2f} <= -{abs(max_daily_loss):.2f} USC). Trading paused for today.")
+                return
+        except Exception:
+            pass
 
     # Strict single position / trap discipline on Gold:
     if is_gold and not force:
@@ -1286,6 +1301,35 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
             self._is_deploying = False
             return
 
+        # ── 4. Overextension & Exhaustion Filter (Anti-Top/Bottom Trap) ──
+        if not is_manual and is_gold:
+            try:
+                rsi_chk = float(rsi_1m) if ('rsi_1m' in locals() and rsi_1m is not None) else 50.0
+                ema_chk = float(tech_1m.get("ema_20", current_price) or current_price) if ('tech_1m' in locals() and isinstance(tech_1m, dict)) else current_price
+                atr_chk = float(atr_5m) if ('atr_5m' in locals() and atr_5m and atr_5m > 0) else (current_price * 0.002)
+
+                if directional_buy:
+                    if rsi_chk > 68.0:
+                        print(f"[{sym_name}] 🛑 [EXHAUSTION GATED] BUY blocked: 1m RSI ({rsi_chk:.1f}) is overbought (> 68). Won't buy spike top.")
+                        self._is_deploying = False
+                        return
+                    if current_price > (ema_chk + 2.0 * atr_chk):
+                        print(f"[{sym_name}] 🛑 [EXHAUSTION GATED] BUY blocked: Price (${current_price:,.2f}) is >2.0x ATR above EMA-20 (${ema_chk:,.2f}).")
+                        self._is_deploying = False
+                        return
+
+                if directional_sell:
+                    if rsi_chk < 32.0:
+                        print(f"[{sym_name}] 🛑 [EXHAUSTION GATED] SELL blocked: 1m RSI ({rsi_chk:.1f}) is oversold (< 32). Won't sell bottom dump.")
+                        self._is_deploying = False
+                        return
+                    if current_price < (ema_chk - 2.0 * atr_chk):
+                        print(f"[{sym_name}] 🛑 [EXHAUSTION GATED] SELL blocked: Price (${current_price:,.2f}) is >2.0x ATR below EMA-20 (${ema_chk:,.2f}).")
+                        self._is_deploying = False
+                        return
+            except Exception:
+                pass
+
         # ── 100% Trend Confirmed: aggressive grid mode ──────────────────────────
         # When is_auto_100pct_confirmed fires we place 3 orders (2 Stops + 1 Limit):
         #   • Stop-1 : closest SMC breakout level  → catches initial momentum burst
@@ -1478,7 +1522,7 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
             if valid_sls:
                 smart_sl = round(max(valid_sls) + anti_hunt_buffer, digits)
             if is_gold:
-                smart_sl = round(min(smart_sl, px + 6.50), digits)
+                smart_sl = round(min(smart_sl, px + 5.00), digits)
             # Enforce Institutional R:R (TP distance >= 1.3x SL distance, min $6.00 on Gold)
             actual_sl_dist = abs(smart_sl - px)
             target_min_tp = max(6.00 if is_gold else 0.0, actual_sl_dist * 1.30)
@@ -1509,7 +1553,7 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
             if valid_sls:
                 smart_sl = round(min(valid_sls) - anti_hunt_buffer, digits)
             if is_gold:
-                smart_sl = round(max(smart_sl, px - 6.50), digits)
+                smart_sl = round(max(smart_sl, px - 5.00), digits)
             # Enforce Institutional R:R (TP distance >= 1.3x SL distance, min $6.00 on Gold)
             actual_sl_dist = abs(px - smart_sl)
             target_min_tp = max(6.00 if is_gold else 0.0, actual_sl_dist * 1.30)
@@ -1538,7 +1582,7 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
             if valid_sls:
                 smart_sl = round(max(valid_sls) + anti_hunt_buffer, digits)
             if is_gold:
-                smart_sl = round(min(smart_sl, px + 6.50), digits)
+                smart_sl = round(min(smart_sl, px + 5.00), digits)
             # Enforce Institutional R:R (TP distance >= 1.3x SL distance, min $6.00 on Gold)
             actual_sl_dist = abs(smart_sl - px)
             target_min_tp = max(6.00 if is_gold else 0.0, actual_sl_dist * 1.30)
@@ -1567,7 +1611,7 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
             if valid_sls:
                 smart_sl = round(min(valid_sls) - anti_hunt_buffer, digits)
             if is_gold:
-                smart_sl = round(max(smart_sl, px - 6.50), digits)
+                smart_sl = round(max(smart_sl, px - 5.00), digits)
             # Enforce Institutional R:R (TP distance >= 1.3x SL distance, min $6.00 on Gold)
             actual_sl_dist = abs(px - smart_sl)
             target_min_tp = max(6.00 if is_gold else 0.0, actual_sl_dist * 1.30)

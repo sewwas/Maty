@@ -158,7 +158,7 @@ class BreakoutGridBot:
         sym_str = getattr(self.broker, "symbol", getattr(self, "symbol", ""))
         self._order_size = sanitize_order_size(sym_str, order_size)
 
-        self.max_daily_drawdown: float = 0.0
+        self.max_daily_drawdown: float = 20.0  # Hard daily loss limit in USC (e.g. 20 USC)
         self.daily_circuit_breaker_tripped: bool = False
         self.use_news_shield: bool = True
 
@@ -198,8 +198,8 @@ class BreakoutGridBot:
         self._last_trigger_time: float = 0.0
         self._runner_exit_cooldown_until: float = 0.0
 
-        self._fakeout_guard_enabled: bool = False
-        self._fakeout_guard_ticks: int = 8
+        self._fakeout_guard_enabled: bool = True
+        self._fakeout_guard_ticks: int = 15
         self._fakeout_recent_fills: dict = {}
         self._tick_counter: int = 0
 
@@ -433,9 +433,9 @@ class BreakoutGridBot:
         if getattr(self, "use_auto_reading", False) and not hasattr(self, "auto_reading_engine"):
             self.auto_reading_engine = AutoReadingEngine()
         if not hasattr(self, "_fakeout_guard_enabled"):
-            self._fakeout_guard_enabled = False
+            self._fakeout_guard_enabled = True
         if not hasattr(self, "_fakeout_guard_ticks"):
-            self._fakeout_guard_ticks = 8
+            self._fakeout_guard_ticks = 15
         if not hasattr(self, "_fakeout_recent_fills"):
             self._fakeout_recent_fills = {}
         if not hasattr(self, "_tick_counter"):

@@ -569,9 +569,15 @@ class MT5Broker:
         order_size = max(vol_min, min(vol_max, round(round(size / vol_step) * vol_step, 4) if vol_step > 0 else round(size, 4)))
 
         sym_name = str(exness_symbol).upper()
-        if any(x in sym_name for x in ["XAU", "GOLD", "PAXG"]):
-            min_sl_dist = 35.0
+        is_gold_contract = any(x in sym_name for x in ["XAU", "GOLD", "PAXG"])
+        if is_gold_contract:
+            min_sl_dist = 3.50
             min_tp_dist = 0.50
+            # Hard risk ceiling: Max $5.00 SL distance on Gold (500 points / max 5.00 USC per 0.01 lot)
+            if "BUY" in order_type and sl > 0:
+                sl = max(sl, trigger_price - 5.00)
+            elif "SELL" in order_type and sl > 0:
+                sl = min(sl, trigger_price + 5.00)
         else:
             min_sl_dist = max(min_stop_dist * 2.0, point * 50.0)
             min_tp_dist = max(min_stop_dist * 2.0, point * 10.0)
@@ -1639,6 +1645,43 @@ class MT5Broker:
             return
         self.process_tick(0.0, 0.0, time.time())
         self.sync_history_from_mt5()
+
+    def get_today_realized_pnl(self) -> float:
+        """Returns the total realized PnL of trades closed today (UTC date)."""
+        import datetime
+        now_dt = datetime.datetime.utcnow()
+        today_start_ts = datetime.datetime(now_dt.year, now_dt.month, now_dt.day, tzinfo=datetime.timezone.utc).timestamp()
+        
+        # 1. First check internally synced closed_trades
+        today_pnl = 0.0
+        found = False
+        if hasattr(self, "closed_trades") and self.closed_trades:
+            for t in self.closed_trades:
+                ts = t.get("exit_time", t.get("timestamp", 0))
+                if ts >= today_start_ts:
+                    today_pnl += float(t.get("pnl", 0.0))
+                    found = True
+        if found:
+            return round(today_pnl, 2)
+            
+        # 2. Query REST Bridge /history endpoint directly
+        try:
+            import requests, os
+            bridge_port = os.getenv("WINE_BRIDGE_PORT", "8001")
+            url = f"http://127.0.0.1:{bridge_port}/history?days=1"
+            r = requests.get(url, timeout=2.0)
+            if r.status_code == 200:
+                deals = r.json().get("deals", [])
+                pnl_sum = 0.0
+                for d in deals:
+                    if d.get("entry") == 1 and d.get("time", 0) >= today_start_ts:
+                        if self.magic_number and d.get("magic") and int(d.get("magic")) != int(self.magic_number):
+                            continue
+                        pnl_sum += float(d.get("profit", 0.0))
+                return round(pnl_sum, 2)
+        except Exception:
+            pass
+        return round(today_pnl, 2)
 
 
 class SimulatedBroker:
