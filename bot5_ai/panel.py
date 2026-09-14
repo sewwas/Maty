@@ -4,6 +4,7 @@ Bot #5 — Institutional AI/ML Neural Trader Web Panel
 Port: 8505
 Connects to MT5 Bridge Port 8005
 Visualizes:
+- ⚙️ Dynamic Strategy Risk Governor (Autonomous Volatility & Regime Modulator)
 - Live Market Regime Radar (Trending, Ranging, Volatile Breakout, Low Volatility)
 - Multi-Model Ensemble Confluence Signal & Confidence Gauge
 - Real-time Candlestick Chart with EMA Ribbons & Dynamic Volatility Envelopes
@@ -55,6 +56,13 @@ st.markdown("""
         border: 1px solid #1f2d3d;
         box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.4);
     }
+    .risk-hud-card {
+        background: linear-gradient(135deg, rgba(236, 72, 153, 0.08), rgba(139, 92, 246, 0.06));
+        border: 1px solid rgba(236, 72, 153, 0.25);
+        border-radius: 12px;
+        padding: 16px 20px;
+        margin-bottom: 20px;
+    }
     .metric-title { font-size: 11px; color: #94a3b8; font-weight: 600; text-transform: uppercase; letter-spacing: 0.8px; }
     .metric-val { font-size: 22px; font-weight: 700; color: #f8fafc; margin-top: 4px; }
     .metric-sub { font-size: 12px; margin-top: 2px; }
@@ -82,6 +90,7 @@ signal = telemetry.get("signal", {})
 positions = telemetry.get("positions", [])
 perf = telemetry.get("performance", {})
 floating_pnl = telemetry.get("floating_pnl", 0.0)
+dyn_risk = telemetry.get("dynamic_risk", {})
 
 # ── Sidebar Controls ──────────────────────────────────────────────────────────
 with st.sidebar:
@@ -91,19 +100,63 @@ with st.sidebar:
     auto_trade = st.toggle("⚡ Auto-Trading Active", value=telemetry.get("auto_trading", True))
     if auto_trade != engine.config.get("auto_trading", True):
         engine.config["auto_trading"] = auto_trade
+        engine.save_config({"auto_trading": auto_trade})
         st.toast(f"Bot #5 Auto-trading {'ENABLED' if auto_trade else 'PAUSED'}")
 
     st.markdown("---")
     st.markdown("#### ⚙️ Strategy Risk Settings")
 
-    risk_pct = st.slider("Risk Per Trade (%)", min_value=0.25, max_value=3.0, value=float(engine.config.get("risk_pct_per_trade", 1.0)), step=0.25)
-    engine.config["risk_pct_per_trade"] = risk_pct
+    # Master Dynamic Risk Toggle
+    is_dynamic = st.toggle("🧠 Dynamic AI Auto-Pilot", value=engine.config.get("dynamic_risk_enabled", True), help="When ON, AI continuously modulates Risk %, Stop Loss, Take Profit, and Confidence based on real-time market regimes.")
+    if is_dynamic != engine.config.get("dynamic_risk_enabled", True):
+        engine.config["dynamic_risk_enabled"] = is_dynamic
+        engine.save_config({"dynamic_risk_enabled": is_dynamic})
+        st.toast(f"Dynamic Risk Engine {'ACTIVE' if is_dynamic else 'MANUAL OVERRIDE'}")
 
-    conf_thresh = st.slider("Model Confidence Threshold", min_value=0.50, max_value=0.85, value=float(engine.config.get("confidence_threshold", 0.60)), step=0.05)
-    engine.config["confidence_threshold"] = conf_thresh
+    if is_dynamic:
+        st.caption("✨ *Risk, SL, TP & Confidence are being autonomously managed by the AI engine.*")
+        
+        base_risk = st.slider("Base Risk Anchor (%)", min_value=0.25, max_value=2.0, value=float(engine.config.get("risk_pct_per_trade", 1.0)), step=0.25)
+        ceiling_risk = st.slider("Max Risk Ceiling Cap (%)", min_value=1.0, max_value=3.5, value=float(engine.config.get("max_risk_ceiling_pct", 2.5)), step=0.25)
+        max_daily_risk = st.slider("Max Daily Risk Circuit Breaker (%)", min_value=1.0, max_value=6.0, value=float(engine.config.get("max_daily_risk_pct", 3.0)), step=0.5)
+        max_pos = st.slider("Max Concurrent Positions", min_value=1, max_value=4, value=int(engine.config.get("max_positions", 2)), step=1)
+        
+        if (base_risk != engine.config.get("risk_pct_per_trade") or 
+            ceiling_risk != engine.config.get("max_risk_ceiling_pct") or 
+            max_daily_risk != engine.config.get("max_daily_risk_pct") or 
+            max_pos != engine.config.get("max_positions")):
+            engine.save_config({
+                "risk_pct_per_trade": base_risk,
+                "max_risk_ceiling_pct": ceiling_risk,
+                "max_daily_risk_pct": max_daily_risk,
+                "max_positions": max_pos
+            })
+            st.toast("Updated Dynamic Risk Bounds!")
+    else:
+        st.caption("⚠️ *Manual Override Active: Fixed parameters enforced.*")
+        fixed_risk = st.slider("Fixed Risk Per Trade (%)", min_value=0.25, max_value=3.0, value=float(engine.config.get("risk_pct_per_trade", 1.0)), step=0.25)
+        fixed_sl = st.slider("Stop Loss (x ATR)", min_value=1.0, max_value=3.0, value=float(engine.config.get("strategy", {}).get("atr_sl_multiplier", 1.5)), step=0.1)
+        fixed_tp = st.slider("Take Profit (x R:R)", min_value=1.5, max_value=5.0, value=float(engine.config.get("strategy", {}).get("tp_rr", 2.5)), step=0.25)
+        fixed_conf = st.slider("Confidence Threshold", min_value=0.50, max_value=0.85, value=float(engine.config.get("confidence_threshold", 0.60)), step=0.05)
+        
+        strat = engine.config.get("strategy", {})
+        if (fixed_risk != engine.config.get("risk_pct_per_trade") or 
+            fixed_sl != strat.get("atr_sl_multiplier") or 
+            fixed_tp != strat.get("tp_rr") or 
+            fixed_conf != engine.config.get("confidence_threshold")):
+            strat["atr_sl_multiplier"] = fixed_sl
+            strat["tp_rr"] = fixed_tp
+            engine.save_config({
+                "risk_pct_per_trade": fixed_risk,
+                "confidence_threshold": fixed_conf,
+                "strategy": strat
+            })
+            st.toast("Manual Strategy Risk Saved!")
 
     trailing_active = st.toggle("Dynamic ATR Trailing Stop", value=engine.config.get("strategy", {}).get("trailing_stop_active", True))
-    engine.config["strategy"]["trailing_stop_active"] = trailing_active
+    if trailing_active != engine.config.get("strategy", {}).get("trailing_stop_active", True):
+        engine.config["strategy"]["trailing_stop_active"] = trailing_active
+        engine.save_config({"strategy": engine.config["strategy"]})
 
     st.markdown("---")
     st.markdown("#### 🕹️ Manual AI Execution")
@@ -113,13 +166,17 @@ with st.sidebar:
         if st.button("BUY NOW", use_container_width=True):
             curr_p = float(tick.get("price", 2900.0))
             atr = float(signal.get("atr", 1.5))
-            res = engine.bridge.open_trade("XAUUSD", "BUY", manual_lot, stop_loss=curr_p - (atr * 1.5), take_profit=curr_p + (atr * 3.0), comment="Bot5_Manual_BUY")
+            sl_mult = float(dyn_risk.get("atr_sl_multiplier", 1.5))
+            tp_rr = float(dyn_risk.get("tp_rr", 2.5))
+            res = engine.bridge.open_trade("XAUUSD", "BUY", manual_lot, stop_loss=curr_p - (atr * sl_mult), take_profit=curr_p + (atr * sl_mult * tp_rr), comment="Bot5_Manual_BUY")
             st.toast("BUY Order Dispatched!" if res.get("success") else "Order Failed!")
     with col_s:
         if st.button("SELL NOW", use_container_width=True):
             curr_p = float(tick.get("price", 2900.0))
             atr = float(signal.get("atr", 1.5))
-            res = engine.bridge.open_trade("XAUUSD", "SELL", manual_lot, stop_loss=curr_p + (atr * 1.5), take_profit=curr_p - (atr * 3.0), comment="Bot5_Manual_SELL")
+            sl_mult = float(dyn_risk.get("atr_sl_multiplier", 1.5))
+            tp_rr = float(dyn_risk.get("tp_rr", 2.5))
+            res = engine.bridge.open_trade("XAUUSD", "SELL", manual_lot, stop_loss=curr_p + (atr * sl_mult), take_profit=curr_p - (atr * sl_mult * tp_rr), comment="Bot5_Manual_SELL")
             st.toast("SELL Order Dispatched!" if res.get("success") else "Order Failed!")
 
     st.markdown("---")
@@ -141,6 +198,55 @@ with col_status:
     st.markdown(f'<div style="text-align: right; margin-top: 8px;"><span class="status-badge {status_class}">{status_text}</span></div>', unsafe_allow_html=True)
 
 st.markdown("<br>", unsafe_allow_html=True)
+
+# ── 🛡️ Dynamic Strategy Risk Engine HUD ────────────────────────────────────────
+is_dyn_active = dyn_risk.get("enabled", True)
+mode_label = dyn_risk.get("regime_mode", "🛡️ DYNAMIC AUTONOMOUS RISK")
+atr_val = float(signal.get("atr", 1.5))
+
+st.markdown(f"""
+<div class="risk-hud-card">
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+        <div style="font-size: 14px; font-weight: 800; color: #f472b6; letter-spacing: 0.5px;">
+            ⚙️ DYNAMIC STRATEGY RISK GOVERNOR — {mode_label}
+        </div>
+        <span class="status-badge {'badge-pink' if is_dyn_active else 'badge-cyan'}">
+            {'AUTO-PILOT ACTIVE' if is_dyn_active else 'MANUAL OVERRIDE'}
+        </span>
+    </div>
+    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px;">
+        <div>
+            <div class="metric-title">Dynamic Risk Per Trade</div>
+            <div class="metric-val" style="color: #ec4899;">{dyn_risk.get('risk_pct', 1.0):.2f}%</div>
+            <div class="metric-sub" style="color: #94a3b8;">Base: {engine.config.get('risk_pct_per_trade', 1.0):.2f}%</div>
+        </div>
+        <div>
+            <div class="metric-title">Dynamic Stop Loss Buffer</div>
+            <div class="metric-val" style="color: #f43f5e;">{dyn_risk.get('atr_sl_multiplier', 1.5):.2f}x ATR</div>
+            <div class="metric-sub" style="color: #94a3b8;">Dist: ${(atr_val * float(dyn_risk.get('atr_sl_multiplier', 1.5))):.2f}</div>
+        </div>
+        <div>
+            <div class="metric-title">Dynamic Take Profit Target</div>
+            <div class="metric-val" style="color: #10b981;">{dyn_risk.get('tp_rr', 2.5):.1f}x R:R</div>
+            <div class="metric-sub" style="color: #94a3b8;">Target: ${(atr_val * float(dyn_risk.get('atr_sl_multiplier', 1.5)) * float(dyn_risk.get('tp_rr', 2.5))):.2f}</div>
+        </div>
+        <div>
+            <div class="metric-title">Dynamic Confidence Bar</div>
+            <div class="metric-val" style="color: #38bdf8;">{float(dyn_risk.get('confidence_threshold', 0.60))*100:.0f}%</div>
+            <div class="metric-sub" style="color: #94a3b8;">Signal Conf: {float(signal.get('confidence', 0.0))*100:.0f}%</div>
+        </div>
+        <div>
+            <div class="metric-title">Dynamic Breakeven / Trail</div>
+            <div class="metric-val" style="color: #c084fc;">+{dyn_risk.get('be_trigger_rr', 1.0):.1f}R / {dyn_risk.get('trailing_atr_multiplier', 1.2):.1f}x</div>
+            <div class="metric-sub" style="color: #94a3b8;">Max Positions: {dyn_risk.get('max_positions', 2)}</div>
+        </div>
+    </div>
+    <div style="margin-top: 12px; display: flex; gap: 8px; flex-wrap: wrap;">
+""", unsafe_allow_html=True)
+
+for r in dyn_risk.get("reasons", []):
+    st.markdown(f'<span class="status-badge badge-purple" style="font-size: 11px;">🔍 {r}</span>', unsafe_allow_html=True)
+st.markdown("</div></div>", unsafe_allow_html=True)
 
 # Top KPI Metric Row
 k1, k2, k3, k4, k5 = st.columns(5)
@@ -216,7 +322,7 @@ with col_signal:
     sig_dir = signal.get("direction", "NEUTRAL")
     sig_conf = signal.get("confidence", 0.0) * 100.0
     sig_color = "#34d399" if sig_dir == "BUY" else ("#f87171" if sig_dir == "SELL" else "#94a3b8")
-    thresh_val = float(engine.config.get("confidence_threshold", 0.60)) * 100.0
+    thresh_val = float(dyn_risk.get("confidence_threshold", 0.60)) * 100.0
 
     st.markdown(f"""
     <div class="metric-card" style="border-left: 4px solid {sig_color};">
@@ -226,7 +332,7 @@ with col_signal:
             <span class="status-badge" style="background: {sig_color}22; color: {sig_color}; border: 1px solid {sig_color}44;">{sig_conf:.0f}% CONF</span>
         </div>
         <div style="font-size: 12px; color: #94a3b8; margin-top: 6px;">
-            Execution Threshold: {thresh_val:.0f}% &bull; {signal.get('timestamp', '')}
+            Dynamic Threshold: {thresh_val:.0f}% &bull; {signal.get('timestamp', '')}
         </div>
     </div>
     """, unsafe_allow_html=True)
