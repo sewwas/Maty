@@ -393,6 +393,25 @@ def check_target_profit(self, current_price: float, timestamp: float) -> Optiona
     target_prof = float(getattr(self, "target_profit", 3.0) or 3.0)
     effective_target = max(0.50, target_prof)
 
+    # ── Bot #5 Regime-Adaptive TP Override ──────────────────────────────────
+    # If Bot 5 is online and has a regime-specific TP R:R, scale the exit target
+    # to match the current market regime instead of using a fixed $target_profit.
+    try:
+        from bot5_signal_bridge import read_bot5_signal as _rb5_tp
+        _b5_tp = _rb5_tp()
+        if _b5_tp is not None:
+            _b5_tp_rr  = float(_b5_tp.get("dynamic_risk", {}).get("tp_rr", 0.0))
+            _b5_tp_atr = float(_b5_tp.get("atr", 0.0))
+            if _b5_tp_rr > 0 and _b5_tp_atr > 0 and total_volume > 0:
+                # Scale target: R:R x ATR_distance x lots x $100/point
+                _regime_target = _b5_tp_rr * _b5_tp_atr * total_volume * 100.0
+                # Clamp: never lower than bot's configured target, never above 5x it
+                _regime_target = max(effective_target, min(_regime_target, effective_target * 5.0))
+                if abs(_regime_target - effective_target) > 0.10:  # Only override if meaningfully different
+                    effective_target = round(_regime_target, 2)
+    except Exception:
+        pass  # Bridge unavailable — keep using static target_profit
+
     if total_pnl > getattr(self, "max_floating_pnl", -float("inf")):
         self.max_floating_pnl = total_pnl
 
@@ -958,6 +977,64 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
                 return
         except Exception:
             pass
+
+    # ── Bot #5 AI Signal Gate (injected intelligence from ai_engine.py) ──────
+    # Reads the shared bridge file written by Bot 5 every ~45s.
+    # If Bot 5 is offline or stale (>90s), falls back to DUAL mode silently.
+    _b5 = None
+    try:
+        import sys as _b5_sys, os as _b5_os
+        _b5_core = _b5_os.path.dirname(_b5_os.path.abspath(__file__))
+        if _b5_core not in _b5_sys.path:
+            _b5_sys.path.insert(0, _b5_core)
+        from core.bot5_signal_bridge import read_bot5_signal as _rb5
+        _b5 = _rb5()
+    except Exception:
+        try:
+            # Fallback: may already be in sys.path
+            from bot5_signal_bridge import read_bot5_signal as _rb5_alt
+            _b5 = _rb5_alt()
+        except Exception:
+            pass
+
+    if _b5 is not None and not kwargs.get("manual_user_deploy", False):
+        _b5_regime = _b5.get("regime", "RANGING")
+        _b5_signal = _b5.get("signal", "NEUTRAL")
+        _b5_conf   = float(_b5.get("signal_confidence", 0.0))
+        _b5_thresh = float(_b5.get("dynamic_risk", {}).get("confidence_threshold", 0.65))
+        _b5_atr    = float(_b5.get("atr", 1.5))
+        _b5_dr     = _b5.get("dynamic_risk", {})
+
+        # 1. Halt entirely in VOLATILE_BREAKOUT — grid is too dangerous in spike conditions
+        if _b5_regime == "VOLATILE_BREAKOUT":
+            print(f"[{sym_name}] ⚡ [BOT5 GATE] Halting Bot1 deploy — VOLATILE_BREAKOUT regime active")
+            return
+
+        # 2. Halt if Bot 5 signal is NEUTRAL or below its own confidence bar
+        if _b5_signal == "NEUTRAL" or _b5_conf < _b5_thresh:
+            print(f"[{sym_name}] ⏸ [BOT5 GATE] No confirmed signal (dir={_b5_signal} conf={_b5_conf*100:.0f}% < threshold={_b5_thresh*100:.0f}%) — Bot1 deploy paused")
+            return
+
+        # 3. Override grid direction to match Bot 5's confirmed signal
+        _b5_side = "BUY_ONLY" if _b5_signal == "BUY" else "SELL_ONLY"
+        self.pending_order_side_mode = _b5_side
+        print(f"[{sym_name}] 🤖 [BOT5 AI] Aligning Bot1 to {_b5_signal} ({_b5_conf*100:.0f}% conf) | Regime: {_b5_regime} | Mode: {_b5_dr.get('regime_mode', '')}")
+
+        # 4. Compute ATR-based lot size from Bot 5 dynamic risk formula:
+        #    equity x risk_pct% / (ATR_SL_mult x ATR x 100)
+        try:
+            _b5_equity  = float(self.broker.get_equity()) if hasattr(self.broker, "get_equity") else float(getattr(self.broker, "balance", 1000.0) or 1000.0)
+            _b5_risk    = float(_b5_dr.get("risk_pct", 1.0)) / 100.0
+            _b5_sl_mult = float(_b5_dr.get("atr_sl_multiplier", 1.5))
+            _b5_sl_dist = _b5_sl_mult * _b5_atr
+            if _b5_sl_dist > 0.2:
+                _b5_raw_lot = (_b5_equity * _b5_risk) / (_b5_sl_dist * 100.0)
+                _b5_lot     = max(0.01, min(round(_b5_raw_lot, 2), 0.50))
+                self._b5_lot_size = _b5_lot  # cache for reference
+                self.order_size = _b5_lot
+                print(f"[{sym_name}] 💰 [BOT5 RISK] Lot={_b5_lot} | Equity=${_b5_equity:.0f} Risk={_b5_risk*100:.2f}% SL_dist={_b5_sl_dist:.2f}")
+        except Exception as _ls_err:
+            print(f"[{sym_name}] ⚠️ [BOT5 LOT] Lot sizing failed, using existing order_size: {_ls_err}")
 
     # Strict single position / trap discipline on Gold:
     if is_gold and not force:

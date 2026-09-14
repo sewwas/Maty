@@ -171,7 +171,7 @@ def fetch_single_bot_metrics(cfg):
     try:
         # 1. Fetch Account Info
         req_acc = urllib.request.Request(f"http://127.0.0.1:{bport}/account", headers={"User-Agent": "HubCollector"})
-        with urllib.request.urlopen(req_acc, timeout=1.8) as resp:
+        with urllib.request.urlopen(req_acc, timeout=4.5) as resp:
             acc_data = json.loads(resp.read().decode("utf-8"))
             res["connected"] = acc_data.get("connected", False)
             res["account"] = acc_data.get("login", cfg["default_acc"])
@@ -189,7 +189,7 @@ def fetch_single_bot_metrics(cfg):
     try:
         # 2. Fetch Open Positions
         req_pos = urllib.request.Request(f"http://127.0.0.1:{bport}/positions", headers={"User-Agent": "HubCollector"})
-        with urllib.request.urlopen(req_pos, timeout=1.8) as resp:
+        with urllib.request.urlopen(req_pos, timeout=4.5) as resp:
             pos_data = json.loads(resp.read().decode("utf-8")).get("positions", [])
             res["active_positions"] = len(pos_data)
             res["floating_pnl"] = round(sum(float(p.get("profit", 0.0)) for p in pos_data), 2)
@@ -231,7 +231,7 @@ def fetch_single_bot_metrics(cfg):
     try:
         # 3. Fetch Deal History (Last 60 Days)
         req_hist = urllib.request.Request(f"http://127.0.0.1:{bport}/history?days=60", headers={"User-Agent": "HubCollector"})
-        with urllib.request.urlopen(req_hist, timeout=2.5) as resp:
+        with urllib.request.urlopen(req_hist, timeout=6.0) as resp:
             deals = json.loads(resp.read().decode("utf-8")).get("deals", [])
             trades = [d for d in deals if (d.get("entry") == 1 or d.get("profit", 0) != 0) and d.get("symbol")]
 

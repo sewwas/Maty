@@ -35,6 +35,18 @@ if _CURRENT_DIR not in sys.path:
 from bridge_client import Bot5BridgeClient
 from analytics import calculate_performance_metrics
 
+# Shared AI signal bridge — writes Bot 5 state so Bot 1 can read it
+try:
+    import sys as _sys
+    _PARENT_DIR = os.path.dirname(_CURRENT_DIR)
+    if _PARENT_DIR not in _sys.path:
+        _sys.path.insert(0, _PARENT_DIR)
+    from core.bot5_signal_bridge import write_bot5_signal as _write_bridge
+    _BRIDGE_AVAILABLE = True
+except ImportError:
+    _BRIDGE_AVAILABLE = False
+    _write_bridge = None
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("AITraderBot5")
 
@@ -630,6 +642,17 @@ class AIEngine:
                 # 3. Compute Live Dynamic Risk Settings
                 dyn_risk = self._calculate_dynamic_risk(self._cached_candles, tick, account)
                 self._cached_dynamic_risk = dyn_risk
+
+                # 3a. Publish to Bot 1 Signal Bridge (best-effort)
+                if _BRIDGE_AVAILABLE and _write_bridge is not None:
+                    try:
+                        _write_bridge(
+                            self._cached_regime,
+                            self._cached_signal,
+                            dyn_risk
+                        )
+                    except Exception as _bridge_err:
+                        logger.debug(f"Bot5 bridge write skipped: {_bridge_err}")
 
                 # 4. Position & Trailing Management with Dynamic Parameters
                 positions = self.bridge.get_positions(symbol)
