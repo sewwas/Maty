@@ -680,6 +680,27 @@ class SMCEngine:
             min_wick = float(dyn_risk.get("min_wick_ratio", 0.30))
 
             sweep = self._check_liquidity_sweep(closed_candle, pools, min_wick_ratio=min_wick)
+            
+            # --- HIGHER TIMEFRAME (HTF) TREND FILTER ---
+            # Calculate M15 EMA 50 to determine the overall market trend
+            htf_trend = "NEUTRAL"
+            if len(df_m15) >= 50:
+                ema_50 = df_m15['close'].ewm(span=50, adjust=False).mean().iloc[-1]
+                current_m15_close = df_m15['close'].iloc[-1]
+                if current_m15_close > ema_50:
+                    htf_trend = "BULLISH"
+                elif current_m15_close < ema_50:
+                    htf_trend = "BEARISH"
+
+            # Filter out counter-trend sweeps to maintain a high win rate
+            if sweep:
+                if sweep["direction"] == "BULLISH_SWEEP" and htf_trend == "BEARISH":
+                    # Ignored: Trying to BUY in a strong SELL trend (catching a falling knife)
+                    sweep = None
+                elif sweep["direction"] == "BEARISH_SWEEP" and htf_trend == "BULLISH":
+                    # Ignored: Trying to SELL in a strong BUY trend
+                    sweep = None
+
             if sweep and sweep.get("candle_timestamp") != self.state.get("last_swept_candle_ts"):
                 sweep["detected_at"] = now_ts
                 self.state["swept_level"] = sweep
@@ -759,8 +780,8 @@ class SMCEngine:
             sl_price = round(sweep["sweep_extreme"] + 0.50, 2)
             sl_distance = sl_price - entry_price
             if sl_distance <= 0.30:
-                sl_distance = 1.50
-                sl_price = round(entry_price + 1.50, 2)
+                sl_distance = 3.00
+                sl_price = round(entry_price + 3.00, 2)
 
             tp_price = round(entry_price - (sl_distance * tp2_rr), 2)
         else:
@@ -769,8 +790,8 @@ class SMCEngine:
             sl_price = round(sweep["sweep_extreme"] - 0.50, 2)
             sl_distance = entry_price - sl_price
             if sl_distance <= 0.30:
-                sl_distance = 1.50
-                sl_price = round(entry_price - 1.50, 2)
+                sl_distance = 3.00
+                sl_price = round(entry_price - 3.00, 2)
 
             tp_price = round(entry_price + (sl_distance * tp2_rr), 2)
 
