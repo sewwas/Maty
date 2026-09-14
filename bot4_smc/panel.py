@@ -1,13 +1,14 @@
 """
-Bot #4 — Institutional SMC Liquidity Hunter Web Panel
-======================================================
+Bot #4 — Institutional SMC Liquidity Hunter & FVG Reversal Engine Web Panel
+=============================================================================
 Port: 8504
 Connects to MT5 Bridge Port 8004
 Visualizes:
+- ⚙️ Dynamic SMC Strategy Risk Governor (Autonomous Volatility & Wick Modulator)
 - Live Candlestick Chart with SMC Liquidity Pools (PDH, PDL, Asian Range, BSL/SSL)
-- Fair Value Gap (FVG) Shaded Imbalance Zones
+- Fair Value Gap (FVG) Shaded Imbalance Zones & Consequent Encroachment
 - Active Reversal Trades & Dynamic Breakeven/Trailing Stop Monitor
-- Real-time Account Telemetry & Emergency Controls
+- Real-time Account Telemetry & Instant Manual Execution Controls
 """
 
 import os
@@ -35,7 +36,7 @@ if _CURRENT_DIR not in sys.path:
 from smc_engine import get_engine
 from analytics import calculate_performance_metrics
 
-# Custom Dark Theme CSS with Emerald & Cyan accents
+# Custom Dark Theme CSS with Emerald, Cyan, and Amber accents
 st.markdown("""
 <style>
     .reportview-container { background-color: #0b0f17; }
@@ -54,6 +55,13 @@ st.markdown("""
         border: 1px solid #1f2d3d;
         box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.4);
     }
+    .risk-hud-card {
+        background: linear-gradient(135deg, rgba(16, 185, 129, 0.08), rgba(6, 182, 212, 0.06));
+        border: 1px solid rgba(16, 185, 129, 0.25);
+        border-radius: 12px;
+        padding: 16px 20px;
+        margin-bottom: 20px;
+    }
     .metric-title { font-size: 11px; color: #94a3b8; font-weight: 600; text-transform: uppercase; letter-spacing: 0.8px; }
     .metric-val { font-size: 22px; font-weight: 700; color: #f8fafc; margin-top: 4px; }
     .metric-sub { font-size: 12px; margin-top: 2px; }
@@ -65,48 +73,114 @@ st.markdown("""
         font-weight: 600;
     }
     .badge-green { background-color: rgba(16, 185, 129, 0.15); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.3); }
-    .badge-red { background-color: rgba(239, 68, 68, 0.15); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.3); }
-    .badge-amber { background-color: rgba(245, 158, 11, 0.15); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.3); }
     .badge-cyan { background-color: rgba(6, 182, 212, 0.15); color: #22d3ee; border: 1px solid rgba(6, 182, 212, 0.3); }
+    .badge-purple { background-color: rgba(168, 85, 247, 0.15); color: #c084fc; border: 1px solid rgba(168, 85, 247, 0.3); }
+    .badge-amber { background-color: rgba(245, 158, 11, 0.15); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.3); }
+    .badge-red { background-color: rgba(239, 68, 68, 0.15); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.3); }
 </style>
 """, unsafe_allow_html=True)
 
 engine = get_engine()
-
-# Read-only telemetry: Autonomous execution runs strictly in background daemon
 status = engine.get_telemetry()
+dyn_risk = status.get("dynamic_risk", {})
+pools = status.get("liquidity_pools", {})
+active_fvgs = status.get("active_fvgs", [])
+open_pos = status.get("open_positions", [])
+swept = status.get("swept_level")
+curr_tick = engine.bridge.get_tick(status.get("symbol", "XAUUSD"))
 
-# Sidebar: Controls & Configuration
+# ── Sidebar: Controls & Configuration ─────────────────────────────────────────
 with st.sidebar:
     st.markdown("### 🎯 Bot #4 SMC Controls")
-    
+
     # Auto-trading toggle
     auto_trade = st.toggle("⚡ Auto-Trading Active", value=status.get("auto_trading", True))
     if auto_trade != engine.config.get("auto_trading", True):
         engine.config["auto_trading"] = auto_trade
-        st.toast(f"Auto-trading {'ENABLED' if auto_trade else 'PAUSED'}")
+        engine.save_config({"auto_trading": auto_trade})
+        st.toast(f"Bot #4 Auto-trading {'ENABLED' if auto_trade else 'PAUSED'}")
 
     st.markdown("---")
     st.markdown("#### ⚙️ Strategy Risk Settings")
-    
-    risk_pct = st.slider("Risk Per Trade (%)", min_value=0.25, max_value=3.0, value=float(engine.config.get("risk_pct_per_trade", 1.0)), step=0.25)
-    engine.config["risk_pct_per_trade"] = risk_pct
 
-    max_daily_risk = st.slider("Max Daily Risk (%)", min_value=1.0, max_value=6.0, value=float(engine.config.get("max_daily_risk_pct", 3.0)), step=0.5)
-    engine.config["max_daily_risk_pct"] = max_daily_risk
+    # Master Dynamic Risk Toggle
+    is_dynamic = st.toggle(
+        "🧠 Dynamic SMC Auto-Pilot",
+        value=engine.config.get("dynamic_risk_enabled", True),
+        help="When ON, AI continuously modulates Risk %, Absorption Wick, FVG Pips, and R:R targets based on volatility."
+    )
+    if is_dynamic != engine.config.get("dynamic_risk_enabled", True):
+        engine.config["dynamic_risk_enabled"] = is_dynamic
+        engine.save_config({"dynamic_risk_enabled": is_dynamic})
+        st.toast(f"Dynamic Risk Engine {'ACTIVE' if is_dynamic else 'MANUAL OVERRIDE'}")
 
-    strat_cfg = engine.config.get("strategy", {})
-    min_wick = st.slider("Min Rejection Wick Ratio", min_value=0.25, max_value=0.60, value=float(strat_cfg.get("min_wick_ratio", 0.38)), step=0.01)
-    strat_cfg["min_wick_ratio"] = min_wick
+    if is_dynamic:
+        st.caption("✨ *Risk, Absorption Wick, FVG Size & Targets are autonomously managed.*")
+        base_risk = st.slider("Base Risk Anchor (%)", min_value=0.25, max_value=2.0, value=float(engine.config.get("risk_pct_per_trade", 1.0)), step=0.25)
+        ceiling_risk = st.slider("Max Risk Ceiling Cap (%)", min_value=1.0, max_value=3.5, value=float(engine.config.get("max_risk_ceiling_pct", 2.5)), step=0.25)
+        max_daily_risk = st.slider("Max Daily Risk Circuit Breaker (%)", min_value=1.0, max_value=6.0, value=float(engine.config.get("max_daily_risk_pct", 3.0)), step=0.5)
+        max_trades = st.slider("Max Trades Per Day", min_value=1, max_value=10, value=int(engine.config.get("max_trades_per_day", 4)), step=1)
 
-    fvg_min = st.number_input("Min FVG Size (Pips)", min_value=1.0, max_value=20.0, value=float(strat_cfg.get("fvg_min_pips", 3.5)), step=0.5)
-    strat_cfg["fvg_min_pips"] = fvg_min
+        if (base_risk != engine.config.get("risk_pct_per_trade") or
+            ceiling_risk != engine.config.get("max_risk_ceiling_pct") or
+            max_daily_risk != engine.config.get("max_daily_risk_pct") or
+            max_trades != engine.config.get("max_trades_per_day")):
+            engine.save_config({
+                "risk_pct_per_trade": base_risk,
+                "max_risk_ceiling_pct": ceiling_risk,
+                "max_daily_risk_pct": max_daily_risk,
+                "max_trades_per_day": max_trades
+            })
+            st.toast("Updated Dynamic Risk Bounds!")
+    else:
+        st.caption("⚠️ *Manual Override Active: Fixed parameters enforced.*")
+        fixed_risk = st.slider("Fixed Risk Per Trade (%)", min_value=0.25, max_value=3.0, value=float(engine.config.get("risk_pct_per_trade", 1.0)), step=0.25)
+        strat_cfg = engine.config.get("strategy", {})
+        fixed_wick = st.slider("Min Rejection Wick Ratio", min_value=0.25, max_value=0.60, value=float(strat_cfg.get("min_wick_ratio", 0.38)), step=0.01)
+        fixed_fvg = st.number_input("Min FVG Size (Pips)", min_value=1.0, max_value=20.0, value=float(strat_cfg.get("fvg_min_pips", 3.5)), step=0.5)
+        fixed_tp1 = st.number_input("TP1 R:R Target", min_value=1.0, max_value=4.0, value=float(strat_cfg.get("tp1_rr", 1.5)), step=0.25)
+        fixed_tp2 = st.number_input("TP2 Runner R:R", min_value=2.0, max_value=8.0, value=float(strat_cfg.get("tp2_rr", 3.5)), step=0.5)
 
-    tp1_rr = st.number_input("TP1 R:R Target", min_value=1.0, max_value=4.0, value=float(strat_cfg.get("tp1_rr", 1.5)), step=0.25)
-    strat_cfg["tp1_rr"] = tp1_rr
+        if (fixed_risk != engine.config.get("risk_pct_per_trade") or
+            fixed_wick != strat_cfg.get("min_wick_ratio") or
+            fixed_fvg != strat_cfg.get("fvg_min_pips") or
+            fixed_tp1 != strat_cfg.get("tp1_rr") or
+            fixed_tp2 != strat_cfg.get("tp2_rr")):
+            strat_cfg["min_wick_ratio"] = fixed_wick
+            strat_cfg["fvg_min_pips"] = fixed_fvg
+            strat_cfg["tp1_rr"] = fixed_tp1
+            strat_cfg["tp2_rr"] = fixed_tp2
+            engine.save_config({
+                "risk_pct_per_trade": fixed_risk,
+                "strategy": strat_cfg
+            })
+            st.toast("Manual Strategy Risk Saved!")
 
-    tp2_rr = st.number_input("TP2 Runner R:R", min_value=2.0, max_value=8.0, value=float(strat_cfg.get("tp2_rr", 3.5)), step=0.5)
-    strat_cfg["tp2_rr"] = tp2_rr
+    trailing_active = st.toggle("Dynamic ATR Trailing Stop", value=engine.config.get("strategy", {}).get("trailing_stop_active", True))
+    if trailing_active != engine.config.get("strategy", {}).get("trailing_stop_active", True):
+        engine.config["strategy"]["trailing_stop_active"] = trailing_active
+        engine.save_config({"strategy": engine.config["strategy"]})
+
+    st.markdown("---")
+    st.markdown("#### 🕹️ Manual SMC Execution")
+    manual_lot = st.number_input("Lot Size", min_value=0.01, max_value=2.0, value=0.02, step=0.01)
+    col_b, col_s = st.columns(2)
+    with col_b:
+        if st.button("BUY NOW", use_container_width=True):
+            curr_p = float(curr_tick.get("price", 2900.0))
+            atr = float(dyn_risk.get("current_atr", 1.5))
+            sl_dist = atr * 1.5
+            tp2_rr = float(dyn_risk.get("tp2_rr", 3.5))
+            res = engine.bridge.send_order("XAUUSD", "BUY", curr_p, manual_lot, sl=curr_p - sl_dist, tp=curr_p + (sl_dist * tp2_rr))
+            st.toast("BUY Order Dispatched!" if res.get("success") or res.get("ticket") else "Order Failed!")
+    with col_s:
+        if st.button("SELL NOW", use_container_width=True):
+            curr_p = float(curr_tick.get("price", 2900.0))
+            atr = float(dyn_risk.get("current_atr", 1.5))
+            sl_dist = atr * 1.5
+            tp2_rr = float(dyn_risk.get("tp2_rr", 3.5))
+            res = engine.bridge.send_order("XAUUSD", "SELL", curr_p, manual_lot, sl=curr_p + sl_dist, tp=curr_p - (sl_dist * tp2_rr))
+            st.toast("SELL Order Dispatched!" if res.get("success") or res.get("ticket") else "Order Failed!")
 
     st.markdown("---")
     st.markdown("#### 🚨 Emergency Controls")
@@ -118,7 +192,7 @@ with st.sidebar:
     st.caption(f"MT5 Bridge: {engine.config.get('bridge_url')} | Magic: {engine.config.get('magic_number')}")
 
 
-# ── Top Header & KPI Bar ─────────────────────────────────────────────────────
+# ── Top Header & Connection Bar ───────────────────────────────────────────────
 col_h1, col_h2 = st.columns([3, 1])
 with col_h1:
     st.markdown('<p class="main-header">🎯 Profity AI — Bot #4: Institutional SMC Liquidity Hunter</p>', unsafe_allow_html=True)
@@ -130,7 +204,58 @@ with col_h2:
     label = f"BRIDGE ONLINE: #{status.get('login')}" if is_conn else "BRIDGE OFFLINE"
     st.markdown(f'<div style="text-align: right; padding-top: 10px;"><span class="status-badge {badge_cls}">{label}</span></div>', unsafe_allow_html=True)
 
-# Metric Cards
+st.markdown("<br>", unsafe_allow_html=True)
+
+# ── 🛡️ Dynamic Strategy Risk Governor HUD ────────────────────────────────────
+is_dyn_active = dyn_risk.get("enabled", True)
+mode_label = dyn_risk.get("regime_mode", "🎯 INSTITUTIONAL LIQUIDITY SWEEP")
+current_atr_val = float(dyn_risk.get("current_atr", 1.5))
+
+st.markdown(f"""
+<div class="risk-hud-card">
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+        <div style="font-size: 14px; font-weight: 800; color: #34d399; letter-spacing: 0.5px;">
+            ⚙️ DYNAMIC SMC STRATEGY RISK GOVERNOR — {mode_label}
+        </div>
+        <span class="status-badge {'badge-green' if is_dyn_active else 'badge-cyan'}">
+            {'AUTO-PILOT ACTIVE' if is_dyn_active else 'MANUAL OVERRIDE'}
+        </span>
+    </div>
+    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px;">
+        <div>
+            <div class="metric-title">Dynamic Risk Per Trade</div>
+            <div class="metric-val" style="color: #10b981;">{dyn_risk.get('risk_pct', 1.0):.2f}%</div>
+            <div class="metric-sub" style="color: #94a3b8;">Base: {engine.config.get('risk_pct_per_trade', 1.0):.2f}%</div>
+        </div>
+        <div>
+            <div class="metric-title">Absorption Wick Required</div>
+            <div class="metric-val" style="color: #22d3ee;">{float(dyn_risk.get('min_wick_ratio', 0.38))*100:.0f}%</div>
+            <div class="metric-sub" style="color: #94a3b8;">Min Absorption Threshold</div>
+        </div>
+        <div>
+            <div class="metric-title">Dynamic FVG Min Filter</div>
+            <div class="metric-val" style="color: #a78bfa;">{dyn_risk.get('fvg_min_pips', 3.5):.1f} Pips</div>
+            <div class="metric-sub" style="color: #94a3b8;">Current ATR: ${current_atr_val:.2f}</div>
+        </div>
+        <div>
+            <div class="metric-title">Dynamic Targets (TP1 / TP2)</div>
+            <div class="metric-val" style="color: #fbbf24;">{dyn_risk.get('tp1_rr', 1.5):.1f}R / {dyn_risk.get('tp2_rr', 3.5):.1f}R</div>
+            <div class="metric-sub" style="color: #94a3b8;">Partial: 50% at TP1</div>
+        </div>
+        <div>
+            <div class="metric-title">Breakeven / Trail</div>
+            <div class="metric-val" style="color: #38bdf8;">+{dyn_risk.get('be_trigger_rr', 1.0):.1f}R / {dyn_risk.get('atr_sl_multiplier', 1.2):.1f}x</div>
+            <div class="metric-sub" style="color: #94a3b8;">Offset: 30 pts</div>
+        </div>
+    </div>
+    <div style="margin-top: 12px; display: flex; gap: 8px; flex-wrap: wrap;">
+""", unsafe_allow_html=True)
+
+for r in dyn_risk.get("reasons", []):
+    st.markdown(f'<span class="status-badge badge-cyan" style="font-size: 11px;">🔍 {r}</span>', unsafe_allow_html=True)
+st.markdown("</div></div>", unsafe_allow_html=True)
+
+# ── Top KPI Metric Row ────────────────────────────────────────────────────────
 m_col1, m_col2, m_col3, m_col4, m_col5 = st.columns(5)
 
 balance = float(status.get("balance", 1000.0))
@@ -180,7 +305,6 @@ with m_col4:
     """, unsafe_allow_html=True)
 
 with m_col5:
-    pools = status.get("liquidity_pools", {})
     a_high = pools.get("asian_high", 0.0)
     a_low = pools.get("asian_low", 0.0)
     st.markdown(f"""
@@ -228,7 +352,6 @@ if not candles_df.empty:
         fig.add_hline(y=a_low, line_dash="dot", line_color="#a855f7", annotation_text=f"Asian Low @ {a_low:.2f}", annotation_position="bottom left")
 
     # 3. Fair Value Gaps (Shaded Rectangles)
-    active_fvgs = status.get("active_fvgs", [])
     for fvg in active_fvgs[-4:]:
         fvg_color = "rgba(16, 185, 129, 0.20)" if fvg["type"] == "BULLISH_FVG" else "rgba(239, 68, 68, 0.20)"
         fvg_border = "#10b981" if fvg["type"] == "BULLISH_FVG" else "#ef4444"
@@ -242,7 +365,6 @@ if not candles_df.empty:
         )
 
     # 4. Open Position Lines
-    open_pos = status.get("open_positions", [])
     for pos in open_pos:
         entry_p = float(pos.get("open_price", pos.get("price_open", 0.0)))
         sl_p = float(pos.get("sl", 0.0))
@@ -273,7 +395,6 @@ col_pos, col_radar = st.columns([1.5, 1])
 
 with col_pos:
     st.markdown("#### 💼 Active SMC Positions")
-    open_pos = status.get("open_positions", [])
     if open_pos:
         for p in open_pos:
             ticket = p.get("ticket")
@@ -308,7 +429,6 @@ with col_pos:
 
 with col_radar:
     st.markdown("#### 🎯 Active Liquidity & Signal Radar")
-    swept = status.get("swept_level")
     if swept:
         st.markdown(f"""
         <div style="background: rgba(16, 185, 129, 0.1); border: 1px solid rgba(16, 185, 129, 0.4); border-radius: 8px; padding: 12px;">
@@ -325,9 +445,8 @@ with col_radar:
         st.markdown('<div style="background: #111827; border-radius: 8px; padding: 14px; color: #64748b; font-size: 12px;">Waiting for price to sweep key liquidity pool (PDH/PDL or Asian High/Low) with absorption wick...</div>', unsafe_allow_html=True)
 
     # Active FVG Box
-    fvgs = status.get("active_fvgs", [])
-    if fvgs:
-        latest_fvg = fvgs[-1]
+    if active_fvgs:
+        latest_fvg = active_fvgs[-1]
         st.markdown(f"""
         <div style="background: #151d2a; border-radius: 8px; padding: 12px; border: 1px solid #223249; margin-top: 8px;">
             <div style="font-size: 11px; color: #94a3b8; font-weight: 700;">LATEST FAIR VALUE GAP (FVG)</div>

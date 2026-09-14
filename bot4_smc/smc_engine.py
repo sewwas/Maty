@@ -73,6 +73,7 @@ class SMCEngine:
         self._cached_m15: Optional[pd.DataFrame] = None
         self._cached_liquidity_pools: Dict[str, Any] = {}
         self._cached_fvg_list: List[Dict[str, Any]] = []
+        self._cached_dynamic_risk: Dict[str, Any] = {}
         self._cached_telemetry: Dict[str, Any] = {}
 
         # Bridge client
@@ -97,7 +98,10 @@ class SMCEngine:
             "symbol": "XAUUSD",
             "magic_number": 998874,
             "bridge_url": "http://127.0.0.1:8004",
+            "dynamic_risk_enabled": True,
             "risk_pct_per_trade": 1.0,
+            "max_risk_ceiling_pct": 2.5,
+            "min_risk_floor_pct": 0.25,
             "max_daily_risk_pct": 3.0,
             "max_trades_per_day": 4,
             "auto_trading": True,
@@ -115,6 +119,19 @@ class SMCEngine:
                 "trailing_stop_active": True
             }
         }
+
+    def save_config(self, new_config: Dict[str, Any]):
+        """
+        Dynamically updates runtime configuration and persists directly to config.json.
+        """
+        with self._execution_lock:
+            self.config.update(new_config)
+            try:
+                with open(self.config_path, "w", encoding="utf-8") as f:
+                    json.dump(self.config, f, indent=2)
+                logger.info("✅ Bot #4 Configuration dynamically updated and saved to config.json")
+            except Exception as e:
+                logger.error(f"Error saving config.json: {e}")
 
     def _load_state(self) -> Dict[str, Any]:
         today_str = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
@@ -394,12 +411,13 @@ class SMCEngine:
 
         return False
 
-    def _calculate_lot_size(self, equity: float, sl_distance: float) -> float:
+    def _calculate_lot_size(self, equity: float, sl_distance: float, risk_pct: Optional[float] = None) -> float:
         """
-        Institutional 1.0% Equity Risk lot sizing:
+        Institutional Equity Risk lot sizing adhering strictly to dynamic parameters.
         Gold standard: 1.00 distance on 0.01 lot = $1.00 USD risk.
         """
-        risk_pct = float(self.config.get("risk_pct_per_trade", 1.0))
+        if risk_pct is None:
+            risk_pct = float(self.config.get("risk_pct_per_trade", 1.0))
         risk_usd = equity * (risk_pct / 100.0)
         
         if sl_distance <= 0.20:
@@ -411,6 +429,144 @@ class SMCEngine:
         # Hard bounds: min 0.01 lot, max 0.50 lot (safe institutional ceiling)
         lot = max(0.01, min(0.50, round(raw_lot, 2)))
         return lot
+
+    # ── ⚙️ Fully Dynamic SMC Strategy Risk Engine ────────────────────────────────
+    def _calculate_dynamic_smc_risk(
+        self,
+        df_m5: Optional[pd.DataFrame],
+        df_m15: Optional[pd.DataFrame],
+        tick: Dict[str, Any],
+        account: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        Dynamically manages ALL Bot #4 SMC Strategy Risk Settings:
+        - Dynamic Risk % Per Trade (Volatility & Drawdown Adaptive)
+        - Dynamic Minimum Absorption Wick Ratio
+        - Dynamic Minimum FVG Size (Pips)
+        - Dynamic Take Profit R:R (TP1 Partial & TP2 Runner)
+        - Dynamic Breakeven Trigger & Offset
+        - Dynamic Chandelier ATR Trailing Stop Multiplier
+        """
+        base_risk = float(self.config.get("risk_pct_per_trade", 1.0))
+        ceiling_risk = float(self.config.get("max_risk_ceiling_pct", 2.5))
+        floor_risk = float(self.config.get("min_risk_floor_pct", 0.25))
+
+        strat = self.config.get("strategy", {})
+        base_wick = float(strat.get("min_wick_ratio", 0.38))
+        base_fvg_pips = float(strat.get("fvg_min_pips", 3.5))
+        base_tp1_rr = float(strat.get("tp1_rr", 1.5))
+        base_tp2_rr = float(strat.get("tp2_rr", 3.5))
+        base_be_rr = float(strat.get("be_trigger_rr", 1.0))
+        base_trail_mult = float(strat.get("atr_sl_multiplier", 1.2))
+
+        # Check if dynamic risk engine is enabled
+        if not self.config.get("dynamic_risk_enabled", True):
+            return {
+                "enabled": False,
+                "risk_pct": base_risk,
+                "min_wick_ratio": base_wick,
+                "fvg_min_pips": base_fvg_pips,
+                "tp1_rr": base_tp1_rr,
+                "tp2_rr": base_tp2_rr,
+                "be_trigger_rr": base_be_rr,
+                "atr_sl_multiplier": base_trail_mult,
+                "regime_mode": "MANUAL FIXED SMC RISK",
+                "reasons": ["Manual override active (Dynamic Auto-Pilot OFF)"]
+            }
+
+        reasons = []
+        dyn_risk = base_risk
+        dyn_wick = base_wick
+        dyn_fvg = base_fvg_pips
+        dyn_tp1 = base_tp1_rr
+        dyn_tp2 = base_tp2_rr
+        dyn_be = base_be_rr
+        dyn_trail = base_trail_mult
+
+        # Compute ATR & volatility ratio
+        current_atr = 1.5
+        atr_ratio = 1.0
+        if df_m5 is not None and not df_m5.empty and len(df_m5) >= 15:
+            atr_series = self._compute_atr(df_m5, period=14)
+            if not atr_series.empty and not np.isnan(atr_series.iloc[-1]):
+                current_atr = float(atr_series.iloc[-1])
+                mean_atr = float(atr_series.tail(40).mean()) if len(atr_series) >= 40 else current_atr
+                if mean_atr > 0:
+                    atr_ratio = current_atr / mean_atr
+
+        # 1. Volatility & Liquidity Regime Adaptation
+        if atr_ratio > 1.55:
+            regime_mode = "⚡ HIGH VOLATILITY LIQUIDITY EXPANSION"
+            # In volatile expansion: trim risk, require strong institutional absorption wick, widen FVG
+            dyn_risk = base_risk * 0.70
+            dyn_wick = 0.44  # require 44% rejection wick to prevent false sweeps
+            dyn_fvg = max(4.5, round(current_atr * 2.5, 1))
+            dyn_tp1 = 1.80
+            dyn_tp2 = 4.50   # target explosive liquidity runners
+            dyn_be = 0.80    # early de-risking
+            dyn_trail = 1.50 # wider chandelier buffer
+            reasons.append(f"Volatile Expansion ({atr_ratio:.1f}x ATR) → Wick filter raised to 44%, FVG filter to {dyn_fvg}p")
+
+        elif atr_ratio < 0.75:
+            regime_mode = "💤 LOW VOLATILITY CONSOLIDATION"
+            # Low volatility / Asian chop: scale down risk, allow tighter wicks and smaller FVGs
+            dyn_risk = base_risk * 0.50
+            dyn_wick = 0.35
+            dyn_fvg = 2.5
+            dyn_tp1 = 1.30
+            dyn_tp2 = 2.50
+            dyn_be = 1.00
+            dyn_trail = 1.10
+            reasons.append(f"Compressed Corridor ({atr_ratio:.1f}x ATR) → 50% risk compression, tight targets")
+
+        else:
+            regime_mode = "🎯 INSTITUTIONAL LIQUIDITY SWEEP"
+            dyn_risk = base_risk * 1.0
+            dyn_wick = 0.38
+            dyn_fvg = max(3.5, round(current_atr * 2.0, 1))
+            dyn_tp1 = 1.50
+            dyn_tp2 = 3.50
+            dyn_be = 1.00
+            dyn_trail = 1.20
+            reasons.append(f"Optimal SMC Conditions (ATR {current_atr:.2f}) → Standard 1.0% Risk with 1:3.5 R:R runner")
+
+        # 2. Extreme Volatility Spike Guard
+        if atr_ratio > 2.0:
+            dyn_risk *= 0.75
+            dyn_wick = 0.48
+            reasons.append(f"Extreme Volatility Alert ({atr_ratio:.1f}x ATR) → Emergency 25% risk trim, 48% wick required")
+
+        # 3. Drawdown & Consecutive Loss Circuit Breaker
+        cons_losses = self.state.get("consecutive_losses", 0)
+        if cons_losses >= 2:
+            dyn_risk *= 0.50
+            dyn_wick += 0.03
+            reasons.append(f"Loss Streak Guard ({cons_losses} losses) → Risk halved, absorption bar raised")
+        elif cons_losses == 1:
+            dyn_risk *= 0.85
+
+        # 4. Strict Institutional Clamping
+        dyn_risk = max(floor_risk, min(round(dyn_risk, 2), ceiling_risk))
+        dyn_wick = round(max(0.30, min(dyn_wick, 0.55)), 2)
+        dyn_fvg = round(max(2.0, min(dyn_fvg, 15.0)), 1)
+        dyn_tp1 = round(max(1.0, min(dyn_tp1, 3.0)), 2)
+        dyn_tp2 = round(max(2.0, min(dyn_tp2, 6.0)), 2)
+        dyn_be = round(max(0.6, min(dyn_be, 1.5)), 2)
+        dyn_trail = round(max(0.9, min(dyn_trail, 2.2)), 2)
+
+        return {
+            "enabled": True,
+            "risk_pct": dyn_risk,
+            "min_wick_ratio": dyn_wick,
+            "fvg_min_pips": dyn_fvg,
+            "tp1_rr": dyn_tp1,
+            "tp2_rr": dyn_tp2,
+            "be_trigger_rr": dyn_be,
+            "atr_sl_multiplier": dyn_trail,
+            "current_atr": round(current_atr, 2),
+            "regime_mode": regime_mode,
+            "reasons": reasons
+        }
 
     # ── Main Tick & Execution Daemon ─────────────────────────────────────────
     def _run_loop(self):
@@ -442,21 +598,26 @@ class SMCEngine:
             if df_m5.empty or len(df_m5) < 15 or df_m15.empty or len(df_m15) < 20:
                 return
 
-            # Compute Liquidity Pools & FVGs
+            tick = self.bridge.get_tick(symbol=symbol)
+            acc = self.bridge.get_account()
+
+            # Dynamic SMC Strategy Risk Calculation
+            dyn_risk = self._calculate_dynamic_smc_risk(df_m5, df_m15, tick, acc)
+            self._cached_dynamic_risk = dyn_risk
+
+            # Compute Liquidity Pools & FVGs with dynamic parameters
             pools = self._identify_liquidity_pools(df_m15, df_m5)
             self._cached_liquidity_pools = pools
 
-            strat_cfg = self.config.get("strategy", {})
-            fvg_min_pips = float(strat_cfg.get("fvg_min_pips", 3.5))
+            fvg_min_pips = float(dyn_risk.get("fvg_min_pips", 3.5))
             fvgs = self._detect_fvgs(df_m5, min_pips=fvg_min_pips)
             self._cached_fvg_list = fvgs
 
             # 2. Manage Active Positions (Breakeven, Partial TP1, Trailing Stop)
             open_positions = self.bridge.get_positions(symbol=symbol)
-            self._manage_open_positions(open_positions, df_m5)
+            self._manage_open_positions(open_positions, df_m5, dyn_risk=dyn_risk)
 
             # 3. Check Account & Circuit Breakers
-            acc = self.bridge.get_account()
             equity = float(acc.get("equity", 1000.0))
             balance = float(acc.get("balance", 1000.0))
 
@@ -483,9 +644,9 @@ class SMCEngine:
             if not self.config.get("auto_trading", True):
                 return
 
-            # 4. Scan for New Liquidity Sweep & FVG Setup
+            # 4. Scan for New Liquidity Sweep & FVG Setup with dynamic wick absorption
             closed_candle = df_m5.iloc[-2]
-            min_wick_ratio = float(strat_cfg.get("min_wick_ratio", 0.38))
+            min_wick_ratio = float(dyn_risk.get("min_wick_ratio", 0.38))
             sweep = self._check_liquidity_sweep(closed_candle, pools, min_wick_ratio=min_wick_ratio)
 
             if sweep:
@@ -512,7 +673,6 @@ class SMCEngine:
             self.state["active_fvg"] = best_fvg
 
             # Current price check (tap into FVG)
-            tick = self.bridge.get_tick(symbol=symbol)
             ask = float(tick.get("ask", 0.0))
             bid = float(tick.get("bid", 0.0))
             current_price = bid if active_sweep["direction"] == "BEARISH_SWEEP" else ask
@@ -527,7 +687,7 @@ class SMCEngine:
 
             if inside_fvg or tapped_midpoint:
                 # Fire the trade!
-                self._execute_smc_entry(active_sweep, best_fvg, current_price, equity, symbol)
+                self._execute_smc_entry(active_sweep, best_fvg, current_price, equity, symbol, dyn_risk=dyn_risk)
 
     def _execute_smc_entry(
         self,
@@ -535,11 +695,14 @@ class SMCEngine:
         fvg: Dict[str, Any],
         entry_price: float,
         equity: float,
-        symbol: str
+        symbol: str,
+        dyn_risk: Optional[Dict[str, Any]] = None
     ):
-        strat_cfg = self.config.get("strategy", {})
-        tp1_rr = float(strat_cfg.get("tp1_rr", 1.5))
-        tp2_rr = float(strat_cfg.get("tp2_rr", 3.5))
+        if dyn_risk is None:
+            dyn_risk = self._cached_dynamic_risk or {}
+
+        tp2_rr = float(dyn_risk.get("tp2_rr", self.config.get("strategy", {}).get("tp2_rr", 3.5)))
+        risk_pct = float(dyn_risk.get("risk_pct", self.config.get("risk_pct_per_trade", 1.0)))
 
         direction = sweep["direction"]
         if direction == "BEARISH_SWEEP":
@@ -563,9 +726,9 @@ class SMCEngine:
 
             tp_price = round(entry_price + (sl_distance * tp2_rr), 2)
 
-        lot_size = self._calculate_lot_size(equity, sl_distance)
+        lot_size = self._calculate_lot_size(equity, sl_distance, risk_pct=risk_pct)
 
-        logger.info(f"🚀 [Bot #4] Executing {order_type} @ {entry_price:.2f} | Lot: {lot_size} | SL: {sl_price:.2f} | TP2: {tp_price:.2f} (R:R {tp2_rr})")
+        logger.info(f"🚀 [Bot #4] Executing {order_type} @ {entry_price:.2f} | Lot: {lot_size} ({risk_pct}%) | SL: {sl_price:.2f} | TP2: {tp_price:.2f} (R:R {tp2_rr})")
         res = self.bridge.send_order(
             symbol=symbol,
             order_type=order_type,
@@ -586,19 +749,22 @@ class SMCEngine:
         else:
             logger.error(f"❌ [Bot #4] Order dispatch failed: {res.get('error')}")
 
-    def _manage_open_positions(self, open_positions: List[Dict[str, Any]], df: pd.DataFrame):
+    def _manage_open_positions(self, open_positions: List[Dict[str, Any]], df: pd.DataFrame, dyn_risk: Optional[Dict[str, Any]] = None):
         """
         Manages open positions:
-        1. Breakeven lock at 1:1.0 RR
-        2. Partial TP1 close (50%) at 1:1.5 RR
-        3. ATR Chandelier trailing stop on the remaining runner
+        1. Dynamic Breakeven lock at dynamic R:R
+        2. Partial TP1 close (50%) at dynamic R:R
+        3. Dynamic ATR Chandelier trailing stop on the remaining runner
         """
         if not open_positions:
             return
 
+        if dyn_risk is None:
+            dyn_risk = self._cached_dynamic_risk or {}
+
         strat_cfg = self.config.get("strategy", {})
-        be_rr = float(strat_cfg.get("be_trigger_rr", 1.0))
-        tp1_rr = float(strat_cfg.get("tp1_rr", 1.5))
+        be_rr = float(dyn_risk.get("be_trigger_rr", strat_cfg.get("be_trigger_rr", 1.0)))
+        tp1_rr = float(dyn_risk.get("tp1_rr", strat_cfg.get("tp1_rr", 1.5)))
         tp1_pct = float(strat_cfg.get("tp1_close_pct", 50.0))
         be_offset = float(strat_cfg.get("be_offset_points", 30)) / 100.0  # 30 pts = 0.30
 
@@ -610,6 +776,8 @@ class SMCEngine:
                 atr_val = float(atr_series.iloc[-1])
         except Exception:
             pass
+
+        trail_mult = float(dyn_risk.get("atr_sl_multiplier", strat_cfg.get("atr_sl_multiplier", 1.2)))
 
         for pos in open_positions:
             ticket = int(pos.get("ticket", 0))
@@ -649,10 +817,9 @@ class SMCEngine:
 
                 # 3. ATR Trailing Stop (Chandelier)
                 if current_rr >= tp1_rr and strat_cfg.get("trailing_stop_active", True):
-                    mult = float(strat_cfg.get("atr_sl_multiplier", 1.2))
-                    trail_sl = round(current_price - (atr_val * mult), 2)
+                    trail_sl = round(current_price - (atr_val * trail_mult), 2)
                     if trail_sl > sl and trail_sl > open_price:
-                        logger.info(f"📈 [Bot #4] Trailing stop updated for #{ticket}: SL -> {trail_sl:.2f}")
+                        logger.info(f"📈 [Bot #4] Trailing stop updated for #{ticket}: SL -> {trail_sl:.2f} (Trail Multiplier: {trail_mult}x ATR)")
                         self.bridge.modify_position(ticket, sl=trail_sl, tp=tp)
 
             elif "SELL" in pos_type:
@@ -675,10 +842,9 @@ class SMCEngine:
 
                 # 3. ATR Trailing Stop (Chandelier)
                 if current_rr >= tp1_rr and strat_cfg.get("trailing_stop_active", True):
-                    mult = float(strat_cfg.get("atr_sl_multiplier", 1.2))
-                    trail_sl = round(current_price + (atr_val * mult), 2)
+                    trail_sl = round(current_price + (atr_val * trail_mult), 2)
                     if (sl <= 0 or trail_sl < sl) and trail_sl < open_price:
-                        logger.info(f"📉 [Bot #4] Trailing stop updated for #{ticket}: SL -> {trail_sl:.2f}")
+                        logger.info(f"📉 [Bot #4] Trailing stop updated for #{ticket}: SL -> {trail_sl:.2f} (Trail Multiplier: {trail_mult}x ATR)")
                         self.bridge.modify_position(ticket, sl=trail_sl, tp=tp)
 
     # ── Read-Only Telemetry for Streamlit Panel ───────────────────────────────
@@ -709,9 +875,15 @@ class SMCEngine:
             "daily_pnl": self.state.get("daily_pnl", 0.0),
             "daily_trades_count": self.state.get("daily_trades_count", 0),
             "auto_trading": self.config.get("auto_trading", True),
+            "dynamic_risk": self._cached_dynamic_risk,
             "metrics": metrics,
             "config": self.config
         }
+
+    def stop(self):
+        """Signals background execution loop to terminate."""
+        self._running = False
+
 
     def emergency_close_all(self):
         """Manual emergency kill switch."""
