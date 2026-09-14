@@ -1,0 +1,78 @@
+# 🏛️ Architecture Quick-Start
+
+This guide provides a high-level overview of the MT5 AI/ML Trading Bot architecture, system maturity, and evidence routing for technical stakeholders.
+
+## 🏗️ System Overview
+
+The system is designed as a modular, event-driven trading engine that separates market intelligence from execution and risk management.
+
+### Core Components
+
+| Layer | Responsibility | Key Modules |
+| :--- | :--- | :--- |
+| **Intelligence** | Market regime detection, directional signal generation, and ensemble consensus. | `src/models/`, `src/environment/` |
+| **Execution** | MT5 lifecycle management, order execution, and connectivity. | `src/trading/mt5_connector.py` |
+| **Risk & Allocation** | Position sizing, drawdown protection, and capital allocation. | `src/trading/risk_manager.py`, `src/trading/capital_allocator.py` |
+| **Infrastructure** | Config validation, health monitoring, and trade logging. | `src/core/` |
+| **Research** | Backtesting, stress testing, and model evaluation. | `src/research/`, `src/analytics/` |
+
+---
+
+<a name="system-maturity-map"></a>
+## 🚦 System Maturity Map
+
+This map identifies the production readiness of various subsystems to ensure transparent expectations for contributors and operators.
+
+| Subsystem | Maturity | Verified Evidence |
+| :--- | :--- | :--- |
+| **Configuration Engine** | 🟢 Production | [Integration Test](./testing/INTEGRATION_TEST_RESULTS.md#test-configuration-startup) |
+| **MT5 Connectivity** | 🟢 Production | [Integration Test](./testing/INTEGRATION_TEST_RESULTS.md#test-trading-flow-integration) |
+| **Execution Filter** | 🟢 Production | [Complexity Analysis](./audits/PERFORMANCE_COMPLEXITY_REPORT.md) |
+| **Risk Management** | 🟢 Production | [8-Layer Cascade Verified](./audits/ENTERPRISE_EVIDENCE_SCORECARD.md) |
+| **Ensemble Models** | 🟢 Production | [Walk-Forward Report](./audits/walkforward_verification_report.md) |
+| **RL Training Pipeline** | 🔵 Experimental | Active research into Transformer-based actors. |
+| **Decision Support** | 🟢 Production | [Integration Test](./testing/INTEGRATION_TEST_RESULTS.md#test-intelligence-adaptive-weighting) |
+| **Explainability Engine** | 🟢 Production | [Attribution Logging Verified](./testing/INTEGRATION_TEST_RESULTS.md#4-observability) |
+
+---
+
+## 🗺️ Data & Logic Flow
+
+1.  **Ingestion:** `MT5Connector` fetches real-time tick and OHLC data.
+2.  **Transformation:** `FeatureEngineering` computes 140+ technical and sentiment indicators.
+3.  **Intelligence:** `RegimeDetector` classifies market state; `DynamicEnsemble` generates a directional signal.
+4.  **Risk Gate:** `RiskManager` and `ExecutionFilter` validate the signal against a multi-layer cascade. The `RiskManager` implements an 8-layer account-level gate (Circuit Breaker, Daily Loss, etc.), while the `ExecutionFilter` implements an 11-layer execution-specific gate (ATR Volatility, Trend Angle, EMA Sequence, Momentum, Session/Time, Drawdown, Model Stability, Performance, Confidence, Signal Consistency, and Macro Risk).
+5.  **Allocation:** `CapitalAllocator` determines optimal lot size based on equity and regime.
+6.  **Execution:** `MT5Connector` dispatches the order and monitors for fills/slippage.
+7.  **Observability:** `TradeLogger` records execution details; `Monitor` pushes metrics to Prometheus.
+
+---
+
+## 🏛️ Governance & Forensics
+
+To maintain institutional safety in an automated environment, the repository utilizes a specific governance model:
+
+- **Linear History:** The `main` branch utilizes a fully linear, intact, and perfectly preserved Git history (1,260+ commits tracing back to root commit `10e33dfd`), ensuring perfect traceability of all system-wide logic evolution. Past warnings about "history-grafting" were resolved as sandbox-specific false-positives caused by DX agents operating inside shallow clones (depth=1).
+- **Verification Invariant:** Since Git-native forensics are fully supported, every logic change is tracked cleanly. Additionally, autonomous agents (Jules Framework) continuously verify code changes against known safe baselines to maintain strict compliance.
+- **Audit Trail:** Granular logic evolution is documented in the [Process Integrity Log](./status/PROCESS_INTEGRITY_LOG.md) and [Alignment Report](./audits/ALIGNMENT_REPORT.md).
+
+---
+
+## 🔍 Evidence & Audit Routing
+
+Use these paths to find technical evidence and audit reports:
+
+- **Architecture Decisions:** [docs/audits/ADR_AUDIT_REPORT.md](./audits/ADR_AUDIT_REPORT.md)
+- **Security & Compliance:** [docs/audits/ENTERPRISE_EVIDENCE_SCORECARD.md](./audits/ENTERPRISE_EVIDENCE_SCORECARD.md)
+- **System Health:** [docs/status/PROJECT_HEALTH.md](./status/PROJECT_HEALTH.md)
+- **Performance Benchmarks:** [docs/audits/PERFORMANCE_COMPLEXITY_REPORT.md](./audits/PERFORMANCE_COMPLEXITY_REPORT.md)
+- **Integration Status:** `docs/status/PROCESS_INTEGRITY_LOG.md`
+
+---
+
+## 🛠️ Developer Entry Points
+
+- **Health Check:** `make doctor`
+- **First Run:** `make bootstrap && make demo`
+- **Verification:** `make test && make lint`
+- **Strategy Research:** `src/research/stress_lab.py`

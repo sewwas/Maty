@@ -59,12 +59,15 @@ bot2_manual/manual_state.json
 bot2_manual/state.json
 bot3_trend/state.json
 bot4_smc/state.json
+bot5_ai/state.json
 investor_data.json
 manual_bot_state.json
 manual_bot_state_*.json
 manual_state.json
 manual_state*.json
 bandit_report.json
+audit_*.json
+bot5_ai/audit_*.json
 *.jpeg
 *.jpg
 *.png

@@ -37,6 +37,11 @@ if not exist bridge_config_8004.json (
     echo        Run: python setup_accounts.py to set credentials first.
     echo.
 )
+if not exist bridge_config_8005.json (
+    echo [WARN] bridge_config_8005.json not found.
+    echo        Run: python setup_accounts.py to set credentials first.
+    echo.
+)
 
 REM ── Kill any existing bridge processes ───────────────────────────────────
 echo Stopping any existing bridge processes...
@@ -44,6 +49,7 @@ taskkill /FI "WINDOWTITLE eq Bridge 8001*" /F >nul 2>&1
 taskkill /FI "WINDOWTITLE eq Bridge 8002*" /F >nul 2>&1
 taskkill /FI "WINDOWTITLE eq Bridge 8003*" /F >nul 2>&1
 taskkill /FI "WINDOWTITLE eq Bridge 8004*" /F >nul 2>&1
+taskkill /FI "WINDOWTITLE eq Bridge 8005*" /F >nul 2>&1
 timeout /t 1 /nobreak >nul
 
 REM ── Start Bot #1 Bridge (Port 8001) ──────────────────────────────────────
@@ -62,21 +68,27 @@ REM ── Start Bot #4 Bridge (Port 8004) ────────────�
 echo Starting Bridge #4 on port 8004...
 start "Bridge 8004 — Bot #4 (SMC Hunter MT5)" cmd /k "python wine_mt5_bridge.py 8004"
 
+REM ── Start Bot #5 Bridge (Port 8005) ──────────────────────────────────────
+echo Starting Bridge #5 on port 8005...
+start "Bridge 8005 — Bot #5 (AI Trader MT5)" cmd /k "python wine_mt5_bridge.py 8005"
+
 echo.
-echo All 4 bridges launched! Waiting 3s for them to initialize...
+echo All 5 bridges launched! Waiting 3s for them to initialize...
 timeout /t 3 /nobreak >nul
 
 echo.
 echo ✅  Bridges running:
-echo     Bot #1 Bridge → http://127.0.0.1:8001/account
-echo     Bot #2 Bridge → http://127.0.0.1:8002/account
-echo     Bot #3 Bridge → http://127.0.0.1:8003/account
-echo     Bot #4 Bridge → http://127.0.0.1:8004/account
+    echo     Bot #1 Bridge → http://127.0.0.1:8001/account
+    echo     Bot #2 Bridge → http://127.0.0.1:8002/account
+    echo     Bot #3 Bridge → http://127.0.0.1:8003/account
+    echo     Bot #4 Bridge → http://127.0.0.1:8004/account
+    echo     Bot #5 Bridge → http://127.0.0.1:8005/account
 echo.
 echo Start the Streamlit Dashboards:
 echo     Bot #1 (Auto Grid):    streamlit run app.py --server.port 8501
 echo     Bot #2 (Manual Desk):  streamlit run bot2_manual\panel.py --server.port 8502
 echo     Bot #3 (Trend Runner): streamlit run bot3_trend\panel.py --server.port 8503
 echo     Bot #4 (SMC Hunter):   streamlit run bot4_smc\panel.py --server.port 8504
+echo     Bot #5 (AI Trader):    streamlit run bot5_ai\panel.py --server.port 8505
 echo.
 pause

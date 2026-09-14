@@ -40,6 +40,12 @@ else
     WINE_PREFIX_4="$_DEFAULT_PREFIX"
 fi
 
+if [ -d "$HOME/.wine_mt5_5" ]; then
+    WINE_PREFIX_5="$HOME/.wine_mt5_5"
+else
+    WINE_PREFIX_5="$_DEFAULT_PREFIX"
+fi
+
 # Find Wine Python (checks Program Files/Python311 and Python311 in prefix)
 _find_wine_py() {
     local p="$1"
@@ -61,12 +67,14 @@ WINE_PYTHON_1=$(_find_wine_py "$WINE_PREFIX_1" || echo "$WINE_PREFIX_1/drive_c/P
 WINE_PYTHON_2=$(_find_wine_py "$WINE_PREFIX_2" || echo "$WINE_PREFIX_2/drive_c/Program Files/Python311/python.exe")
 WINE_PYTHON_3=$(_find_wine_py "$WINE_PREFIX_3" || echo "$WINE_PREFIX_3/drive_c/Program Files/Python311/python.exe")
 WINE_PYTHON_4=$(_find_wine_py "$WINE_PREFIX_4" || echo "$WINE_PREFIX_4/drive_c/Program Files/Python311/python.exe")
+WINE_PYTHON_5=$(_find_wine_py "$WINE_PREFIX_5" || echo "$WINE_PREFIX_5/drive_c/Program Files/Python311/python.exe")
 
 # MT5 terminal paths
 MT5_PATH_1="C:\\Program Files\\MetaTrader 5\\terminal64.exe"
 MT5_PATH_2="C:\\Program Files\\MetaTrader 5_2\\terminal64.exe"
 MT5_PATH_3="C:\\Program Files\\MetaTrader 5_3\\terminal64.exe"
 MT5_PATH_4="C:\\Program Files\\MetaTrader 5_4\\terminal64.exe"
+MT5_PATH_5="C:\\Program Files\\MetaTrader 5_5\\terminal64.exe"
 
 # ── Banner ────────────────────────────────────────────────────────────────────
 echo ""
@@ -78,10 +86,12 @@ echo "  Wine Prefix 1 : $WINE_PREFIX_1"
 echo "  Wine Prefix 2 : $WINE_PREFIX_2"
 echo "  Wine Prefix 3 : $WINE_PREFIX_3"
 echo "  Wine Prefix 4 : $WINE_PREFIX_4"
+echo "  Wine Prefix 5 : $WINE_PREFIX_5"
 echo "  Terminal 1    : $MT5_PATH_1"
 echo "  Terminal 2    : $MT5_PATH_2"
 echo "  Terminal 3    : $MT5_PATH_3"
 echo "  Terminal 4    : $MT5_PATH_4"
+echo "  Terminal 5    : $MT5_PATH_5"
 echo ""
 
 # ── Kill existing bridge processes ────────────────────────────────────────────
@@ -90,6 +100,7 @@ pkill -f "wine_mt5_bridge.py 8001" 2>/dev/null || true
 pkill -f "wine_mt5_bridge.py 8002" 2>/dev/null || true
 pkill -f "wine_mt5_bridge.py 8003" 2>/dev/null || true
 pkill -f "wine_mt5_bridge.py 8004" 2>/dev/null || true
+pkill -f "wine_mt5_bridge.py 8005" 2>/dev/null || true
 sleep 1
 
 # ── Helper: start a bridge inside its Wine prefix ────────────────────────────
@@ -127,14 +138,15 @@ _start_bridge() {
     echo "  PID: $pid  |  Log: $log_file"
 }
 
-# ── Start all 4 bridges ───────────────────────────────────────────────────────
+# ── Start all 5 bridges ───────────────────────────────────────────────────────
 _start_bridge "8001" "$WINE_PREFIX_1" "$WINE_PYTHON_1" "$MT5_PATH_1"
 _start_bridge "8002" "$WINE_PREFIX_2" "$WINE_PYTHON_2" "$MT5_PATH_2"
 _start_bridge "8003" "$WINE_PREFIX_3" "$WINE_PYTHON_3" "$MT5_PATH_3"
 _start_bridge "8004" "$WINE_PREFIX_4" "$WINE_PYTHON_4" "$MT5_PATH_4"
+_start_bridge "8005" "$WINE_PREFIX_5" "$WINE_PYTHON_5" "$MT5_PATH_5"
 
 echo ""
-echo "All 4 bridges dispatched. Waiting 3s for startup..."
+echo "All 5 bridges dispatched. Waiting 3s for startup..."
 sleep 3
 
 # ── Health Check ──────────────────────────────────────────────────────────────
@@ -163,6 +175,7 @@ _check_bridge "8001" "Bot #1 (Auto Grid)"
 _check_bridge "8002" "Bot #2 (Manual Desk)"
 _check_bridge "8003" "Bot #3 (Trend Runner)"
 _check_bridge "8004" "Bot #4 (SMC Hunter)"
+_check_bridge "8005" "Bot #5 (AI Trader)"
 
 echo ""
 echo "══════════════════════════════════════════════════════════"
@@ -170,10 +183,13 @@ echo "Logs:  tail -f $LOG_DIR/bridge_8001.log"
 echo "       tail -f $LOG_DIR/bridge_8002.log"
 echo "       tail -f $LOG_DIR/bridge_8003.log"
 echo "       tail -f $LOG_DIR/bridge_8004.log"
+echo "       tail -f $LOG_DIR/bridge_8005.log"
 echo ""
 echo "Web Dashboards:"
 echo "  Bot #1 (Auto Grid):    http://\$(hostname -I | awk '{print \$1}'):8501"
 echo "  Bot #2 (Manual Desk):  http://\$(hostname -I | awk '{print \$1}'):8502"
 echo "  Bot #3 (Trend Runner): http://\$(hostname -I | awk '{print \$1}'):8503"
+echo "  Bot #4 (SMC Hunter):   http://\$(hostname -I | awk '{print \$1}'):8504"
+echo "  Bot #5 (AI Trader):    http://\$(hostname -I | awk '{print \$1}'):8505"
 echo "══════════════════════════════════════════════════════════"
 echo ""

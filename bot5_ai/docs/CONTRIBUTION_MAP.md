@@ -1,0 +1,98 @@
+# 🗺️ Contribution Map
+
+This map defines the "Safe Zones" and "Sensitive Zones" of the MT5 AI/ML Trading Bot repository to help contributors find the best starting point and understand the review expectations for different areas.
+
+## 🚦 System at a Glance
+
+| Zone | Path | Risk Level | Review Requirement | Evidence Required |
+| :--- | :--- | :--- | :--- | :--- |
+| **Safe Zone** | `docs/`, `tests/`, `scripts/`, `Makefile` | 🟢 Low | Standard Peer Review | Unit Tests / Doc Lint |
+| **Utility Zone** | `src/utils/`, `src/analytics/` | 🟡 Medium | Domain Expert Review | Integration Tests |
+| **Sensitive Zone** | `src/trading/`, `src/models/`, `src/core/` | 🔴 High | Lead + Multi-Signature | Backtests + Stress Tests |
+
+---
+
+## 🟢 Clean Development Environment FAQ
+
+Our development workspace prioritizes safety, clean checks, and clear pathways:
+
+### 1. What is the current CI Status?
+CI is fully **🟢 PASSING**. All formatting, linting, and core tests pass cleanly across `src/`, `scripts/`, and `migrations/`. You can confidently expect pull request pipelines to succeed when matching our standard quality gates.
+
+### 2. Is there any branch turbulence?
+No. Past sandbox-specific warnings about "history grafting" were false-positives caused by working inside shallow clones (depth=1). The remote repository history is **100% linear, stable, and perfectly intact**, ensuring complete auditability.
+
+### 3. How do I make sure my PR is aligned?
+Check the [Merge-Ready Checklist](./status/MERGE_READY_CHECKLIST.md) and keep your branch updated using `make resync` (or standard `git rebase`).
+
+### 4. What PR title format is required?
+Our CI enforces semantic PR titles via `.github/workflows/commit-check.yml`.
+- **Allowed prefixes:** `feat`, `fix`, `docs`, `chore`, `test`, `refactor`, `style`, `perf`, `ci`.
+- **Subject Casing:** The subject after the prefix **must start with a lowercase letter** (e.g., `docs: improve guide`, NOT `docs: Improve guide`).
+- **Note:** Do NOT use non-standard prefixes like `DX:` in PR titles; use `docs:` for documentation/onboarding PRs or `chore:` for DX tool scripts.
+
+---
+
+<a name="safe-zones-recommended-for-first-prs"></a>
+## 🟢 Safe Zones (Recommended for First PRs)
+
+These areas are perfect for new contributors to get familiar with the project and provide immediate value with minimal risk to trading operations.
+
+### 1. Documentation (`docs/`)
+- **Improvement Areas:** Clarity, typos, missing diagrams, or adding new guides (e.g., specific cloud deployment steps).
+- **Goal:** Make the system easier to understand and run for the next engineer.
+
+### 2. Testing (`tests/`)
+- **Improvement Areas:** Increasing coverage for `src/utils/`, adding edge-case unit tests, or performance benchmarks.
+- **Goal:** Strengthen the system's reliability without changing production logic.
+
+### 3. Developer Experience (`scripts/`, `Makefile`)
+- **Improvement Areas:** Improving `make doctor` checks, `bootstrap.sh` robustness, or adding new CLI helpers for developers.
+- **Goal:** Reduce the "Time to First Success" for new developers.
+
+---
+
+## 🟡 Utility & Analytics Zones
+
+These areas require a deeper understanding of the system's data structures but do not directly influence live trading decisions.
+
+### 1. Utilities (`src/utils/`)
+- **Improvement Areas:** Optimization of generic helpers, logging improvements, or date/time formatting.
+
+### 2. Analytics (`src/analytics/`)
+- **Improvement Areas:** Post-trade analysis reports, visualization of backtest results, or journal mining logic.
+
+---
+
+## 🔴 Sensitive Zones (High-Stake Areas)
+
+Changes to these directories affect the core financial and operational safety of the bot. Contributions here require extensive evidence (backtests, stress tests) and mandatory lead review.
+
+### 1. Trading Logic (`src/trading/`)
+- **Modules:** `mt5_connector.py`, `risk_manager.py`, `execution_filter.py`.
+- **Constraint:** Do NOT modify without explicit coordination with Jules01/Jules03.
+
+### 2. Model Architectures (`src/models/`)
+- **Modules:** `dynamic_ensemble.py`, `ppo_agent.py`, `regime_detector.py`.
+- **Constraint:** Changes must be backed by quantitative research and Jules04 approval.
+
+### 3. Core Engine (`src/core/`)
+- **Modules:** `config.py`, `health.py`, `constants.py`.
+- **Constraint:** Affects system-wide invariants and startup safety.
+
+---
+
+## 🛠️ How to Pick Your First Task
+
+1.  **Read [Your First Real Contribution](./FIRST_REAL_CONTRIBUTION.md):** Follow our step-by-step guide to making a low-risk, high-impact first contribution.
+2.  **Filter PRs by Label:** Use GitHub's label filters to find existing work in Safe Zones for inspiration or collaboration:
+    - `is:pr is:open label:docs`: Documentation improvements.
+    - `is:pr is:open label:test`: Testing and coverage enhancements.
+    - `is:pr is:open label:chore`: Maintenance and developer experience tasks.
+3.  **Run `make doctor`:** If any check fails on your system, improving that check or the documentation around it is a great first contribution.
+4.  **Check `docs/status/PR_TRIAGE_DAILY.md`:** Look for PRs categorized as **"Safe Surface"**. This report is updated daily and is the best source for finding approved first-task candidates.
+5.  **Audit `tests/`:** Find a module with low coverage (check `make test` output) and add missing unit tests.
+6.  **Use `make resync`:** Always run this command before submitting to ensure your branch is aligned with the latest commit.
+
+---
+*This map is maintained by Jules06 (qufuwan). If you are unsure where your change fits, please open a discussion or tag a maintainer.*

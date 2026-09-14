@@ -1,0 +1,60 @@
+# ============================================================
+# MT5 AI/ML Trading Bot - Enterprise Edition
+# requirements-docker.txt -- Linux Docker-safe dependencies
+# ============================================================
+
+# -- Core ML / RL --------------------------------------------
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.13.0+cpu
+stable-baselines3==2.9.0
+gymnasium==1.3.0
+numpy==2.2.6
+scipy==1.15.3
+scikit-learn==1.7.2
+pandas==2.3.3
+
+# -- Technical Analysis --------------------------------------
+TA-Lib==0.7.1
+
+# -- Data Acquisition ----------------------------------------
+requests==2.34.2
+aiohttp==3.14.3
+httpx==0.28.1
+
+# -- MetaTrader 5 (Cloud Fallback) ---------------------------
+metaapi-cloud-sdk==29.1.1
+
+# -- Database ------------------------------------------------
+psycopg2-binary==2.9.13
+sqlalchemy==2.0.52
+alembic==1.19.2
+redis==8.1.0
+
+# -- Monitoring & Logging ------------------------------------
+prometheus-client==0.26.0
+structlog==26.1.0
+rich==13.9.4
+tqdm==4.70.0
+
+# -- Dashboard / API -----------------------------------------
+jinja2==3.1.6
+fastapi==0.141.1
+uvicorn[standard]==0.52.4
+
+# -- Configuration -------------------------------------------
+python-dotenv==1.2.3
+pydantic==2.13.5
+pydantic-settings==2.15.0
+tomli==2.4.1
+
+# -- Utilities -----------------------------------------------
+python-socketio==4.6.1
+python-dateutil==2.9.0.post0
+nest-asyncio==1.6.0
+pytz==2026.3.post1
+click==8.5.0
+tabulate==0.10.0
+joblib==1.6.0
+python-telegram-bot==22.8
+psutil==7.2.2
+optuna==4.9.0

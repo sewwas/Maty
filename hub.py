@@ -69,6 +69,18 @@ BOT_CONFIGS = [
         "server": "Exness-MT5Real36",
         "color": "#10b981",
         "icon": "🎯"
+    },
+    {
+        "id": 5,
+        "name": "Bot #5 — AI/ML Neural Trader",
+        "tag": "AI ENSEMBLE",
+        "strategy": "Deep RL (PPO/Dreamer) + Regime Detection & DSS Risk Guard",
+        "bridge_port": 8005,
+        "panel_port": 8505,
+        "default_acc": 257515249,
+        "server": "Exness-MT5Real36",
+        "color": "#ec4899",
+        "icon": "🤖"
     }
 ]
 
@@ -835,6 +847,7 @@ PORTAL_HTML = """<!DOCTYPE html>
         .icon-bot2 { background: rgba(245, 158, 11, 0.15); border: 1px solid rgba(245, 158, 11, 0.25); }
         .icon-bot3 { background: rgba(168, 85, 247, 0.15); border: 1px solid rgba(168, 85, 247, 0.25); }
         .icon-bot4 { background: rgba(16, 185, 129, 0.15); border: 1px solid rgba(16, 185, 129, 0.25); }
+        .icon-bot5 { background: rgba(236, 72, 153, 0.15); border: 1px solid rgba(236, 72, 153, 0.25); }
 
         .port-tag {
             font-family: 'JetBrains Mono', monospace;
@@ -904,6 +917,8 @@ PORTAL_HTML = """<!DOCTYPE html>
         .btn-purple:hover { background: #7e22ce; }
         .btn-emerald { background: #059669; color: #ffffff; }
         .btn-emerald:hover { background: #047857; }
+        .btn-pink { background: #db2777; color: #ffffff; }
+        .btn-pink:hover { background: #be185d; }
 
         .notice-box {
             background: rgba(30, 41, 59, 0.6);
@@ -1213,10 +1228,42 @@ PORTAL_HTML = """<!DOCTYPE html>
                 </div>
                 <a id="link-bot4" href="http://" class="btn-launch btn-emerald">Open SMC Panel &rarr;</a>
             </div>
+
+            <!-- Bot 5: AI/ML Neural Trader -->
+            <div class="card">
+                <div>
+                    <div class="card-header">
+                        <div class="card-icon icon-bot5">🤖</div>
+                        <div class="port-tag">PORT 8505</div>
+                    </div>
+                    <div class="card-title">Bot #5 — AI/ML Neural Trader</div>
+                    <div class="card-desc">Multi-model Deep RL ensemble & institutional market regime detection engine for Gold.</div>
+                    
+                    <div class="card-stats-grid">
+                        <div>
+                            <div class="card-stat-label">Live Equity</div>
+                            <div class="card-stat-value" id="b5-equity">--</div>
+                        </div>
+                        <div>
+                            <div class="card-stat-label">Floating P&L</div>
+                            <div class="card-stat-value" id="b5-floating">--</div>
+                        </div>
+                        <div>
+                            <div class="card-stat-label" id="b5-pnl-label">30D Realized</div>
+                            <div class="card-stat-value" id="b5-pnl">--</div>
+                        </div>
+                        <div>
+                            <div class="card-stat-label">Win Rate</div>
+                            <div class="card-stat-value val-neutral" id="b5-winrate">--</div>
+                        </div>
+                    </div>
+                </div>
+                <a id="link-bot5" href="http://" class="btn-launch btn-pink">Open AI Panel &rarr;</a>
+            </div>
         </div>
 
         <div class="notice-box">
-            💡 <strong>Connection & Profit Tracking:</strong> All metrics are fetched live from MetaTrader 5 terminal bridges under Wine prefixes (<code>8001</code>, <code>8002</code>, <code>8003</code>, <code>8004</code>). To access individual bot dashboards, connect via <code>http://</code> (not <code>https://</code>). Auto-refresh is synchronized every 5 seconds.
+            💡 <strong>Connection & Profit Tracking:</strong> All metrics are fetched live from MetaTrader 5 terminal bridges under Wine prefixes (<code>8001</code>, <code>8002</code>, <code>8003</code>, <code>8004</code>, <code>8005</code>). To access individual bot dashboards, connect via <code>http://</code> (not <code>https://</code>). Auto-refresh is synchronized every 5 seconds.
         </div>
     </div>
 
@@ -1236,6 +1283,7 @@ PORTAL_HTML = """<!DOCTYPE html>
         document.getElementById("link-bot2").href = "http://" + host + ":8502";
         document.getElementById("link-bot3").href = "http://" + host + ":8503";
         document.getElementById("link-bot4").href = "http://" + host + ":8504";
+        document.getElementById("link-bot5").href = "http://" + host + ":8505";
 
         function setUnit(unit) {
             currentUnit = unit;
@@ -1260,7 +1308,7 @@ PORTAL_HTML = """<!DOCTYPE html>
             document.getElementById("kpi-pnl-label").innerText = labels[period];
             document.getElementById("th-period-pnl").innerText = labels[period];
             
-            ['b1', 'b2', 'b3', 'b4'].forEach(id => {
+            ['b1', 'b2', 'b3', 'b4', 'b5'].forEach(id => {
                 const el = document.getElementById(id + "-pnl-label");
                 if (el) el.innerText = period.toUpperCase() + " Realized";
             });
@@ -1377,7 +1425,8 @@ PORTAL_HTML = """<!DOCTYPE html>
                     1: "btn-blue",
                     2: "btn-gold",
                     3: "btn-purple",
-                    4: "btn-emerald"
+                    4: "btn-emerald",
+                    5: "btn-pink"
                 };
 
                 tr.innerHTML = `

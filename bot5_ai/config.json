@@ -1,0 +1,30 @@
+{
+  "symbol": "XAUUSD",
+  "magic_number": 998875,
+  "bridge_url": "http://127.0.0.1:8005",
+  "bridge_port": 8005,
+  "dashboard_port": 8505,
+  "risk_pct_per_trade": 1.0,
+  "max_daily_risk_pct": 3.0,
+  "max_trades_per_day": 6,
+  "auto_trading": true,
+  "algorithm": "ensemble",
+  "confidence_threshold": 0.60,
+  "strategy": {
+    "timeframe": "M5",
+    "regime_timeframe": "M15",
+    "fast_ema": 20,
+    "medium_ema": 50,
+    "slow_ema": 200,
+    "rsi_period": 14,
+    "rsi_oversold": 32,
+    "rsi_overbought": 68,
+    "atr_period": 14,
+    "atr_sl_multiplier": 1.5,
+    "tp_rr": 2.5,
+    "be_trigger_rr": 1.0,
+    "be_offset_points": 25,
+    "trailing_stop_active": true,
+    "trailing_atr_multiplier": 1.2
+  }
+}
