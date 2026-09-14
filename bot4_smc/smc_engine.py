@@ -906,3 +906,15 @@ def get_engine() -> SMCEngine:
         if _engine_instance is None:
             _engine_instance = SMCEngine()
         return _engine_instance
+
+
+if __name__ == "__main__":
+    logger.info("Starting Bot #4 SMC Liquidity Hunter Engine directly in CLI mode...")
+    engine = get_engine()
+    try:
+        while True:
+            time.sleep(1.0)
+    except KeyboardInterrupt:
+        logger.info("Bot #4 SMC Engine shutting down cleanly.")
+        engine.stop()
+
