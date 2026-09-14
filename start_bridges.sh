@@ -96,12 +96,9 @@ echo ""
 
 # ── Kill existing bridge processes ────────────────────────────────────────────
 echo "Stopping any existing bridge processes..."
-pkill -f "wine_mt5_bridge.py 8001" 2>/dev/null || true
-pkill -f "wine_mt5_bridge.py 8002" 2>/dev/null || true
-pkill -f "wine_mt5_bridge.py 8003" 2>/dev/null || true
-pkill -f "wine_mt5_bridge.py 8004" 2>/dev/null || true
-pkill -f "wine_mt5_bridge.py 8005" 2>/dev/null || true
-sleep 1
+fuser -k -9 8001/tcp 8002/tcp 8003/tcp 8004/tcp 8005/tcp 2>/dev/null || true
+pkill -9 -f "wine_mt5_bridge" 2>/dev/null || true
+sleep 2
 
 # ── Helper: start a bridge inside its Wine prefix ────────────────────────────
 _start_bridge() {
