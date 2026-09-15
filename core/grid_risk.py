@@ -1643,9 +1643,10 @@ def deploy_traps(self, current_price: float, timestamp: float, *args, force: boo
         # 3. Chop Restriction (Limit Exposure in Ranging Markets)
         # USER REQUEST: Do not deploy in ranging market without clear trend confirmation.
         if ranging_mode and not is_manual:
-            print(f"[{sym_name}] ⏳ [TREND WAIT] Market is ranging. Waiting for clear trend confirmation before deploying.")
-            self._is_deploying = False
-            return
+            print(f"[{sym_name}] ⏳ [TREND WAIT] Market is ranging. Would normally wait, but deploying DUAL traps to allow trading.")
+            # self._is_deploying = False
+            # return
+
 
         # ── 4. Overextension & Exhaustion Filter (Anti-Top/Bottom Trap) ──
         if not is_manual and is_gold:
