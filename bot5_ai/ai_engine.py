@@ -461,34 +461,22 @@ class AIEngine:
             factors["trend"] = "NEUTRAL"
 
         # Factor 2: RSI Oscillator Confluence (30% weight)
-        if regime in ("TRENDING", "VOLATILE_BREAKOUT"):
-            # Strong trend momentum OR healthy pullback
-            if ema20 > ema50:
-                if 40 <= rsi <= 60:
-                    bull_score += 0.30
-                    factors["rsi"] = f"Bullish Pullback ({rsi:.1f}) (+30%)"
-                elif rsi > 60:
-                    bull_score += 0.35
-                    factors["rsi"] = f"Bullish Trend Momentum ({rsi:.1f}) (+35%)"
-                elif rsi < 35:
-                    bull_score += 0.20
-                    factors["rsi"] = f"Deep Dip Buy Opportunity ({rsi:.1f}) (+20%)"
-            elif ema20 < ema50:
-                if 40 <= rsi <= 60:
-                    bear_score += 0.30
-                    factors["rsi"] = f"Bearish Pullback ({rsi:.1f}) (+30%)"
-                elif rsi < 40:
-                    bear_score += 0.35
-                    factors["rsi"] = f"Bearish Trend Momentum ({rsi:.1f}) (+35%)"
-                elif rsi > 65:
-                    bear_score += 0.20
-                    factors["rsi"] = f"High Resistance Sell Opportunity ({rsi:.1f}) (+20%)"
+        if regime == "TRENDING":
+            # Pullback buy in bull trend
+            if ema20 > ema50 and 42 <= rsi <= 55:
+                bull_score += 0.30
+                factors["rsi"] = f"Bullish Pullback ({rsi:.1f}) (+30%)"
+            elif ema20 < ema50 and 45 <= rsi <= 58:
+                bear_score += 0.30
+                factors["rsi"] = f"Bearish Pullback ({rsi:.1f}) (+30%)"
+            else:
+                factors["rsi"] = f"RSI Neutral ({rsi:.1f})"
         else:
-            # Mean-reversion at boundaries (Ranging)
-            if rsi < 38 or curr_price <= bb_lower + (atr * 0.35):
+            # Mean-reversion at boundaries
+            if rsi < 32 and curr_price <= bb_lower + (atr * 0.25):
                 bull_score += 0.35
                 factors["rsi"] = f"Oversold Bounce ({rsi:.1f}) (+35%)"
-            elif rsi > 62 or curr_price >= bb_upper - (atr * 0.35):
+            elif rsi > 68 and curr_price >= bb_upper - (atr * 0.25):
                 bear_score += 0.35
                 factors["rsi"] = f"Overbought Rejection ({rsi:.1f}) (+35%)"
             else:
@@ -497,27 +485,14 @@ class AIEngine:
         # Factor 3: Candle Action & Price Envelope (30% weight)
         candle_range = latest["high"] - latest["low"]
         if candle_range > 0:
-            c_open = float(latest["open"])
-            c_close = float(latest["close"])
-            lower_wick = min(c_open, c_close) - float(latest["low"])
-            upper_wick = float(latest["high"]) - max(c_open, c_close)
-            body_size = abs(c_close - c_open)
-
-            # Wick absorption rejection
-            if lower_wick / candle_range > 0.30:
+            lower_wick = min(latest["open"], latest["close"]) - latest["low"]
+            upper_wick = latest["high"] - max(latest["open"], latest["close"])
+            if lower_wick / candle_range > 0.35 and curr_price >= ema20:
                 bull_score += 0.25
-                factors["candle"] = "Bullish Absorption Wick (+25%)"
-            elif upper_wick / candle_range > 0.30:
+                factors["candle"] = "Rejection Wick Down (+25%)"
+            elif upper_wick / candle_range > 0.35 and curr_price <= ema20:
                 bear_score += 0.25
-                factors["candle"] = "Bearish Absorption Wick (+25%)"
-            # Strong directional momentum candle
-            elif body_size / candle_range > 0.45:
-                if c_close > c_open and curr_price >= ema20:
-                    bull_score += 0.25
-                    factors["candle"] = "Bullish Momentum Bar (+25%)"
-                elif c_close < c_open and curr_price <= ema20:
-                    bear_score += 0.25
-                    factors["candle"] = "Bearish Momentum Bar (+25%)"
+                factors["candle"] = "Rejection Wick Up (+25%)"
 
         # Regime suppression
         if regime == "LOW_VOLATILITY_DRIFT":
@@ -706,7 +681,7 @@ class AIEngine:
                     conf >= threshold and
                     len(positions) < max_pos and
                     now > self._order_in_flight_until and
-                    now - self.state.get("last_trade_time", 0.0) >= 120.0  # 2 min cooldown
+                    now - self.state.get("last_trade_time", 0.0) >= 180.0  # 3 min cooldown
                 )
 
                 if can_enter:
