@@ -579,19 +579,9 @@ class AIEngine:
             current_sl = float(p.get("sl", 0.0))
             current_tp = float(p.get("tp", 0.0))
 
-            # AI Smart Reversal Data
-            ai_sig = self._cached_signal.get("direction", "NEUTRAL") if getattr(self, "_cached_signal", None) else "NEUTRAL"
-            ai_conf = float(self._cached_signal.get("confidence", 0.0)) if getattr(self, "_cached_signal", None) else 0.0
-
             if pos_type == 0:  # BUY
                 points_gain = curr_price - open_price
                 risk_dist = abs(open_price - current_sl) if current_sl > 0 else (atr * 1.5)
-
-                # 0. AI Smart Reversal Exit
-                if points_gain > (atr * 0.3) and ai_sig == "SELL" and ai_conf >= 0.55:
-                    logger.info(f"🧠 Bot #5 AI REVERSAL EXIT: Closing BUY #{ticket} smartly in profit (+{points_gain:.2f} pts) because AI detected strong SELL.")
-                    self.bridge.close_position(ticket)
-                    continue
 
                 # 1. Dynamic Breakeven check
                 if points_gain >= (be_rr * risk_dist) and current_sl < open_price:
@@ -611,12 +601,6 @@ class AIEngine:
             elif pos_type == 1:  # SELL
                 points_gain = open_price - curr_price
                 risk_dist = abs(open_price - current_sl) if current_sl > 0 else (atr * 1.5)
-
-                # 0. AI Smart Reversal Exit
-                if points_gain > (atr * 0.3) and ai_sig == "BUY" and ai_conf >= 0.55:
-                    logger.info(f"🧠 Bot #5 AI REVERSAL EXIT: Closing SELL #{ticket} smartly in profit (+{points_gain:.2f} pts) because AI detected strong BUY.")
-                    self.bridge.close_position(ticket)
-                    continue
 
                 # 1. Dynamic Breakeven check
                 if points_gain >= (be_rr * risk_dist) and (current_sl > open_price or current_sl == 0.0):
