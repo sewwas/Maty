@@ -687,8 +687,9 @@ class AIEngine:
                 if can_enter:
                     with self._execution_lock:
                         self._order_in_flight_until = now + 15.0
-                        sl_dist = atr * float(dyn_risk["atr_sl_multiplier"])
-                        tp_dist = sl_dist * float(dyn_risk["tp_rr"])
+                        base_sl_dist = atr * float(dyn_risk["atr_sl_multiplier"])
+                        sl_dist = base_sl_dist + 0.50  # Added 0.50 USD buffer to prevent stop hunts
+                        tp_dist = base_sl_dist * float(dyn_risk["tp_rr"])
                         lot_size = self._calculate_lot_size(account, sl_dist, risk_pct=float(dyn_risk["risk_pct"]))
 
                         if sig_dir == "BUY":

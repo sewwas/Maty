@@ -309,10 +309,208 @@ def compute_basket_state(self, current_price: float, timestamp: float) -> dict:
 
 def evaluate_partial_tp(self, current_price: float, timestamp: float) -> int:
     """
-    Disabled per user request: scale-outs bleed in chop.
-    The bot now closes when the full dynamic basket target is hit.
+    INDUSTRY-GRADE 3-STAGE TAKE PROFIT ENGINE.
+
+    Stage 1 ÔÇô TP1 (40% partial close at 1├ùATR from weighted basket entry):
+      ÔÇó Locks in realized profit immediately.
+      ÔÇó Moves SL of remaining positions to breakeven+buffer ÔåÆ zero-risk runner.
+
+    Stage 2 ÔÇô TP2 (25% partial close at Fibonacci 1.618├ù extension):
+      ÔÇó Targets the institutional golden-ratio extension level.
+      ÔÇó Only triggers after TP1 has been hit.
+
+    Stage 3 ÔÇô Chandelier Runner Exit (remaining 35%):
+      ÔÇó Trails the high/low with ATR├ù2 Chandelier ÔÇö lets winners run.
+      ÔÇó Activates only after TP1 hit; exits when chandelier is breached.
+
+    State flags (reset on new grid cycle by engine.py):
+      _tp1_buy_taken, _tp1_sell_taken,
+      _tp2_buy_taken, _tp2_sell_taken,
+      _chandelier_buy_high, _chandelier_sell_low
     """
+    # USER REQUESTED: Disabled partial take profit (scale-out) entirely.
+    # The bot will now ONLY close when the full dynamic basket target is hit.
     return 0
+    
+    if not getattr(self.broker, "open_positions", None):
+        return 0
+    if not hasattr(self.broker, "partial_close_position"):
+        return 0
+
+    # Throttle to once per 1.5s
+    now_ts = timestamp or time.time()
+    last_ptp = getattr(self, "_last_partial_tp_time", 0.0)
+    if now_ts - last_ptp < 1.5:
+        return 0
+    self._last_partial_tp_time = now_ts
+
+    sym_name = str(getattr(self.broker, "symbol", getattr(self, "symbol_code", ""))).upper()
+    is_gold  = any(x in sym_name for x in ["XAU", "GOLD", "PAXG"])
+    digits   = 3 if is_gold else (2 if "BTC" in sym_name else 5)
+
+    state = compute_basket_state(self, current_price, timestamp)
+    atr   = state["atr_5m"]
+    swing_range = state["swing_range"]
+
+    # Fibonacci 1.618├ù extension distance
+    fib_dist  = swing_range * 1.618
+
+    # ÔöÇÔöÇ Per-symbol minimum distances to prevent noise triggers ÔöÇÔöÇ
+    # Increased minimum distances to prevent closing on 1-minute noise (e.g., $0.03 profit).
+    min_tp1_dist = max(current_price * 0.0015, atr * 1.5)
+    min_tp2_dist = max(current_price * 0.0025, fib_dist)
+    breakeven_buf = current_price * 0.0001
+
+    actions = 0
+
+    # ÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉ
+    # BUY BASKET
+    # ÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉ
+    buy_positions = state["buy_positions"]
+    w_avg_buy     = state["weighted_avg_entry_buy"]
+
+    if buy_positions and w_avg_buy > 0:
+        tp1_level = w_avg_buy + min_tp1_dist
+        tp2_level = w_avg_buy + min_tp2_dist
+        tp1_taken = getattr(self, "_tp1_buy_taken", False)
+        tp2_taken = getattr(self, "_tp2_buy_taken", False)
+
+        # ÔöÇÔöÇ Stage 1: TP1 ÔÇö 40% close ÔöÇÔöÇ
+        if not tp1_taken and current_price >= tp1_level:
+            closed_any = False
+            for pos_id, pos_obj, entry, size in buy_positions:
+                try:
+                    rec = self.broker.partial_close_position(pos_id, 0.40, current_price, now_ts)
+                    if rec:
+                        closed_any = True
+                        actions += 1
+                        print(f"[{sym_name}] ­ƒÄ» [TP1 PARTIAL] BUY #{pos_id}: closed 40% @ ${current_price:,.{digits}f} "
+                              f"(1xATR from weighted entry ${w_avg_buy:,.{digits}f}) PnLÔëê${rec['pnl']:+.2f}")
+                except Exception as e:
+                    import logging; logging.warning(f"Exception: {e}")
+
+            if closed_any:
+                self._tp1_buy_taken = True
+                # Breakeven lock removed ÔÇö let runner continue freely
+
+        # ÔöÇÔöÇ Stage 2: TP2 ÔÇö Fibonacci 1.618├ù (25% close) ÔöÇÔöÇ
+        if tp1_taken and not tp2_taken and current_price >= tp2_level:
+            closed_any = False
+            for pos_id, pos_obj, entry, size in buy_positions:
+                if pos_id not in self.broker.open_positions:
+                    continue
+                try:
+                    rec = self.broker.partial_close_position(pos_id, 0.25, current_price, now_ts)
+                    if rec:
+                        closed_any = True
+                        actions += 1
+                        print(f"[{sym_name}] ­ƒÆÄ [TP2 FIB] BUY #{pos_id}: closed 25% @ ${current_price:,.{digits}f} "
+                              f"(Fib 161.8% = ${tp2_level:,.{digits}f}) PnLÔëê${rec['pnl']:+.2f}")
+                except Exception as e:
+                    import logging; logging.warning(f"Exception: {e}")
+            if closed_any:
+                self._tp2_buy_taken = True
+                self._chandelier_buy_high = current_price   # Seed chandelier high
+
+        # ÔöÇÔöÇ Stage 3: Chandelier Exit for runner (remaining ~35%) ÔöÇÔöÇ
+        if tp1_taken and current_price > 0:
+            # Track running high for Chandelier
+            chan_high = getattr(self, "_chandelier_buy_high", current_price)
+            if current_price > chan_high:
+                self._chandelier_buy_high = current_price
+                chan_high = current_price
+            # Chandelier SL = highest_high - ATR├ù2
+            chandelier_sl = round(chan_high - (atr * 2.0), digits)
+            if current_price <= chandelier_sl:
+                # Chandelier breached ÔÇö exit all remaining BUY runners
+                for pos_id, pos_obj, entry, size in buy_positions:
+                    if pos_id not in self.broker.open_positions:
+                        continue
+                    try:
+                        rec = self.broker.partial_close_position(pos_id, 1.0, current_price, now_ts)
+                        if rec:
+                            actions += 1
+                            print(f"[{sym_name}] ­ƒÅâ [CHANDELIER EXIT] BUY #{pos_id}: runner closed @ ${current_price:,.{digits}f} "
+                                  f"(chandelier SL=${chandelier_sl:,.{digits}f}, peak=${chan_high:,.{digits}f})")
+                    except Exception as e:
+                        import logging; logging.warning(f"Exception: {e}")
+                # Reset for next cycle
+                self._tp1_buy_taken = False
+                self._tp2_buy_taken = False
+                self._chandelier_buy_high = 0.0
+
+    # ÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉ
+    # SELL BASKET
+    # ÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉ
+    sell_positions = state["sell_positions"]
+    w_avg_sell     = state["weighted_avg_entry_sell"]
+
+    if sell_positions and w_avg_sell > 0:
+        tp1_level = w_avg_sell - min_tp1_dist
+        tp2_level = w_avg_sell - min_tp2_dist
+        tp1_taken = getattr(self, "_tp1_sell_taken", False)
+        tp2_taken = getattr(self, "_tp2_sell_taken", False)
+
+        # ÔöÇÔöÇ Stage 1: TP1 ÔÇö 40% close ÔöÇÔöÇ
+        if not tp1_taken and current_price <= tp1_level:
+            closed_any = False
+            for pos_id, pos_obj, entry, size in sell_positions:
+                try:
+                    rec = self.broker.partial_close_position(pos_id, 0.40, current_price, now_ts)
+                    if rec:
+                        closed_any = True
+                        actions += 1
+                        print(f"[{sym_name}] ­ƒÄ» [TP1 PARTIAL] SELL #{pos_id}: closed 40% @ ${current_price:,.{digits}f} "
+                              f"(1xATR from weighted entry ${w_avg_sell:,.{digits}f}) PnLÔëê${rec['pnl']:+.2f}")
+                except Exception as e:
+                    import logging; logging.warning(f"Exception: {e}")
+            if closed_any:
+                self._tp1_sell_taken = True
+                # Breakeven lock removed ÔÇö let runner continue freely
+
+        # ÔöÇÔöÇ Stage 2: TP2 ÔÇö Fibonacci 1.618├ù (25% close) ÔöÇÔöÇ
+        if tp1_taken and not tp2_taken and current_price <= tp2_level:
+            closed_any = False
+            for pos_id, pos_obj, entry, size in sell_positions:
+                if pos_id not in self.broker.open_positions:
+                    continue
+                try:
+                    rec = self.broker.partial_close_position(pos_id, 0.25, current_price, now_ts)
+                    if rec:
+                        closed_any = True
+                        actions += 1
+                        print(f"[{sym_name}] ­ƒÆÄ [TP2 FIB] SELL #{pos_id}: closed 25% @ ${current_price:,.{digits}f} "
+                              f"(Fib 161.8% = ${tp2_level:,.{digits}f}) PnLÔëê${rec['pnl']:+.2f}")
+                except Exception as e:
+                    import logging; logging.warning(f"Exception: {e}")
+            if closed_any:
+                self._tp2_sell_taken = True
+                self._chandelier_sell_low = current_price
+
+        # ÔöÇÔöÇ Stage 3: Chandelier Exit for runner ÔöÇÔöÇ
+        if tp1_taken and current_price > 0:
+            chan_low = getattr(self, "_chandelier_sell_low", current_price)
+            if current_price < chan_low:
+                self._chandelier_sell_low = current_price
+                chan_low = current_price
+            chandelier_sl = round(chan_low + (atr * 2.0), digits)
+            if current_price >= chandelier_sl:
+                for pos_id, pos_obj, entry, size in sell_positions:
+                    if pos_id not in self.broker.open_positions:
+                        continue
+                    try:
+                        rec = self.broker.partial_close_position(pos_id, 1.0, current_price, now_ts)
+                        if rec:
+                            actions += 1
+                            print(f"[{sym_name}] ­ƒÅâ [CHANDELIER EXIT] SELL #{pos_id}: runner closed @ ${current_price:,.{digits}f} "
+                                  f"(chandelier SL=${chandelier_sl:,.{digits}f}, trough=${chan_low:,.{digits}f})")
+                    except Exception as e:
+                        import logging; logging.warning(f"Exception: {e}")
+                self._tp1_sell_taken = False
+                self._tp2_sell_taken = False
+                self._chandelier_sell_low = 0.0
+
+    return actions
 
 
 def enforce_position_tp(self, current_price: float, timestamp: float) -> int:
@@ -546,10 +744,74 @@ def check_target_profit(self, current_price: float, timestamp: float) -> Optiona
 
 def realign_pending_orders(bot, current_price, timestamp):
     """
-    Pending orders are anchored to institutional SMC structural levels (OBs, FVGs, swing extremes).
-    Dynamic realignment is bypassed to allow structural traps to execute without churning.
+    DYNAMIC GRID REALIGNMENT:
+    When a position is open (current_open > 0) but we still have pending orders (e.g. limit DCAs or secondary stops),
+    this function ensures those pending orders are constantly snapped to the latest real-time structural data.
+    If the market moves significantly or 5m structure updates, stale pending orders are cancelled and redeployed.
     """
-    return
+    # 1. Anti-Spam / Cooldown Guard (Max 1 realignment per 3 minutes)
+    last_realign = getattr(bot, "_last_dynamic_realignment_time", 0.0)
+    if timestamp - last_realign < 180.0:  
+        return  # Cooldown active
+        
+    sym_name = str(getattr(bot.broker, "symbol", getattr(bot, "symbol_code", "BTCUSDT"))).upper()
+    pending = [o for o in getattr(bot.broker, "pending_orders", {}).values() if getattr(o, "symbol", sym_name) == sym_name]
+    open_pos = [p for p in getattr(bot.broker, "open_positions", {}).values() if getattr(p, "symbol", sym_name) == sym_name]
+    
+    if not pending or not open_pos:
+        return
+        
+    has_buys = any("BUY" in str(p.type).upper() for p in open_pos)
+    has_sells = any("SELL" in str(p.type).upper() for p in open_pos)
+    
+    # 2. Strict Hedge Prevention Cleanup
+    hedge_orders_deleted = False
+    for p_ord in pending:
+        is_buy_ord = "BUY" in str(p_ord.type).upper()
+        is_sell_ord = "SELL" in str(p_ord.type).upper()
+        if (has_buys and is_sell_ord) or (has_sells and is_buy_ord):
+            if hasattr(bot.broker, "cancel_order") and getattr(p_ord, "order_id", None):
+                bot.broker.cancel_order(p_ord.order_id)
+                hedge_orders_deleted = True
+                
+    if hedge_orders_deleted:
+        # If we cleaned up hedges, record time but let them rest before redeploying limits
+        bot._last_dynamic_realignment_time = timestamp
+        return
+        
+    # 3. Structural Re-evaluation
+    try:
+        from core.data import get_historical_klines
+        df_5m = get_historical_klines(sym_name, interval="3m", limit=30)
+        atr_5m = 0.0
+        if df_5m is not None and len(df_5m) > 5:
+            import numpy as np
+            highs, lows, closes = df_5m["high"].values, df_5m["low"].values, df_5m["close"].values
+            tr_list = [max(highs[i]-lows[i], abs(highs[i]-closes[i-1]), abs(lows[i]-closes[i-1])) for i in range(1, len(df_5m))]
+            atr_5m = float(np.mean(tr_list[-14:])) if len(tr_list) >= 14 else float(np.mean(tr_list))
+    except:
+        atr_5m = current_price * 0.002
+        
+    if atr_5m <= 0: atr_5m = current_price * 0.002
+    
+    # Check distance of the furthest pending order from current price
+    max_dist = 0.0
+    for p_ord in pending:
+        if getattr(p_ord, "trigger_price", 0.0) > 0:
+            dist = abs(p_ord.trigger_price - current_price)
+            if dist > max_dist: max_dist = dist
+            
+    # If pending orders are drifting too far (> 1.2 x ATR) or we have a massive structural shift
+    if max_dist > atr_5m * 1.2:
+        print(f"[{bot.symbol}] ­ƒöä [DYNAMIC REALIGNMENT] Pending orders stale/drifting. Canceling {len(pending)} orders to snap to real-time data.")
+        if hasattr(bot.broker, "cancel_all_orders"):
+            bot.broker.cancel_all_orders(symbol=bot.symbol)
+        
+        bot._last_dynamic_realignment_time = timestamp
+        # Redeploy traps (it will safely handle max levels because current_open is already > 0)
+        # Note: we pass force=False so it only fills the remaining grid_levels minus current_open.
+        if hasattr(bot, "deploy_traps"):
+            bot.deploy_traps(current_price, timestamp, force=True)
 
 
 def process_engine_tick(self, previous_price: float, current_price: float, timestamp: float, bb_width: Optional[float] = None) -> Optional[dict]:
@@ -811,11 +1073,18 @@ def process_engine_tick(self, previous_price: float, current_price: float, times
 
     if len(getattr(self.broker, "open_positions", {})) > 0:
         try:
+            if enforce_global_hedged_recovery(self, current_price, timestamp):
+                return None
+                
             enforce_profit_lock(self, current_price, timestamp)
             enforce_trend_aware_position_guard(self, current_price, timestamp)  # 🔄 Trend flip → quick exit; trend aligned → hold for max profit
             trail_stop_loss_5m_structure(self, current_price, timestamp)
             align_basket_take_profits(self, current_price, timestamp)       # ATR basket TP alignment (fallback/tighten)
             enforce_position_tp(self, current_price, timestamp)             # Software-side TP guard — always take profit
+            
+            # --- DYNAMIC GRID REALIGNMENT ---
+            if current_pending > 0:
+                realign_pending_orders(self, current_price, timestamp)
         except Exception as e:
             import logging; logging.warning(f"Exception: {e}")
 
@@ -1842,10 +2111,108 @@ def repair_grid(self, current_price: float, timestamp: float) -> int:
 
 
 def cleanup_stale_grid_orders(self, current_price: float) -> int:
-    """Lightweight cleanup delegated to broker-level duplicate order cleaner."""
-    if hasattr(self.broker, "purge_duplicate_mt5_orders"):
-        return self.broker.purge_duplicate_mt5_orders()
-    return 0
+    if self.deployed or len(self.broker.pending_orders) <= (self.grid_levels * 2):
+        return 0
+    if not self.broker.pending_orders:
+        return 0
+
+    center_price = self.deploy_price if self.deploy_price > 0 else current_price
+
+    if getattr(self, "deploy_grid_gap", None) and getattr(self, "deploy_trap_offset", None):
+        gap_val = self.deploy_grid_gap
+        buy_offset_val = self.deploy_trap_offset
+        sell_offset_val = buy_offset_val
+    else:
+        try:
+            from core.data import get_historical_klines, calculate_technical_indicators, get_order_book_depth, get_economic_calendar
+            sym_str = getattr(self.broker, "symbol", "BTCUSDT")
+            klines_df = get_historical_klines(sym_str, interval="1m", limit=100)
+            tech = calculate_technical_indicators(klines_df)
+            ob = get_order_book_depth(sym_str)
+            news = get_economic_calendar()
+            bal = float(getattr(self.broker, "balance", 1000.0))
+
+            eval_res = self.auto_reading_engine.evaluate_market_and_account(
+                symbol=sym_str,
+                current_price=current_price,
+                account_equity=bal,
+                tech_indicators=tech,
+                orderbook_depth=ob,
+                macro_news=news
+            )
+            if eval_res and isinstance(eval_res, dict):
+                self.last_auto_eval = eval_res
+            buy_offset_val = center_price * (float(eval_res.get("buy_offset_pct", 0.07)) / 100.0)
+            sell_offset_val = center_price * (float(eval_res.get("sell_offset_pct", 0.07)) / 100.0)
+            gap_val         = center_price * (float(eval_res.get("dynamic_gap_pct", 0.07)) / 100.0)
+        except Exception:
+            buy_offset_val, gap_val = self.calculate_offset_and_gap(center_price, self.grid_gap, self.trap_offset)
+            sell_offset_val = buy_offset_val
+
+    tolerance = max(gap_val * 1.5, center_price * 0.005)
+
+    valid_buy_levels = getattr(self, "active_buy_levels", [])
+    valid_sell_levels = getattr(self, "active_sell_levels", [])
+    
+    if not valid_buy_levels and not valid_sell_levels:
+        # Fallback if somehow not deployed properly
+        valid_buy_levels = [center_price + buy_offset_val + (i * gap_val) for i in range(20)]
+        valid_sell_levels = [center_price - sell_offset_val - (i * gap_val) for i in range(20)]
+
+    cancelled_ids = []
+
+    for order_id, order in list(self.broker.pending_orders.items()):
+        if order_id in cancelled_ids:
+            continue
+        order_age = (time.time() - getattr(order, "timestamp", time.time())) if hasattr(order, "timestamp") else 999.0
+        if self.deployed and order_age < 300.0:
+            continue
+
+        if "BUY" in order.type:
+            valid_levels = valid_buy_levels
+        elif "SELL" in order.type:
+            valid_levels = valid_sell_levels
+        else:
+            continue
+
+        is_valid = any(abs(order.trigger_price - lvl) < tolerance for lvl in valid_levels)
+        if not is_valid:
+            self.broker.cancel_order(order_id)
+            cancelled_ids.append(order_id)
+
+    from collections import defaultdict
+    buy_groups: dict = defaultdict(list)
+    sell_groups: dict = defaultdict(list)
+
+    for order_id, order in list(self.broker.pending_orders.items()):
+        if order_id in cancelled_ids:
+            continue
+        if "BUY" in order.type:
+            for lvl in valid_buy_levels:
+                if abs(order.trigger_price - lvl) < tolerance:
+                    buy_groups[round(lvl, 8)].append((order_id, order))
+                    break
+        elif "SELL" in order.type:
+            for lvl in valid_sell_levels:
+                if abs(order.trigger_price - lvl) < tolerance:
+                    sell_groups[round(lvl, 8)].append((order_id, order))
+                    break
+
+    def cancel_duplicates_in_group(group_dict):
+        count = 0
+        for lvl, orders in group_dict.items():
+            if len(orders) > 1:
+                orders.sort(key=lambda x: abs(x[1].trigger_price - lvl))
+                for order_id, _ in orders[1:]:
+                    self.broker.cancel_order(order_id)
+                    cancelled_ids.append(order_id)
+                    count += 1
+        return count
+
+    cancel_duplicates_in_group(buy_groups)
+    cancel_duplicates_in_group(sell_groups)
+
+    return len(cancelled_ids)
 
 
 def record_trade_outcome(self, pnl: float, exit_reason: str, duration: float, exit_price: float = 0.0):
@@ -2653,11 +3020,173 @@ def align_basket_take_profits(self, current_price: float, timestamp: float) -> i
 
 
 def sync_trap_mode_realtime(self, current_price: float, timestamp: float) -> bool:
-    """Trap modes are strictly enforced directly during order placement in deploy_traps."""
-    return False
+    """
+    Real-Time Trap Mode Protection Engine.
+    Guarantees active pending orders strictly conform to the configured/evaluated Trap Mode.
+    If Trap Mode is SELL_ONLY: Instantly cancels ANY active BUY pending orders.
+    If Trap Mode is BUY_ONLY: Instantly cancels ANY active SELL pending orders.
+    """
+    if not hasattr(self, "broker"):
+        return False
+
+    now = timestamp or time.time()
+    last_sync = getattr(self, "_last_trap_sync_time", 0.0)
+    if now - last_sync < 1.5:
+        return False
+    self._last_trap_sync_time = now
+
+    side_cfg = str(getattr(self, "pending_order_side_mode", "AUTO_ADAPTIVE")).upper()
+    if side_cfg == "AUTO_ADAPTIVE":
+        last_eval = getattr(self, "last_auto_eval", None)
+        if isinstance(last_eval, dict):
+            auto_uni = str(last_eval.get("unidirectional_mode", "")).upper()
+            if "BUY" in auto_uni and "ONLY" in auto_uni:
+                side_cfg = "BUY_ONLY"
+            elif "SELL" in auto_uni and "ONLY" in auto_uni:
+                side_cfg = "SELL_ONLY"
+        if side_cfg == "AUTO_ADAPTIVE":
+            auto_uni = str(getattr(self, "unidirectional_mode", "")).upper()
+            if "BUY" in auto_uni and "ONLY" in auto_uni:
+                side_cfg = "BUY_ONLY"
+            elif "SELL" in auto_uni and "ONLY" in auto_uni:
+                side_cfg = "SELL_ONLY"
+
+    if side_cfg not in ("SELL_ONLY", "BUY_ONLY"):
+        return False
+
+    sym_name = str(getattr(self.broker, "symbol", getattr(self, "symbol_code", ""))).upper()
+    canceled_any = False
+
+    # 1. Purge from broker.pending_orders cache
+    pending = getattr(self.broker, "pending_orders", {})
+    to_cancel_ids = []
+    for oid, o in list(pending.items()):
+        o_type = str(getattr(o, "type", "")).upper()
+        if side_cfg == "SELL_ONLY" and "BUY" in o_type:
+            to_cancel_ids.append(oid)
+        elif side_cfg == "BUY_ONLY" and "SELL" in o_type:
+            to_cancel_ids.append(oid)
+
+    for oid in to_cancel_ids:
+        try:
+            print(f"[{sym_name}] ­ƒøí´©Å [TRAP_MODE_ENFORCER] Purging invalid counter-trend order {oid} in {side_cfg} mode.")
+            self.broker.cancel_order(oid)
+            canceled_any = True
+        except Exception as e:
+            import logging; logging.warning(f"Failed to cancel invalid order {oid}: {e}")
+
+    # 2. Check live broker orders if available
+    if hasattr(self.broker, "_fetch_live_orders") and hasattr(self.broker, "cancel_order_by_ticket"):
+        try:
+            ex_sym = getattr(self.broker, "get_exness_symbol", lambda x: x)(sym_name) or sym_name
+            live_orders = self.broker._fetch_live_orders(ex_sym)
+            type_map = {0: 'BUY', 1: 'SELL', 2: 'BUY_LIMIT', 3: 'SELL_LIMIT', 4: 'BUY_STOP', 5: 'SELL_STOP'}
+            for lo in live_orders or []:
+                raw_type = getattr(lo, "type", None)
+                t_str = type_map.get(raw_type, str(raw_type)).upper()
+                ticket = getattr(lo, "ticket", None)
+                if not ticket:
+                    continue
+                if side_cfg == "SELL_ONLY" and "BUY" in t_str:
+                    print(f"[{sym_name}] ­ƒøí´©Å [LIVE_MT5_PURGE] Cancelling invalid live BUY order {ticket} ({t_str}) in SELL_ONLY mode.")
+                    self.broker.cancel_order_by_ticket(ticket)
+                    canceled_any = True
+                elif side_cfg == "BUY_ONLY" and "SELL" in t_str:
+                    print(f"[{sym_name}] ­ƒøí´©Å [LIVE_MT5_PURGE] Cancelling invalid live SELL order {ticket} ({t_str}) in BUY_ONLY mode.")
+                    self.broker.cancel_order_by_ticket(ticket)
+                    canceled_any = True
+        except Exception as e:
+            import logging; logging.warning(f"Live trap sync error: {e}")
+
+    return canceled_any
 
 
 def enforce_global_hedged_recovery(self, current_price: float, timestamp: float) -> bool:
-    """Bot executes unidirectional momentum grids. Basket exits are strictly governed by check_target_profit."""
-    return False
+    """
+    Monitors global hedged PnL. If both BUY and SELL positions are open
+    and total net PnL crosses dynamic threshold, it securely closes the basket in profit.
+    """
+    _open_pos = getattr(self.broker, "open_positions", {})
+    if len(_open_pos) == 0:
+        return False
+        
+    types = [str(getattr(p, "type", "")).upper() for p in _open_pos.values()]
+    has_buys = any("BUY" in t for t in types)
+    has_sells = any("SELL" in t for t in types)
+    is_hedged = has_buys and has_sells
 
+    # Single positions are managed by check_target_profit, trailing SL, and structural TP/SL.
+    # Basket recovery only operates when there are multiple positions or actively hedged positions.
+    if len(_open_pos) < 2 and not is_hedged:
+        return False
+
+    now_ts = timestamp or time.time()
+    # Guard: Do not execute instant basket harvest if the newest position was opened < 30s ago
+    newest_open_time = 0.0
+    for p in _open_pos.values():
+        ot = float(getattr(p, "open_time", getattr(p, "time_msc", getattr(p, "time", 0.0))) or 0.0)
+        if ot > 1e11:
+            ot /= 1000.0
+        if ot > newest_open_time:
+            newest_open_time = ot
+
+    total_pnl = sum(float(getattr(p, "profit", 0.0)) for p in _open_pos.values())
+    total_volume = sum(float(getattr(p, "volume", 0.01)) for p in _open_pos.values())
+
+    # If any position is younger than 30s, do not harvest unless in massive profit
+    if newest_open_time > 0 and (now_ts - newest_open_time) < 30.0 and total_pnl < 15.0:
+        return False
+
+    # Basket harvest MUST ONLY close in profit
+    if total_pnl <= 0.0:
+        return False
+    
+    buy_vol = sum(float(getattr(p, "volume", 0)) for p in _open_pos.values() if "BUY" in str(getattr(p, "type", "")).upper())
+    sell_vol = sum(float(getattr(p, "volume", 0)) for p in _open_pos.values() if "SELL" in str(getattr(p, "type", "")).upper())
+    current_trend = str(getattr(self, "unidirectional_mode", getattr(self, "auto_universe_bias", ""))).upper()
+    
+    is_counter_trend = False
+    if buy_vol > sell_vol and current_trend == "BEARISH":
+        is_counter_trend = True
+    elif sell_vol > buy_vol and current_trend == "BULLISH":
+        is_counter_trend = True
+        
+    if is_hedged or is_counter_trend:
+        # Tight escape for trapped/counter-trend positions
+        dynamic_threshold = max(1.00, (total_volume / 0.01) * 0.50)
+    else:
+        # Trend-aligned positions: use larger activation threshold to harvest full structural move
+        dynamic_threshold = max(5.00, (total_volume / 0.01) * 3.00)
+    
+    if total_pnl > getattr(self, "_basket_max_pnl", 0.0):
+        self._basket_max_pnl = total_pnl
+        
+    if getattr(self, "_basket_max_pnl", 0.0) > dynamic_threshold:
+        sym_name = str(getattr(self.broker, "symbol", getattr(self, "symbol_code", "BTCUSDT"))).upper()
+        
+        is_reversal = False
+        if buy_vol > sell_vol and current_trend == "BEARISH":
+            is_reversal = True
+        elif sell_vol > buy_vol and current_trend == "BULLISH":
+            is_reversal = True
+            
+        drop_limit = max(dynamic_threshold, self._basket_max_pnl * 0.80)
+        
+        # Hard requirement: total_pnl > 0.0 to prevent locking in negative basket losses
+        if (is_reversal or total_pnl <= drop_limit) and total_pnl > 0.0:
+            reason = "TREND REVERSAL" if is_reversal else f"TRAILING PROFIT DROP (Peak: ${self._basket_max_pnl:.2f}, Drop Limit: ${drop_limit:.2f})"
+            print(f"[{sym_name}] ­ƒÆÑ [BASKET HARVEST] {reason}. Securing +${total_pnl:.2f} net profit. Nuking entire basket!")
+            if hasattr(self.broker, "close_all_positions"):
+                self.broker.close_all_positions(symbol=sym_name)
+            if hasattr(self.broker, "cancel_all_orders"):
+                self.broker.cancel_all_orders(symbol=sym_name)
+            self.deployed = False
+            self._basket_max_pnl = 0.0
+            self._basket_peak_pnl = 0.0
+            self._max_open_in_cycle = 0
+            self._cycle_start_time = 0.0
+            self._cycle_start_realized_pnl = 0.0
+            self.in_runner_mode = False
+            return True
+            
+    return False
