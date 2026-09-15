@@ -361,7 +361,7 @@ class AIEngine:
             dyn_risk = base_risk * 0.75
             dyn_sl = 1.70  # Wider SL to survive boundary wicks
             dyn_tp = 2.0   # Take profit quickly before reversal
-            dyn_conf = 0.68  # Higher confidence required to avoid chop
+            dyn_conf = 0.75  # Elevated confidence required to avoid chop
             dyn_be = 1.00
             dyn_trail = 1.40
             dyn_max_pos = 2
@@ -447,12 +447,16 @@ class AIEngine:
         factors = {}
 
         # Factor 1: Trend Alignment (40% weight)
+        trend_weight = 0.40
+        if regime in ("RANGING", "LOW_VOLATILITY_DRIFT"):
+            trend_weight = 0.10  # Discount trend factor heavily in sideways markets
+
         if curr_price > ema50 and ema20 > ema50:
-            bull_score += 0.40
-            factors["trend"] = "BULLISH (+40%)"
+            bull_score += trend_weight
+            factors["trend"] = f"BULLISH (+{int(trend_weight*100)}%)"
         elif curr_price < ema50 and ema20 < ema50:
-            bear_score += 0.40
-            factors["trend"] = "BEARISH (+40%)"
+            bear_score += trend_weight
+            factors["trend"] = f"BEARISH (+{int(trend_weight*100)}%)"
         else:
             factors["trend"] = "NEUTRAL"
 

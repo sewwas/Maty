@@ -915,7 +915,7 @@ with tab_desk:
                 if live_px > 0:
                     _m_item["last_price"] = live_px
                     try:
-                        _m_item["bot"].deploy_traps(live_px, time.time(), force=True)
+                        _m_item["bot"].deploy_traps(live_px, time.time(), force=True, manual_user_deploy=True)
                     except Exception as e:
                         import logging; logging.warning(f"Exception: {e}")
             save_bot_state()
@@ -936,7 +936,7 @@ with tab_desk:
         if st.button("🎯 RE-CENTER ALL TRAPS", use_container_width=True):
             for _m_item in st.session_state.markets.values():
                 try:
-                    _m_item["bot"].deploy_traps(_m_item.get("last_price", 0), time.time(), force=True)
+                    _m_item["bot"].deploy_traps(_m_item.get("last_price", 0), time.time(), force=True, manual_user_deploy=True)
                 except Exception as e:
                     import logging; logging.warning(f"Exception: {e}")
             st.toast("Re-centered all grid traps!")
@@ -984,7 +984,7 @@ with tab_desk:
                     if m.get("running"):
                         try:
                             live_px = get_live_price(m["bot"].symbol) or m.get("last_price", 0)
-                            m["bot"].deploy_traps(live_px, time.time(), force=True)
+                            m["bot"].deploy_traps(live_px, time.time(), force=True, manual_user_deploy=True)
                         except Exception as e:
                             import logging; logging.warning(f"Exception: {e}")
                 st.toast("Applied Conservative Preset across all pairs!")
@@ -999,7 +999,7 @@ with tab_desk:
                     if m.get("running"):
                         try:
                             live_px = get_live_price(m["bot"].symbol) or m.get("last_price", 0)
-                            m["bot"].deploy_traps(live_px, time.time(), force=True)
+                            m["bot"].deploy_traps(live_px, time.time(), force=True, manual_user_deploy=True)
                         except Exception as e:
                             import logging; logging.warning(f"Exception: {e}")
                 st.toast("Applied AI Balanced Preset across all pairs!")
@@ -1013,7 +1013,7 @@ with tab_desk:
                     if m.get("running"):
                         try:
                             live_px = get_live_price(m["bot"].symbol) or m.get("last_price", 0)
-                            m["bot"].deploy_traps(live_px, time.time(), force=True)
+                            m["bot"].deploy_traps(live_px, time.time(), force=True, manual_user_deploy=True)
                         except Exception as e:
                             import logging; logging.warning(f"Exception: {e}")
                 st.toast("Applied 1m Ultra-Fast Scalper Preset across all pairs!")
@@ -1110,7 +1110,7 @@ with tab_desk:
                         except Exception:
                             mt5_ords = None
                     if not mt5_ords:
-                        bot.deploy_traps(sym_p, time.time(), force=True)
+                        bot.deploy_traps(sym_p, time.time(), force=True, manual_user_deploy=True)
                     else:
                         bot.deployed = True
                         from core.engine import Order
@@ -1147,7 +1147,7 @@ with tab_desk:
                                 if live_px > 0:
                                     m_data["last_price"] = live_px
                                 try:
-                                    bot.deploy_traps(live_px, time.time(), force=True)
+                                    bot.deploy_traps(live_px, time.time(), force=True, manual_user_deploy=True)
                                 except Exception as e:
                                     import logging; logging.warning(f"Exception: {e}")
                                 save_bot_state()
@@ -1167,7 +1167,7 @@ with tab_desk:
                             if live_px > 0:
                                 m_data["last_price"] = live_px
                             try:
-                                bot.deploy_traps(live_px, time.time(), force=True)
+                                bot.deploy_traps(live_px, time.time(), force=True, manual_user_deploy=True)
                                 bot.deployed = True
                                 st.toast(f"🔄 {sym_code} Grid Traps Reset & Re-Centered!")
                             except Exception as reset_err:
@@ -1229,7 +1229,7 @@ with tab_desk:
                             bot.deployed = False
                             if is_run:
                                 try:
-                                    bot.deploy_traps(sym_p, time.time(), force=True)
+                                    bot.deploy_traps(sym_p, time.time(), force=True, manual_user_deploy=True)
                                     bot.deployed = True
                                 except Exception:
                                     bot.deployed = True
@@ -1285,7 +1285,7 @@ with tab_desk:
                             # Redeploy with new mode if price is available
                             if is_run and sym_p > 0:
                                 try:
-                                    bot.deploy_traps(sym_p, time.time(), force=True)
+                                    bot.deploy_traps(sym_p, time.time(), force=True, manual_user_deploy=True)
                                 except Exception as e:
                                     import logging; logging.warning(f"Exception: {e}")
                             st.toast(f"{sym_code} Trap Mode changed to {new_side_mode}")
@@ -1318,7 +1318,7 @@ with tab_desk:
                                     new_mode = ev.get("unidirectional_mode", "DUAL")
                                     bot.unidirectional_mode = new_mode
                                     if old_mode != new_mode and len(getattr(brk, "open_positions", {})) == 0:
-                                        bot.deploy_traps(sym_p, time.time(), force=True)
+                                        bot.deploy_traps(sym_p, time.time(), force=True, manual_user_deploy=True)
                             except Exception:
                                 ev = getattr(bot, "last_auto_eval", {})
                         if not ev:
@@ -2339,21 +2339,21 @@ with tab_manual:
             with d_col1:
                 if st.button("BUY GRID", type="primary", key="man_buy_btn", use_container_width=True, disabled=is_auto_active):
                     bot.pending_order_side_mode = "BUY_ONLY"
-                    try: bot.deploy_traps(sym_p, time.time(), force=True)
+                    try: bot.deploy_traps(sym_p, time.time(), force=True, manual_user_deploy=True)
                     except Exception as e: import logging; logging.warning(f"Exception: {e}")
                     st.toast("Manual BUY Grid Deployed!")
                     st.rerun()
             with d_col2:
                 if st.button("SELL GRID", type="primary", key="man_sell_btn", use_container_width=True, disabled=is_auto_active):
                     bot.pending_order_side_mode = "SELL_ONLY"
-                    try: bot.deploy_traps(sym_p, time.time(), force=True)
+                    try: bot.deploy_traps(sym_p, time.time(), force=True, manual_user_deploy=True)
                     except Exception as e: import logging; logging.warning(f"Exception: {e}")
                     st.toast("Manual SELL Grid Deployed!")
                     st.rerun()
             with d_col3:
                 if st.button("DUAL GRID", key="man_dual_btn", use_container_width=True, disabled=is_auto_active):
                     bot.pending_order_side_mode = "BOTH_SIDES"
-                    try: bot.deploy_traps(sym_p, time.time(), force=True)
+                    try: bot.deploy_traps(sym_p, time.time(), force=True, manual_user_deploy=True)
                     except Exception as e: import logging; logging.warning(f"Exception: {e}")
                     st.toast("Manual DUAL Grid Deployed!")
                     st.rerun()
