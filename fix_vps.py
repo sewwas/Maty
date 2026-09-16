@@ -16,11 +16,12 @@ print("2. Ensuring MetaTrader 5_6 exists for Bot 6...")
 client.exec_command('cp -R "/root/.wine/drive_c/Program Files/MetaTrader 5" "/root/.wine/drive_c/Program Files/MetaTrader 5_6" || true')
 
 print("3. Clearing old logs...")
-client.exec_command('rm -f /root/Maty/logs/bridge_*.log')
+stdin, stdout, stderr = client.exec_command('rm -f /root/Maty/logs/bridge_*.log')
+stdout.channel.recv_exit_status() # WAIT for rm to finish
 
-print("4. Restarting all bridges inside detached screen...")
+print("4. Restarting all bridges via nohup...")
 client.exec_command("cd /root/Maty && chmod +x start_bridges.sh")
-client.exec_command("screen -d -m -S bridges bash -c 'cd /root/Maty && ./start_bridges.sh'")
+client.exec_command("cd /root/Maty && nohup ./start_bridges.sh > start_bridges_run.log 2>&1 &")
 
 print("✅ Cleanup and restart dispatched successfully.")
 client.close()
