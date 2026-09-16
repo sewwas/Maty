@@ -1,0 +1,31 @@
+{
+  "symbol": "XAUUSD",
+  "magic_number": 101001,
+  "bridge_url": "http://127.0.0.1:8001",
+  "auto_trading": true,
+  "trading_mode": "BOTH",
+  "lot_size": 0.01,
+  "risk_pct_per_trade": 1.0,
+  "max_daily_risk_pct": 3.0,
+  "max_trades_per_day": 10,
+  "strategy": {
+    "timeframe": "5m",
+    "ema_fast": 14,
+    "ema_medium": 14,
+    "ema_slow": 24,
+    "ema_confirm": 1,
+    "ema_filter": 100,
+    "atr_period": 10,
+    "long_atr_sl_multiplier": 4.5,
+    "long_atr_tp_multiplier": 6.5,
+    "short_atr_sl_multiplier": 2.5,
+    "short_atr_tp_multiplier": 6.5,
+    "long_pullback_max_candles": 3,
+    "short_pullback_max_candles": 2,
+    "long_entry_window_periods": 5,
+    "short_entry_window_periods": 7,
+    "use_price_filter": true,
+    "trailing_stop_active": true,
+    "trailing_step_atr": 1.0
+  }
+}
