@@ -537,18 +537,8 @@ class Bot2Engine:
                         exit_action = "FULL_TP"
                         exit_msg = f"🎯 TARGET PROFIT HIT: {curr_sym}{pnl:+.2f} {acct_curr} (Target: +{curr_sym}{cycle_target:.2f}) — Instant Flattening {n_pos} positions!"
 
-                    # Condition B: Trailing Profit Lock
-                    elif self.peak_pnl >= (cycle_target * 0.60) and n_pos >= 2:
-                        min_floor = max(0.50 if acct_curr == "USC" else 0.10, cycle_target * 0.20)
-                        self.trail_floor = min(max(min_floor, self.peak_pnl * 0.50), self.peak_pnl * 0.80)
-                        if pnl <= self.trail_floor:
-                            exit_action = "TRAIL_LOCK"
-                            exit_msg = f"🛡️ TRAILING PROFIT LOCK: {curr_sym}{pnl:+.2f} {acct_curr} (Peak: {curr_sym}{self.peak_pnl:.2f}, Floor: {curr_sym}{self.trail_floor:.2f}) — Flattening {n_pos} positions!"
-                    else:
-                        self.trail_floor = 0.0
-
-                    # Condition C: Stop Loss Hit
-                    if not exit_action and pnl <= -abs(sl_limit):
+                    # Condition B: Stop Loss Hit
+                    elif pnl <= -abs(sl_limit):
                         exit_action = "STOP_LOSS"
                         exit_msg = f"🛑 STOP LOSS HIT: {curr_sym}{pnl:+.2f} {acct_curr} (SL: -{curr_sym}{sl_limit:.2f}) — Emergency Flattening!"
 
@@ -558,7 +548,7 @@ class Bot2Engine:
                         flat_res = flatten_all(self.brk, state)
                         auto_redeploy = bool(cfg.get("auto_redeploy", True))
 
-                        if auto_redeploy and exit_action != "STOP_LOSS":
+                        if auto_redeploy and exit_action == "FULL_TP" and pnl > 0:
                             time.sleep(0.15)
                             new_center = get_mt5_live_price(self.brk)
                             new_levels = compute_grid_levels(

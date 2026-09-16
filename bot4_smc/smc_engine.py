@@ -505,44 +505,44 @@ class SMCEngine:
         # 1. Volatility & Liquidity Regime Adaptation
         if atr_ratio > 1.55:
             regime_mode = "⚡ HIGH VOLATILITY LIQUIDITY EXPANSION"
-            # In volatile expansion: trim risk, require strong institutional absorption wick, widen FVG
+            # In volatile expansion: trim risk, require solid institutional absorption wick, widen FVG
             dyn_risk = base_risk * 0.70
-            dyn_wick = 0.44  # require 44% rejection wick to prevent false sweeps
-            dyn_fvg = max(4.5, round(current_atr * 2.5, 1))
+            dyn_wick = max(base_wick, 0.33)  # solid absorption wick
+            dyn_fvg = max(3.5, round(current_atr * 2.0, 1))
             dyn_tp1 = 1.80
             dyn_tp2 = 4.50   # target explosive liquidity runners
             dyn_be = 0.80    # early de-risking
             dyn_trail = 1.50 # wider chandelier buffer
-            reasons.append(f"Volatile Expansion ({atr_ratio:.1f}x ATR) → Wick filter raised to 44%, FVG filter to {dyn_fvg}p")
+            reasons.append(f"Volatile Expansion ({atr_ratio:.1f}x ATR) → Wick filter {dyn_wick*100:.0f}%, FVG filter to {dyn_fvg}p")
 
         elif atr_ratio < 0.75:
             regime_mode = "💤 LOW VOLATILITY CONSOLIDATION"
             # Low volatility / Asian chop: scale down risk, allow tighter wicks and smaller FVGs
-            dyn_risk = base_risk * 0.50
-            dyn_wick = 0.35
-            dyn_fvg = 2.5
+            dyn_risk = base_risk * 0.75
+            dyn_wick = max(0.25, base_wick * 0.85)
+            dyn_fvg = 2.0
             dyn_tp1 = 1.30
             dyn_tp2 = 2.50
             dyn_be = 1.00
             dyn_trail = 1.10
-            reasons.append(f"Compressed Corridor ({atr_ratio:.1f}x ATR) → 50% risk compression, tight targets")
+            reasons.append(f"Compressed Corridor ({atr_ratio:.1f}x ATR) → Wick filter {dyn_wick*100:.0f}%, tight targets")
 
         else:
             regime_mode = "🎯 INSTITUTIONAL LIQUIDITY SWEEP"
             dyn_risk = base_risk * 1.0
-            dyn_wick = 0.38
-            dyn_fvg = max(3.5, round(current_atr * 2.0, 1))
+            dyn_wick = base_wick
+            dyn_fvg = max(2.5, round(current_atr * 1.5, 1))
             dyn_tp1 = 1.50
             dyn_tp2 = 3.50
             dyn_be = 1.00
             dyn_trail = 1.20
-            reasons.append(f"Optimal SMC Conditions (ATR {current_atr:.2f}) → Standard 1.0% Risk with 1:3.5 R:R runner")
+            reasons.append(f"Optimal SMC Conditions (ATR {current_atr:.2f}) → Wick filter {dyn_wick*100:.0f}% with 1:3.5 R:R runner")
 
         # 2. Extreme Volatility Spike Guard
         if atr_ratio > 2.0:
             dyn_risk *= 0.75
-            dyn_wick = 0.48
-            reasons.append(f"Extreme Volatility Alert ({atr_ratio:.1f}x ATR) → Emergency 25% risk trim, 48% wick required")
+            dyn_wick = max(base_wick, 0.36)
+            reasons.append(f"Extreme Volatility Alert ({atr_ratio:.1f}x ATR) → Emergency 25% risk trim, {dyn_wick*100:.0f}% wick required")
 
         # 3. Drawdown & Consecutive Loss Circuit Breaker
         cons_losses = self.state.get("consecutive_losses", 0)
@@ -688,24 +688,15 @@ class SMCEngine:
 
             sweep = self._check_liquidity_sweep(closed_candle, pools, min_wick_ratio=min_wick)
             
-            # --- HIGHER TIMEFRAME (HTF) TREND FILTER ---
-            # Calculate M15 EMA 50 to determine the overall market trend
-            htf_trend = "NEUTRAL"
-            if len(df_m15) >= 50:
+            # --- HIGHER TIMEFRAME (HTF) TREND FILTER (OPTIONAL) ---
+            # By default disabled: SMC Turtle Soup is an institutional mean-reversion sweep strategy
+            enable_trend_filter = self.config.get("strategy", {}).get("enable_htf_trend_filter", False)
+            if enable_trend_filter and sweep and len(df_m15) >= 50:
                 ema_50 = df_m15['close'].ewm(span=50, adjust=False).mean().iloc[-1]
                 current_m15_close = df_m15['close'].iloc[-1]
-                if current_m15_close > ema_50:
-                    htf_trend = "BULLISH"
-                elif current_m15_close < ema_50:
-                    htf_trend = "BEARISH"
-
-            # Filter out counter-trend sweeps to maintain a high win rate
-            if sweep:
-                if sweep["direction"] == "BULLISH_SWEEP" and htf_trend == "BEARISH":
-                    # Ignored: Trying to BUY in a strong SELL trend (catching a falling knife)
+                if sweep["direction"] == "BULLISH_SWEEP" and current_m15_close < ema_50:
                     sweep = None
-                elif sweep["direction"] == "BEARISH_SWEEP" and htf_trend == "BULLISH":
-                    # Ignored: Trying to SELL in a strong BUY trend
+                elif sweep["direction"] == "BEARISH_SWEEP" and current_m15_close > ema_50:
                     sweep = None
 
             if sweep and sweep.get("candle_timestamp") != self.state.get("last_swept_candle_ts"):
@@ -1023,11 +1014,28 @@ class SMCEngine:
         if res.get("success", False) or res.get("ticket"):
             self._order_in_flight_until = time.time() + 20.0
             self.state["daily_trades_count"] = self.state.get("daily_trades_count", 0) + 1
+            ticket_num = res.get("ticket")
+            new_trade = {
+                "ticket": ticket_num,
+                "symbol": symbol,
+                "type": order_type,
+                "price": entry_price,
+                "volume": lot_size,
+                "sl": sl_price,
+                "tp": tp_price,
+                "time": time.time(),
+                "time_str": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
+                "level": sweep.get("level_name"),
+                "status": "OPEN"
+            }
+            self.state.setdefault("trade_history", []).append(new_trade)
+            if len(self.state["trade_history"]) > 100:
+                self.state["trade_history"] = self.state["trade_history"][-100:]
             # Clear sweep after execution so we wait for the next fresh setup
             self.state["swept_level"] = None
             self.state["active_fvg"] = None
             self._save_state()
-            logger.info(f"✅ [Bot #4] Order successfully placed: Ticket #{res.get('ticket')}")
+            logger.info(f"✅ [Bot #4] Order successfully placed: Ticket #{ticket_num}")
         else:
             logger.error(f"❌ [Bot #4] Order dispatch failed: {res.get('error')}")
 
@@ -1038,6 +1046,17 @@ class SMCEngine:
         2. Partial TP1 close (50%) at dynamic R:R
         3. Dynamic ATR Chandelier trailing stop on the remaining runner
         """
+        # Track closed status in trade_history
+        active_tickets = {int(p.get("ticket", 0)) for p in open_positions} if open_positions else set()
+        trade_hist = self.state.get("trade_history", [])
+        hist_updated = False
+        for t in trade_hist:
+            if t.get("status") == "OPEN" and int(t.get("ticket", 0)) not in active_tickets:
+                t["status"] = "CLOSED"
+                hist_updated = True
+        if hist_updated:
+            self._save_state()
+
         if not open_positions:
             return
 
@@ -1232,6 +1251,7 @@ class SMCEngine:
             "dynamic_risk": self._cached_dynamic_risk,
             "dynamic_preview": dynamic_preview,
             "metrics": metrics,
+            "trade_history": self.state.get("trade_history", []),
             "config": self.config
         }
 

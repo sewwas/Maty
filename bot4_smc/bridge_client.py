@@ -101,7 +101,30 @@ class Bot4BridgeClient:
         b_interval = binance_tf_map.get(timeframe.upper(), "5m")
         pair = "PAXGUSDT" if any(x in symbol.upper() for x in ["XAU", "GOLD", "PAXG"]) else symbol.upper()
 
-        # 1. Binance public API
+        # 1. Native MT5 Bridge /rates (Direct Broker Candlestick Stream)
+        try:
+            mt5_tf = b_interval
+            r_mt5 = self.session.get(f"{self.bridge_url}/rates?symbol={symbol}&timeframe={mt5_tf}&count={limit}", timeout=self.timeout)
+            if r_mt5.status_code == 200:
+                data = r_mt5.json()
+                rates = data.get("rates", [])
+                if rates and len(rates) >= 5:
+                    rows = []
+                    for b in rates:
+                        rows.append({
+                            "timestamp": pd.to_datetime(int(b["time"]), unit="s", utc=True),
+                            "open": float(b["open"]),
+                            "high": float(b["high"]),
+                            "low": float(b["low"]),
+                            "close": float(b["close"]),
+                            "volume": float(b.get("tick_volume", b.get("real_volume", 0)))
+                        })
+                    df = pd.DataFrame(rows)
+                    return df
+        except Exception as e:
+            logger.debug(f"MT5 bridge /rates fetch failed: {e}")
+
+        # 2. Binance public API fallback
         try:
             url = f"https://api.binance.com/api/v3/klines?symbol={pair}&interval={b_interval}&limit={limit}"
             r = requests.get(url, timeout=2.5)
@@ -122,7 +145,7 @@ class Bot4BridgeClient:
         except Exception as e:
             logger.debug(f"Binance kline fetch failed: {e}")
 
-        # 2. Coinbase fallback for Gold
+        # 3. Coinbase fallback for Gold
         try:
             granularity = 300 if "5" in b_interval else (900 if "15" in b_interval else 3600)
             cb_url = f"https://api.exchange.coinbase.com/products/PAXG-USD/candles?granularity={granularity}"

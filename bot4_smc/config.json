@@ -25,6 +25,7 @@
     "sl_atr_multiplier": 0.30,
     "min_target_rr": 1.8,
     "max_target_rr": 5.0,
-    "front_run_points": 25
+    "front_run_points": 25,
+    "enable_htf_trend_filter": false
   }
 }

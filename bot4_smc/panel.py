@@ -466,6 +466,30 @@ with col_radar:
 
 st.markdown("<br>", unsafe_allow_html=True)
 
+# ── Closed SMC Trade History & Analytics ──────────────────────────────────────
+st.markdown("#### 📜 Executed SMC Trade Journal")
+trade_hist = status.get("trade_history", [])
+if trade_hist:
+    hist_rows = []
+    for t in reversed(trade_hist[-15:]):
+        hist_rows.append({
+            "Ticket": f"#{t.get('ticket', '--')}",
+            "Time (UTC)": t.get("time_str", "--"),
+            "Direction": t.get("type", "--"),
+            "Level Swept": t.get("level", "--"),
+            "Lot": f"{t.get('volume', 0.01):.2f}",
+            "Entry": f"{t.get('price', 0.0):.2f}",
+            "SL": f"{t.get('sl', 0.0):.2f}",
+            "TP": f"{t.get('tp', 0.0):.2f}",
+            "Status": "🟢 OPEN" if t.get("status") == "OPEN" else "⚪ CLOSED / TP HIT"
+        })
+    df_hist = pd.DataFrame(hist_rows)
+    st.dataframe(df_hist, use_container_width=True, hide_index=True)
+else:
+    st.markdown('<div style="background: #111827; border-radius: 8px; padding: 14px; color: #64748b; font-size: 13px; text-align: center;">No recorded trades yet for today. Bot #4 is actively hunting Turtle Soup sweeps & FVG mitigations.</div>', unsafe_allow_html=True)
+
+st.markdown("<br>", unsafe_allow_html=True)
+
 # ── Auto Refresh ─────────────────────────────────────────────────────────────
 time.sleep(3)
 st.rerun()

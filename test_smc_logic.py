@@ -4,6 +4,13 @@ test_smc_logic.py — Unit Verification for Bot #4 SMC Liquidity Hunter Engine
 
 import os
 import sys
+
+try:
+    if sys.stdout.encoding and sys.stdout.encoding.lower() != 'utf-8':
+        sys.stdout.reconfigure(encoding='utf-8')
+except Exception:
+    pass
+
 import pandas as pd
 import numpy as np
 import datetime

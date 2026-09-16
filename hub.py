@@ -87,8 +87,8 @@ BOT_CONFIGS = [
         "strategy": "Liquidity Sweep & FVG Reversal (Turtle Soup)",
         "bridge_port": 8004,
         "panel_port": 8504,
-        "default_acc": 257515248,
-        "server": "Exness-MT5Real36",
+        "default_acc": 184143680,
+        "server": "Exness-MT5Real25",
         "color": "#10b981",
         "icon": "🎯"
     },

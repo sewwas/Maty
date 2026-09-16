@@ -962,15 +962,6 @@ def get_pnl_monitor():
                             if pnl >= cycle_target and not shared["triggered"]:
                                 exit_action = "FULL_TP"
                                 exit_msg = f"🎯 TARGET PROFIT HIT ({target_label}): {curr_sym}{pnl:+.2f} {acct_curr} (Target: +{curr_sym}{cycle_target:.2f} {acct_curr}) — Closing ALL {n_pos} Cycle Positions & Pendings!"
-                            elif current_peak >= (cycle_target * 0.60) and not shared["triggered"] and n_pos >= 2:
-                                min_floor = max(0.10 if acct_curr != "USC" else 0.50, cycle_target * 0.20)
-                                trailing_floor = min(max(min_floor, current_peak * 0.50), current_peak * 0.80)
-                                shared["trail_floor"] = round(trailing_floor, 2)
-                                if pnl <= trailing_floor:
-                                    exit_action = "TRAIL_LOCK"
-                                    exit_msg = f"🛡️ TRAILING PROFIT LOCK HIT: {curr_sym}{pnl:+.2f} {acct_curr} (Peak was {curr_sym}{current_peak:.2f}, Floor: {curr_sym}{trailing_floor:.2f}) — Securing locked profit, closing ALL {n_pos} positions!"
-                            else:
-                                shared["trail_floor"] = 0.0
 
                             if exit_action and not shared["triggered"]:
                                 shared["triggered"] = True
@@ -978,8 +969,8 @@ def get_pnl_monitor():
                                     logging.info(f"[Manual Grid Monitor] {exit_msg}")
                                     flat_res = flatten_all(brk, cur_state)
                                     auto_redeploy = cur_cfg.get("auto_redeploy", True)
-                                    action_label = "🎯 TARGET HIT" if exit_action == "FULL_TP" else "🛡️ TRAIL LOCK"
-                                    if auto_redeploy:
+                                    action_label = "🎯 TARGET HIT"
+                                    if auto_redeploy and exit_action == "FULL_TP" and pnl > 0:
                                         time.sleep(0.15)
                                         new_center = get_mt5_live_price(brk)
                                         new_levels = compute_grid_levels(
@@ -1564,8 +1555,6 @@ cur_tp = float(cfg.get("target_profit", 25.0 if display_curr == "USC" else 5.0))
 cur_sl = float(cfg.get("stop_loss", 500.0 if display_curr == "USC" else 25.0))
 curr_sym = "¢" if display_curr == "USC" else "$"
 dist_tp = max(0.0, cur_tp - floating_pnl)
-trail_floor_val = float(monitor.get("trail_floor", 0.0) or 0.0)
-trail_info_html = f'<span style="color:#71717a;">|</span><span style="color:#fbbf24;">Trail: <b>+{curr_sym}{trail_floor_val:.2f}</b></span>' if trail_floor_val > 0 else ''
 
 b_pnl_val = float(monitor.get("buy_pnl", 0.0) or 0.0)
 s_pnl_val = float(monitor.get("sell_pnl", 0.0) or 0.0)
@@ -1601,7 +1590,6 @@ st.markdown(f'''
         <span style="color:#a1a1aa;">Net: <b style="color:{'#4ade80' if floating_pnl >= 0 else '#f87171'}">{curr_sym}{floating_pnl:+.2f} {display_curr}</b></span>
         <span style="color:#71717a;">|</span>
         <span style="color:#a1a1aa;">Target: <b style="color:#60a5fa">+{curr_sym}{active_cycle_target:.2f}</b></span>
-        {trail_info_html}
     </div>
 </div>
 ''', unsafe_allow_html=True)

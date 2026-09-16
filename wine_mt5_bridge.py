@@ -903,11 +903,27 @@ class MT5BridgeHandler(BaseHTTPRequestHandler):
                 from_date = datetime.datetime.now() - datetime.timedelta(days=days)
                 to_date = datetime.datetime.now() + datetime.timedelta(days=1)
                 deals = mt5.history_deals_get(from_date, to_date)
+                if deals is None:
+                    utc_now = datetime.datetime.now(datetime.timezone.utc)
+                    deals = mt5.history_deals_get(utc_now - datetime.timedelta(days=days), utc_now + datetime.timedelta(days=1))
+                if deals is None:
+                    deals = mt5.history_deals_get(int(time.time() - (days * 86400)), int(time.time() + 86400))
+
                 res_deals = []
                 if deals:
+                    # Collect position_ids for magic_filter so broker TP/SL exit deals (which often have magic 0) are retained
+                    allowed_pos_ids = set()
+                    if magic_filter:
+                        for d in deals:
+                            if str(getattr(d, "magic", "")) == str(magic_filter):
+                                allowed_pos_ids.add(int(d.position_id))
+
                     for d in deals:
-                        if magic_filter and str(getattr(d, "magic", "")) != str(magic_filter):
-                            continue
+                        if magic_filter:
+                            is_magic = (str(getattr(d, "magic", "")) == str(magic_filter))
+                            is_pos = (int(d.position_id) in allowed_pos_ids)
+                            if not (is_magic or is_pos):
+                                continue
                         res_deals.append({
                             "ticket": int(d.ticket),
                             "order": int(d.order),
