@@ -120,9 +120,9 @@ BOT_CONFIGS = [
 
 # In-memory cache for live metrics to protect MT5 bridges
 _metrics_cache = {"timestamp": 0.0, "data": None}
-CACHE_TTL = 2.0  # seconds
+CACHE_TTL = 4.0  # seconds
 
-def is_port_listening(port, host="127.0.0.1", timeout=0.3):
+def is_port_listening(port, host="127.0.0.1", timeout=0.2):
     try:
         with socket.create_connection((host, port), timeout=timeout):
             return True
@@ -196,6 +196,10 @@ def fetch_single_bot_metrics(cfg):
         "latency_ms": 0.0,
         "last_trade_time": 0
     }
+
+    # Fast fail if bridge port is not reachable to avoid hanging the entire hub
+    if not is_port_listening(bport, timeout=0.15):
+        return res
 
     try:
         # 1. Fetch Account Info
@@ -2105,7 +2109,7 @@ class PortalHandler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
 
-        if parsed.path == "/api/bot_profits":
+        if parsed.path in ("/api/bot_profits", "/api/metrics"):
             data = get_all_bot_metrics()
             body = json.dumps(data).encode("utf-8")
             self.send_response(HTTPStatus.OK)
@@ -2123,6 +2127,7 @@ class PortalHandler(http.server.BaseHTTPRequestHandler):
                 "bot3": is_port_listening(8503),
                 "bot4": is_port_listening(8504),
                 "bot5": is_port_listening(8505),
+                "bot6": is_port_listening(8506),
             }
             body = json.dumps(status).encode("utf-8")
             self.send_response(HTTPStatus.OK)
@@ -2143,9 +2148,12 @@ class PortalHandler(http.server.BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         pass
 
+class ThreadingHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
+    allow_reuse_address = True
+    daemon_threads = True
+
 def run():
-    socketserver.TCPServer.allow_reuse_address = True
-    with socketserver.TCPServer(("0.0.0.0", PORT), PortalHandler) as httpd:
+    with ThreadingHTTPServer(("0.0.0.0", PORT), PortalHandler) as httpd:
         print(f"Profity AI Fullscreen Command Hub running on http://0.0.0.0:{PORT}")
         httpd.serve_forever()
 
