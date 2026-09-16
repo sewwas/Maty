@@ -99,7 +99,8 @@ def check_conflict():
         2: load_existing(8002),
         3: load_existing(8003),
         4: load_existing(8004),
-        5: load_existing(8005)
+        5: load_existing(8005),
+        6: load_existing(8006)
     }
     seen = {}
     for b_num, cfg in cfgs.items():
@@ -123,6 +124,7 @@ if __name__ == "__main__":
     setup_account(3, 8003)
     setup_account(4, 8004)
     setup_account(5, 8005)
+    setup_account(6, 8006)
 
     if not check_conflict():
         sys.exit(1)
@@ -141,4 +143,5 @@ if __name__ == "__main__":
     print("    Bot #3 (Trend Runner):  http://localhost:8503")
     print("    Bot #4 (SMC Hunter):    http://localhost:8504")
     print("    Bot #5 (AI Trader):     http://localhost:8505")
+    print("    Bot #6 (Crossfire):     http://localhost:8506")
     print("══════════════════════════════════════════════════════════\n")
