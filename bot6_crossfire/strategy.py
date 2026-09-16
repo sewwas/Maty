@@ -171,10 +171,16 @@ class CrossfireTracker:
 class StrategyEngine:
     def __init__(self, config):
         self.config = config
-        self.fvg_min_gap = config.get("strategy_params", {}).get("fvg_min_gap_percent", 0.002) / 100
-        self.vp_lookback = config.get("strategy_params", {}).get("volume_profile_lookback", 200)
-        self.swing_length = config.get("strategy_params", {}).get("swing_length", 10)
-        self.atr_multiplier = config.get("strategy_params", {}).get("max_atr_multiplier", 3.5)
+        # Bug #2 FIX: Accept either full config or strategy_params sub-dict
+        sp = config.get("strategy_params", config)  # works with both full config and sub-dict
+        # Bug #1 FIX: fvg_min_gap_percent is already a decimal fraction (e.g. 0.002 = 0.2%), do NOT divide by 100
+        self.fvg_min_gap = sp.get("fvg_min_gap_percent", 0.002)
+        self.vp_lookback  = sp.get("volume_profile_lookback", 200)
+        self.swing_length  = sp.get("swing_length", 10)
+        self.atr_multiplier = sp.get("max_atr_multiplier", 3.5)
+        # Bug #4 FIX: POC proximity factor — POC must be within N * zone_width of zone centre
+        # (replaces strict exact-overlap check that caused 0 trades)
+        self.poc_proximity_factor = sp.get("poc_proximity_factor", 3.0)
         self.fvg_mitig_close = True
         self.zone_mitig_close = True
         
@@ -243,8 +249,9 @@ class StrategyEngine:
         return poc_price
 
     def analyze(self, df: pd.DataFrame) -> dict:
-        """Runs full analysis and returns a signal if Retest + POC Filter meet."""
+        """Runs full analysis and returns a signal if Retest + POC proximity filter meet."""
         if len(df) < self.vp_lookback:
+            logger.debug(f"Not enough bars ({len(df)}) for vp_lookback={self.vp_lookback}. Skipping.")
             return {"signal": 0}
             
         tracker = CrossfireTracker(self.fvg_min_gap)
@@ -255,14 +262,36 @@ class StrategyEngine:
         # Inspect events of the VERY LAST bar
         last_events = tracker.events
         retested_seg = last_events.get("retested_seg")
+
+        logger.debug(
+            f"Last bar events — retest={last_events['retest']}, flip={last_events['flip']}, "
+            f"new={last_events['new']}, mitig={last_events['mitig']}, "
+            f"active_segs={sum(1 for s in tracker.segs if s.active)}, "
+            f"base_fvgs={len(tracker.fvgs)}"
+        )
         
         if last_events["retest"] and retested_seg:
-            # Filter: Calculate POC
+            # Filter: Calculate Volume Profile POC over last vp_lookback bars
             poc_price = self.calculate_poc(df, len(df) - self.vp_lookback, len(df))
             
-            # Is the POC inside the retested crossfire zone?
-            if retested_seg.bottom <= poc_price <= retested_seg.top:
-                
+            # Bug #4 FIX: Proximity filter instead of exact overlap.
+            # Old code: retested_seg.bottom <= poc_price <= retested_seg.top  ← near-impossible
+            # New code: POC must be within poc_proximity_factor * zone_width of zone centre
+            zone_width  = retested_seg.top - retested_seg.bottom
+            zone_centre = (retested_seg.top + retested_seg.bottom) / 2.0
+            max_distance = zone_width * self.poc_proximity_factor
+
+            poc_near_zone = abs(poc_price - zone_centre) <= max_distance
+
+            logger.debug(
+                f"Retest detected on {'Bull' if retested_seg.direction == 1 else 'Bear'} zone "
+                f"{retested_seg.bottom:.5f}-{retested_seg.top:.5f} | "
+                f"POC={poc_price:.5f} | zone_centre={zone_centre:.5f} | "
+                f"distance={abs(poc_price - zone_centre):.5f} | max_allowed={max_distance:.5f} | "
+                f"poc_near_zone={poc_near_zone}"
+            )
+
+            if poc_near_zone:
                 # Calculate Anti-Stop-Hunt variables
                 atr = self.calculate_atr(df)
                 atr_buffer = atr * self.atr_multiplier if atr > 0 else 0.0
@@ -272,16 +301,22 @@ class StrategyEngine:
                     # Bullish: SL is at the lowest of (Zone Bottom, Swing Low) minus ATR buffer
                     base_sl = min(retested_seg.bottom, ll)
                     safe_sl = base_sl - atr_buffer
-                    
-                    logger.info(f"Bullish Crossfire Retest + POC Confluence! POC at {poc_price:.5f} inside Zone {retested_seg.bottom:.5f}-{retested_seg.top:.5f}. Safe SL at {safe_sl:.5f}")
+                    logger.info(
+                        f"✅ Bullish Crossfire Retest + POC Confluence! "
+                        f"POC={poc_price:.5f} near Zone {retested_seg.bottom:.5f}-{retested_seg.top:.5f}. "
+                        f"Safe SL={safe_sl:.5f}"
+                    )
                     return {"signal": 1, "poc": poc_price, "sl": safe_sl}
                     
                 elif retested_seg.direction == -1:
                     # Bearish: SL is at the highest of (Zone Top, Swing High) plus ATR buffer
                     base_sl = max(retested_seg.top, hh)
                     safe_sl = base_sl + atr_buffer
-                    
-                    logger.info(f"Bearish Crossfire Retest + POC Confluence! POC at {poc_price:.5f} inside Zone {retested_seg.bottom:.5f}-{retested_seg.top:.5f}. Safe SL at {safe_sl:.5f}")
+                    logger.info(
+                        f"✅ Bearish Crossfire Retest + POC Confluence! "
+                        f"POC={poc_price:.5f} near Zone {retested_seg.bottom:.5f}-{retested_seg.top:.5f}. "
+                        f"Safe SL={safe_sl:.5f}"
+                    )
                     return {"signal": -1, "poc": poc_price, "sl": safe_sl}
-                    
+
         return {"signal": 0}

@@ -17,6 +17,7 @@
         "fvg_min_gap_percent": 0.002,
         "volume_profile_lookback": 200,
         "swing_length": 10,
-        "max_atr_multiplier": 3.5
+        "max_atr_multiplier": 3.5,
+        "poc_proximity_factor": 3.0
     }
 }
