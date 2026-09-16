@@ -83,7 +83,7 @@ echo Starting Bridge #6 on port 8006...
 start "Bridge 8006 — Bot #6 (Crossfire MT5)" cmd /k "python wine_mt5_bridge.py 8006"
 
 echo.
-echo All 5 bridges launched! Waiting 3s for them to initialize...
+echo All 6 bridges launched! Waiting 3s for them to initialize...
 timeout /t 3 /nobreak >nul
 
 echo.
@@ -101,6 +101,6 @@ echo     Bot #2 (Manual Desk):  streamlit run bot2_manual\panel.py --server.port
 echo     Bot #3 (Trend Runner): streamlit run bot3_trend\panel.py --server.port 8503
 echo     Bot #4 (SMC Hunter):   streamlit run bot4_smc\panel.py --server.port 8504
 echo     Bot #5 (AI Trader):    streamlit run bot5_ai\panel.py --server.port 8505
-echo     Bot #6 (Crossfire):    (No Dashboard yet)
+echo     Bot #6 (Crossfire):    streamlit run bot6_crossfire\panel.py --server.port 8506
 echo.
 pause
