@@ -48,7 +48,7 @@ def save_bridge_config(port: int, login: int, password: str, server: str):
         print(f"[Bridge {port}] Error saving config: {e}")
 
 def check_other_bridge_conflict(current_port: int, target_login: int) -> tuple[bool, int]:
-    all_ports = [8001, 8002, 8003, 8004, 8005]
+    all_ports = [8001, 8002, 8003, 8004, 8005, 8006]
     for other_port in all_ports:
         if other_port == current_port:
             continue
@@ -97,8 +97,11 @@ def resolve_terminal_path(port: int) -> Optional[str]:
     custom = os.getenv("MT5_PATH")
     if custom and os.path.exists(custom):
         return custom
-        
     port_targets = {
+        8006: [
+            r"C:\Program Files\MetaTrader 5_6\terminal64.exe",
+            os.path.expanduser(r"~\AppData\Local\MetaTrader 5_6\terminal64.exe"),
+        ],
         8005: [
             r"C:\Program Files\MetaTrader 5_5\terminal64.exe",
             os.path.expanduser(r"~\AppData\Local\MetaTrader 5_5\terminal64.exe"),
