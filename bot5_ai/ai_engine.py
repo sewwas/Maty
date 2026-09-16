@@ -519,6 +519,7 @@ class AIEngine:
         bb_upper = float(latest.get("bb_upper", curr_price + 2.0))
         bb_lower = float(latest.get("bb_lower", curr_price - 2.0))
         atr = float(latest.get("atr", 1.5))
+        bb_width = float(latest.get("bb_width", 0.01))
 
         bull_score = 0.0
         bear_score = 0.0
