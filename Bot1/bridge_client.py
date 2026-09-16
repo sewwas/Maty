@@ -1,7 +1,8 @@
 """
-Bot #1 Dedicated Bridge Client — Sunrise Ogle Trading System
-Communicates with MT5 Bridge on port 8001 (or configurable port)
-Provides live price streaming, candle feeds, position tracking, and order execution.
+Bot #1 Dedicated Bridge Client — Sunrise Breakout Trading System
+Communicates with Wine MT5 Bridge on port 8001 (or configurable port).
+Provides live price streaming, broker candle feeds, position tracking, and order execution.
+Aligned 100% with wine_mt5_bridge.py GET endpoints.
 """
 
 import time
@@ -16,7 +17,7 @@ logger = logging.getLogger("Bot1BridgeClient")
 
 
 class Bot1BridgeClient:
-    def __init__(self, bridge_url: str = "http://127.0.0.1:8001", magic_number: int = 101001, timeout: float = 3.0):
+    def __init__(self, bridge_url: str = "http://127.0.0.1:8001", magic_number: int = 101001, timeout: float = 3.5):
         self.bridge_url = bridge_url.rstrip("/")
         self.magic_number = magic_number
         self.timeout = timeout
@@ -25,6 +26,7 @@ class Bot1BridgeClient:
         self._last_known_tick: Dict[str, Any] = {}
         self._last_account_info: Dict[str, Any] = {}
         self._resolved_symbol: Optional[str] = None
+        self._recent_dispatches: Dict[str, float] = {}
 
     def is_healthy(self) -> bool:
         try:
@@ -98,42 +100,47 @@ class Bot1BridgeClient:
 
     def get_candles(self, symbol: str = "XAUUSD", timeframe: str = "5m", limit: int = 150) -> pd.DataFrame:
         """
-        Fetches historical candles for Sunrise Ogle multi-EMA, ATR, and breakout calculations.
+        Fetches historical candles for Bot 1 multi-EMA, ATR, and breakout calculations.
         Tries MT5 Bridge rates first, falls back to Binance public feed.
         """
         target_sym = self._resolved_symbol or symbol
+        tf_str = timeframe.lower()
+
+        # 1. Fetch from Wine MT5 Bridge
         try:
-            r = self.session.get(f"{self.bridge_url}/rates?symbol={target_sym}&timeframe={timeframe}&count={limit}", timeout=self.timeout)
+            r = self.session.get(f"{self.bridge_url}/rates?symbol={target_sym}&timeframe={tf_str}&count={limit}", timeout=self.timeout)
             if r.status_code == 200:
-                raw = r.json()
-                if isinstance(raw, list) and len(raw) > 10:
+                data = r.json()
+                raw_rates = data.get("rates", []) if isinstance(data, dict) else (data if isinstance(data, list) else [])
+                if raw_rates and len(raw_rates) >= 5:
                     rows = []
-                    for item in raw:
+                    for item in raw_rates:
+                        t_val = item.get("time", time.time())
                         rows.append({
-                            "timestamp": pd.to_datetime(item.get("time", time.time()), unit="s", utc=True),
+                            "timestamp": pd.to_datetime(int(t_val), unit="s", utc=True),
                             "open": float(item.get("open", 0.0)),
                             "high": float(item.get("high", 0.0)),
                             "low": float(item.get("low", 0.0)),
                             "close": float(item.get("close", 0.0)),
-                            "volume": float(item.get("tick_volume", item.get("volume", 0.0)))
+                            "volume": float(item.get("tick_volume", item.get("real_volume", 0.0)))
                         })
                     df = pd.DataFrame(rows)
                     if not df.empty and df["close"].iloc[-1] > 0:
                         return df
         except Exception as e:
-            logger.debug(f"Bridge rates endpoint unavailable: {e}")
+            logger.debug(f"Bridge rates endpoint error: {e}")
 
         # 2. Fallback to Binance public klines
         binance_tf_map = {
-            "M1": "1m", "1m": "1m",
-            "M5": "5m", "5m": "5m",
-            "M15": "15m", "15m": "15m",
-            "M30": "30m", "30m": "30m",
-            "H1": "1h", "1h": "1h",
-            "H4": "4h", "4h": "4h",
-            "D1": "1d", "1d": "1d"
+            "m1": "1m", "1m": "1m",
+            "m5": "5m", "5m": "5m",
+            "m15": "15m", "15m": "15m",
+            "m30": "30m", "30m": "30m",
+            "h1": "1h", "1h": "1h",
+            "h4": "4h", "4h": "4h",
+            "d1": "1d", "1d": "1d"
         }
-        b_interval = binance_tf_map.get(timeframe.upper(), "5m")
+        b_interval = binance_tf_map.get(tf_str, "5m")
         pair = "PAXGUSDT" if any(x in symbol.upper() for x in ["XAU", "GOLD", "PAXG"]) else symbol.upper()
 
         try:
@@ -157,7 +164,7 @@ class Bot1BridgeClient:
         except Exception as e:
             logger.debug(f"Binance fallback rates error: {e}")
 
-        # Synthetic fallback if all APIs unreachable
+        # 3. Synthetic fallback if all APIs unreachable
         now = datetime.datetime.now(datetime.timezone.utc)
         base_p = 2900.0
         rows = []
@@ -173,18 +180,28 @@ class Bot1BridgeClient:
             })
         return pd.DataFrame(rows)
 
-    def get_positions(self) -> List[Dict[str, Any]]:
-        """Fetch all open positions for Bot 1 matching magic number or all if not filtered."""
+    def get_positions(self, symbol: Optional[str] = None) -> List[Dict[str, Any]]:
+        """
+        Fetch open positions for Bot 1 matching magic number or Bot 1 comment.
+        wine_mt5_bridge.py returns {'positions': [...]}
+        """
         try:
-            r = self.session.get(f"{self.bridge_url}/positions", timeout=self.timeout)
+            url = f"{self.bridge_url}/positions"
+            if symbol:
+                url += f"?symbol={symbol}"
+            r = self.session.get(url, timeout=self.timeout)
             if r.status_code == 200:
-                data = r.json()
-                if isinstance(data, list):
-                    bot_positions = [
-                        p for p in data 
-                        if p.get("magic") == self.magic_number or p.get("magic") == 0 or "Sunrise" in str(p.get("comment", ""))
-                    ]
-                    return bot_positions if bot_positions else data
+                raw = r.json()
+                pos_list = raw.get("positions", []) if isinstance(raw, dict) else (raw if isinstance(raw, list) else [])
+                
+                bot_positions = []
+                for p in pos_list:
+                    p_magic = int(p.get("magic", 0))
+                    p_comment = str(p.get("comment", ""))
+                    if p_magic == self.magic_number or "Sunrise" in p_comment or "Auto Grid" in p_comment or "Bot 1" in p_comment:
+                        bot_positions.append(p)
+                
+                return bot_positions
         except Exception as e:
             logger.debug(f"Error fetching positions from bridge: {e}")
         return []
@@ -194,28 +211,44 @@ class Bot1BridgeClient:
         action: str,
         symbol: str,
         volume: float,
+        price: float = 0.0,
         sl: Optional[float] = None,
         tp: Optional[float] = None,
         comment: str = "Sunrise Bot 1"
     ) -> Dict[str, Any]:
-        """Dispatch market order to Wine MT5 terminal 1."""
+        """
+        Dispatch market order to Wine MT5 terminal via GET /order_send.
+        Includes duplicate order suppression guard (15s window).
+        """
         target_sym = self._resolved_symbol or symbol
-        payload = {
-            "action": action.upper(),
+        order_type = action.upper()
+        now_ts = time.time()
+        
+        dispatch_key = f"{target_sym}_{order_type}_{round(volume, 2)}"
+        last_dispatch = self._recent_dispatches.get(dispatch_key, 0.0)
+        if (now_ts - last_dispatch) < 15.0:
+            logger.warning(f"⚠️ Duplicate order attempt blocked by safety guard: {dispatch_key}")
+            return {"success": False, "error": f"Duplicate order suppressed (within 15s window)"}
+
+        params: Dict[str, Any] = {
             "symbol": target_sym,
+            "type": order_type,
             "volume": round(float(volume), 2),
-            "magic": self.magic_number,
-            "comment": comment
+            "price": round(float(price), 2) if price > 0 else 0.0,
+            "magic": self.magic_number
         }
         if sl is not None and sl > 0:
-            payload["sl"] = round(float(sl), 3)
+            params["sl"] = round(float(sl), 2)
         if tp is not None and tp > 0:
-            payload["tp"] = round(float(tp), 3)
+            params["tp"] = round(float(tp), 2)
 
         try:
-            r = self.session.post(f"{self.bridge_url}/order_send", json=payload, timeout=5.0)
+            url = f"{self.bridge_url}/order_send"
+            r = self.session.get(url, params=params, timeout=5.0)
             if r.status_code == 200:
                 res = r.json()
+                if res.get("success") or res.get("retcode") in (0, 10009, 10008, 10004):
+                    self._recent_dispatches[dispatch_key] = now_ts
                 logger.info(f"✅ Order dispatch result: {res}")
                 return res
             else:
@@ -225,28 +258,47 @@ class Bot1BridgeClient:
             logger.error(f"❌ Order dispatch exception: {e}")
             return {"success": False, "error": str(e)}
 
-    def close_position(self, ticket: int) -> Dict[str, Any]:
-        """Close an open position by ticket number."""
+    def close_position(self, ticket: int, volume: float = 0.0) -> Dict[str, Any]:
+        """Close an open position by ticket number via GET /position_close."""
         try:
-            payload = {"ticket": int(ticket)}
-            r = self.session.post(f"{self.bridge_url}/close_position", json=payload, timeout=4.0)
+            params: Dict[str, Any] = {"ticket": int(ticket)}
+            if volume > 0:
+                params["volume"] = round(float(volume), 2)
+            url = f"{self.bridge_url}/position_close"
+            r = self.session.get(url, params=params, timeout=4.0)
             if r.status_code == 200:
                 return r.json()
+            return {"success": False, "error": f"HTTP {r.status_code}"}
         except Exception as e:
             logger.error(f"Error closing position {ticket}: {e}")
-        return {"success": False, "error": "Close failed"}
+            return {"success": False, "error": str(e)}
 
     def modify_position(self, ticket: int, sl: Optional[float] = None, tp: Optional[float] = None) -> Dict[str, Any]:
-        """Modify SL and TP of an open position."""
+        """Modify SL and TP of an open position via GET /modify_sl_tp."""
         try:
-            payload = {"ticket": int(ticket)}
-            if sl is not None:
-                payload["sl"] = round(float(sl), 3)
-            if tp is not None:
-                payload["tp"] = round(float(tp), 3)
-            r = self.session.post(f"{self.bridge_url}/modify_position", json=payload, timeout=4.0)
+            params: Dict[str, Any] = {"ticket": int(ticket)}
+            if sl is not None and sl > 0:
+                params["sl"] = round(float(sl), 2)
+            if tp is not None and tp > 0:
+                params["tp"] = round(float(tp), 2)
+            url = f"{self.bridge_url}/modify_sl_tp"
+            r = self.session.get(url, params=params, timeout=4.0)
             if r.status_code == 200:
                 return r.json()
+            return {"success": False, "error": f"HTTP {r.status_code}"}
         except Exception as e:
             logger.error(f"Error modifying position {ticket}: {e}")
-        return {"success": False, "error": "Modify failed"}
+            return {"success": False, "error": str(e)}
+
+    def close_all_positions(self, symbol: str = "XAUUSD") -> Dict[str, Any]:
+        """Emergency kill switch closing all open positions via GET /close_all."""
+        target_sym = self._resolved_symbol or symbol
+        try:
+            url = f"{self.bridge_url}/close_all?symbol={target_sym}"
+            r = self.session.get(url, timeout=5.0)
+            if r.status_code == 200:
+                return r.json()
+            return {"success": False, "error": f"HTTP {r.status_code}"}
+        except Exception as e:
+            logger.error(f"Error executing close_all: {e}")
+            return {"success": False, "error": str(e)}

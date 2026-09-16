@@ -46,15 +46,15 @@ PORT = 80
 BOT_CONFIGS = [
     {
         "id": 1,
-        "name": "Bot #1 — Auto Grid",
-        "tag": "AUTO GRID",
-        "strategy": "Breakout Grid Engine (Runner Mode)",
+        "name": "Bot #1 — Sunrise",
+        "tag": "SUNRISE",
+        "strategy": "Sunrise Breakout Engine (4-Phase State Machine)",
         "bridge_port": 8001,
         "panel_port": 8501,
         "default_acc": 160142171,
         "server": "Exness-MT5Real20",
-        "color": "#38bdf8",
-        "icon": "⚡"
+        "color": "#f59e0b",
+        "icon": "🌅"
     },
     {
         "id": 2,
@@ -1377,7 +1377,7 @@ PORTAL_HTML = """<!DOCTYPE html>
             </div>
 
             <div class="dist-legend" id="distribution-legend">
-                <div class="legend-tag"><div class="legend-dot" style="background: #38bdf8;"></div> Bot #1 Auto Grid: --</div>
+                <div class="legend-tag"><div class="legend-dot" style="background: #f59e0b;"></div> Bot #1 Sunrise: --</div>
                 <div class="legend-tag"><div class="legend-dot" style="background: #f59e0b;"></div> Bot #2 Manual Desk: --</div>
                 <div class="legend-tag"><div class="legend-dot" style="background: #a855f7;"></div> Bot #3 Trend Runner: --</div>
                 <div class="legend-tag"><div class="legend-dot" style="background: #10b981;"></div> Bot #4 SMC Hunter: --</div>
@@ -1398,15 +1398,15 @@ PORTAL_HTML = """<!DOCTYPE html>
             </div>
 
             <div class="bots-grid" style="margin-top: 0.75rem;">
-                <!-- Bot 1: Auto Grid -->
+                <!-- Bot 1: Sunrise -->
                 <div class="bot-card">
                     <div>
                         <div class="bot-card-top">
-                            <div class="bot-avatar icon-bot1">⚡</div>
+                            <div class="bot-avatar icon-bot1">🌅</div>
                             <span class="port-badge">PORT 8501</span>
                         </div>
-                        <div class="bot-card-title">Bot #1 — Auto Grid</div>
-                        <div class="bot-card-desc">Breakout Grid Engine with Smart Runner Mode, Auto-Regime Reading, and Hardened Risk Ceilings.</div>
+                        <div class="bot-card-title">Bot #1 — Sunrise</div>
+                        <div class="bot-card-desc">Sunrise Breakout Engine with 4-Phase State Machine, Closed-Candle Pullback Validation, and ATR Ratchet.</div>
                         <div class="bot-stats-grid">
                             <div>
                                 <div class="stat-item-label">Live Equity</div>
@@ -1426,7 +1426,7 @@ PORTAL_HTML = """<!DOCTYPE html>
                             </div>
                         </div>
                     </div>
-                    <a id="link-bot1" href="http://" class="btn-desk btn-blue" style="justify-content: center;">Open Auto Grid Desk &rarr;</a>
+                    <a id="link-bot1" href="http://" class="btn-desk btn-blue" style="justify-content: center;">Open Sunrise Desk &rarr;</a>
                 </div>
 
                 <!-- Bot 2: Manual Desk -->

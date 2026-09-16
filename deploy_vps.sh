@@ -20,6 +20,8 @@ STREAMLIT_BIN=$(command -v streamlit || echo "/usr/local/bin/streamlit")
 
 echo "Stopping previous services..."
 pkill -9 -f 'app.py' 2>/dev/null || true
+pkill -9 -f 'sunrise_engine.py' 2>/dev/null || true
+pkill -9 -f 'Bot1' 2>/dev/null || true
 pkill -9 -f 'hub.py' 2>/dev/null || true
 pkill -9 -f 'bot3_trend' 2>/dev/null || true
 pkill -9 -f 'bot4_smc' 2>/dev/null || true
@@ -54,8 +56,12 @@ if systemctl is-active bot1.service >/dev/null 2>&1 || systemctl is-enabled bot1
     echo "Restarting Bot #1 via systemd..."
     systemctl restart bot1.service
 else
-    echo "Starting Bot #1 Auto Grid Dashboard (Port 8501)..."
-    nohup $STREAMLIT_BIN run /root/Maty/app.py --server.port 8501 --server.address 0.0.0.0 --server.headless true > /root/Maty/logs/streamlit_8501.log 2>&1 &
+    echo "Starting Bot #1 Sunrise Engine Daemon..."
+    nohup $PYTHON_BIN /root/Maty/Bot1/sunrise_engine.py > /root/Maty/logs/bot1_engine.log 2>&1 &
+    echo "Bot #1 Engine started."
+
+    echo "Starting Bot #1 Sunrise Dashboard (Port 8501)..."
+    nohup $STREAMLIT_BIN run /root/Maty/Bot1/panel.py --server.port 8501 --server.address 0.0.0.0 --server.headless true > /root/Maty/logs/streamlit_8501.log 2>&1 &
     echo "Bot #1 Dashboard started."
 fi
 

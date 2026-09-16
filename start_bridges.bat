@@ -60,7 +60,7 @@ timeout /t 1 /nobreak >nul
 
 REM ── Start Bot #1 Bridge (Port 8001) ──────────────────────────────────────
 echo Starting Bridge #1 on port 8001...
-start "Bridge 8001 — Bot #1 (Auto Grid MT5)" cmd /k "python wine_mt5_bridge.py 8001"
+start "Bridge 8001 — Bot #1 (Sunrise MT5)" cmd /k "python wine_mt5_bridge.py 8001"
 
 REM ── Start Bot #2 Bridge (Port 8002) ──────────────────────────────────────
 echo Starting Bridge #2 on port 8002...
@@ -96,7 +96,7 @@ echo ✅  Bridges running:
     echo     Bot #6 Bridge → http://127.0.0.1:8006/account
 echo.
 echo Start the Streamlit Dashboards:
-echo     Bot #1 (Auto Grid):    streamlit run app.py --server.port 8501
+echo     Bot #1 (Sunrise):      streamlit run Bot1\panel.py --server.port 8501
 echo     Bot #2 (Manual Desk):  streamlit run bot2_manual\panel.py --server.port 8502
 echo     Bot #3 (Trend Runner): streamlit run bot3_trend\panel.py --server.port 8503
 echo     Bot #4 (SMC Hunter):   streamlit run bot4_smc\panel.py --server.port 8504

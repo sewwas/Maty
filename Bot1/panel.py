@@ -21,7 +21,7 @@ from plotly.subplots import make_subplots
 
 # Streamlit page config
 st.set_page_config(
-    page_title="Profity AI — Bot #1 Sunrise Ogle System",
+    page_title="Profity AI — Bot #1 Sunrise",
     page_icon="🌅",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -144,7 +144,7 @@ with st.sidebar:
 # ── Main Header ───────────────────────────────────────────────────────────────
 col_title, col_status = st.columns([3, 1])
 with col_title:
-    st.markdown('<div class="main-header">🌅 Sunrise Ogle Trading System — Bot #1</div>', unsafe_allow_html=True)
+    st.markdown('<div class="main-header">🌅 Bot #1 — Sunrise</div>', unsafe_allow_html=True)
     st.caption(f"MT5 Bridge Port 8001 | Exness Real ({acc.get('login', 'Connected')}) | Asset: {symbol} (5M)")
 
 with col_status:
@@ -283,7 +283,8 @@ if len(positions) > 0:
     rows = []
     for p in positions:
         ticket = p.get("ticket")
-        p_type = p.get("type", "BUY")
+        raw_type = p.get("type", "BUY")
+        p_type = "BUY" if str(raw_type) in ("0", "BUY") else ("SELL" if str(raw_type) in ("1", "SELL") else str(raw_type))
         open_price = float(p.get("open_price", p.get("price_open", 0.0)))
         profit = float(p.get("profit", 0.0))
         sl = float(p.get("sl", 0.0))
@@ -303,12 +304,13 @@ if len(positions) > 0:
     st.dataframe(df_pos, use_container_width=True, hide_index=True)
 
     # Individual close buttons
-    c_btn_cols = st.columns(len(positions))
+    c_btn_cols = st.columns(min(len(positions), 6))
     for i, p in enumerate(positions):
-        with c_btn_cols[i]:
+        with c_btn_cols[i % 6]:
             if st.button(f"Close #{p.get('ticket')}", key=f"close_{p.get('ticket')}"):
                 engine.bridge.close_position(p.get("ticket"))
-                st.toast(f"Closed Ticket #{p.get('ticket')}")
+                st.toast(f"Closing Ticket #{p.get('ticket')}...")
+                st.rerun()
 else:
     st.info("No active positions currently open. Bot 1 is actively monitoring M5 market structure.")
 
