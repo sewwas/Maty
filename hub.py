@@ -103,6 +103,18 @@ BOT_CONFIGS = [
         "server": "Exness-MT5Real36",
         "color": "#ec4899",
         "icon": "🤖"
+    },
+    {
+        "id": 6,
+        "name": "Bot #6 — FVG Crossfire",
+        "tag": "CROSSFIRE",
+        "strategy": "3-Signal Confluence (FVG + POC + Crossfire Zone)",
+        "bridge_port": 8006,
+        "panel_port": 8506,
+        "default_acc": 257515250,
+        "server": "Exness-MT5Real36",
+        "color": "#14b8a6",
+        "icon": "🔥"
     }
 ]
 
