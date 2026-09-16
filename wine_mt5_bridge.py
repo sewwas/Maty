@@ -271,6 +271,9 @@ class MT5BridgeHandler(BaseHTTPRequestHandler):
 
                 if rates is not None and len(rates) > 0:
                     bars = []
+                    # MT5 returns numpy structured array — rows are numpy.void, NOT dicts
+                    # Use rates.dtype.names to check available fields safely
+                    col_names = rates.dtype.names if hasattr(rates, 'dtype') else []
                     for row in rates:
                         bars.append({
                             "time":        int(row["time"]),
@@ -279,8 +282,8 @@ class MT5BridgeHandler(BaseHTTPRequestHandler):
                             "low":         float(row["low"]),
                             "close":       float(row["close"]),
                             "tick_volume": int(row["tick_volume"]),
-                            "spread":      int(row.get("spread", 0)),
-                            "real_volume": int(row.get("real_volume", 0)),
+                            "spread":      int(row["spread"])      if "spread"      in col_names else 0,
+                            "real_volume": int(row["real_volume"]) if "real_volume" in col_names else 0,
                         })
                     res = {"symbol": used_sym, "timeframe": tf_str, "rates": bars}
                     print(f"[Bridge {port}] /rates {used_sym} {tf_str} x{len(bars)} bars", flush=True)

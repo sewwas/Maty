@@ -46,8 +46,17 @@ def run():
     config = load_config()
     client = Bot6BridgeClient(magic_number=config["magic_number"])
 
-    if not client.is_healthy():
-        logger.error("❌ Bridge is not running on port 8006. Start start_bridges.bat first!")
+    # Bridge may take a few seconds to start up (Wine + MT5 init)
+    # Retry health check up to 30 times (150 seconds total) before giving up
+    max_retries = 30
+    for attempt in range(1, max_retries + 1):
+        if client.is_healthy():
+            logger.info(f"[OK] Bridge on port 8006 is healthy (attempt {attempt})")
+            break
+        logger.warning(f"[{attempt}/{max_retries}] Bridge not ready yet — retrying in 5s...")
+        time.sleep(5)
+    else:
+        logger.error("Bridge did not become healthy after 150s. Check wine_mt5_bridge.py 8006.")
         return
 
     # Bug #7 FIX: enable_symbol is missing from bridge_client — call safely
