@@ -111,8 +111,8 @@ BOT_CONFIGS = [
         "strategy": "3-Signal Confluence (FVG + POC + Crossfire Zone)",
         "bridge_port": 8006,
         "panel_port": 8506,
-        "default_acc": 257515250,
-        "server": "Exness-MT5Real36",
+        "default_acc": 160171506,
+        "server": "Exness-MT5Real20",
         "color": "#14b8a6",
         "icon": "🔥"
     }
@@ -871,6 +871,7 @@ PORTAL_HTML = """<!DOCTYPE html>
         .icon-bot3 { background: rgba(168, 85, 247, 0.15); border: 1px solid rgba(168, 85, 247, 0.35); }
         .icon-bot4 { background: rgba(16, 185, 129, 0.15); border: 1px solid rgba(16, 185, 129, 0.35); }
         .icon-bot5 { background: rgba(236, 72, 153, 0.15); border: 1px solid rgba(236, 72, 153, 0.35); }
+        .icon-bot6 { background: rgba(20, 184, 166, 0.15); border: 1px solid rgba(20, 184, 166, 0.35); }
 
         .bot-name {
             font-weight: 700;
@@ -979,6 +980,8 @@ PORTAL_HTML = """<!DOCTYPE html>
         .btn-emerald:hover { background: #047857; box-shadow: 0 0 12px rgba(5, 150, 105, 0.4); }
         .btn-pink { background: #db2777; color: #fff; }
         .btn-pink:hover { background: #be185d; box-shadow: 0 0 12px rgba(219, 39, 119, 0.4); }
+        .btn-teal { background: #0d9488; color: #fff; }
+        .btn-teal:hover { background: #0f766e; box-shadow: 0 0 12px rgba(13, 148, 136, 0.4); }
 
         /* ── Volume & Distribution Card ── */
         .dist-card {
@@ -1191,7 +1194,7 @@ PORTAL_HTML = """<!DOCTYPE html>
                 </div>
                 <div class="vps-status-pill">
                     <span class="dot-live"></span>
-                    <span id="vps-tag">169.58.190.245 • 5 BOTS LINKED</span>
+                    <span id="vps-tag">169.58.190.245 • 6 BOTS LINKED</span>
                 </div>
             </div>
 
@@ -1315,7 +1318,7 @@ PORTAL_HTML = """<!DOCTYPE html>
                     <span>🏆</span> Multi-Bot Profit Comparison Matrix
                 </div>
                 <div style="font-size: 0.8rem; color: var(--text-muted);">
-                    Live High-Frequency MT5 Bridge Streaming (:8001-:8005)
+                    Live High-Frequency MT5 Bridge Streaming (:8001-:8006)
                 </div>
             </div>
 
@@ -1361,11 +1364,12 @@ PORTAL_HTML = """<!DOCTYPE html>
             </div>
 
             <div class="dist-bar" id="distribution-bar">
-                <div class="dist-slice" style="width: 20%; background: #38bdf8;"></div>
-                <div class="dist-slice" style="width: 20%; background: #f59e0b;"></div>
-                <div class="dist-slice" style="width: 20%; background: #a855f7;"></div>
-                <div class="dist-slice" style="width: 20%; background: #10b981;"></div>
-                <div class="dist-slice" style="width: 20%; background: #ec4899;"></div>
+                <div class="dist-slice" style="width: 16.6%; background: #38bdf8;"></div>
+                <div class="dist-slice" style="width: 16.6%; background: #f59e0b;"></div>
+                <div class="dist-slice" style="width: 16.6%; background: #a855f7;"></div>
+                <div class="dist-slice" style="width: 16.6%; background: #10b981;"></div>
+                <div class="dist-slice" style="width: 16.6%; background: #ec4899;"></div>
+                <div class="dist-slice" style="width: 16.6%; background: #14b8a6;"></div>
             </div>
 
             <div class="dist-legend" id="distribution-legend">
@@ -1374,17 +1378,18 @@ PORTAL_HTML = """<!DOCTYPE html>
                 <div class="legend-tag"><div class="legend-dot" style="background: #a855f7;"></div> Bot #3 Trend Runner: --</div>
                 <div class="legend-tag"><div class="legend-dot" style="background: #10b981;"></div> Bot #4 SMC Hunter: --</div>
                 <div class="legend-tag"><div class="legend-dot" style="background: #ec4899;"></div> Bot #5 AI Ensemble: --</div>
+                <div class="legend-tag"><div class="legend-dot" style="background: #14b8a6;"></div> Bot #6 FVG Crossfire: --</div>
             </div>
         </section>
 
-        <!-- 5 Bot Dedicated Command Cards -->
+        <!-- 6 Bot Dedicated Command Cards -->
         <section>
             <div class="section-bar">
                 <div class="section-heading">
                     <span>🚀</span> Individual Bot Control Desks
                 </div>
                 <div style="font-size: 0.8rem; color: var(--text-muted);">
-                    Direct Port Handshakes: 8501, 8502, 8503, 8504, 8505
+                    Direct Port Handshakes: 8501-8506
                 </div>
             </div>
 
@@ -1543,6 +1548,37 @@ PORTAL_HTML = """<!DOCTYPE html>
                     </div>
                     <a id="link-bot5" href="http://" class="btn-desk btn-pink" style="justify-content: center;">Open AI Panel &rarr;</a>
                 </div>
+
+                <!-- Bot 6: FVG Crossfire -->
+                <div class="bot-card">
+                    <div>
+                        <div class="bot-card-top">
+                            <div class="bot-avatar icon-bot6">🔥</div>
+                            <span class="port-badge">PORT 8506</span>
+                        </div>
+                        <div class="bot-card-title">Bot #6 — FVG Crossfire</div>
+                        <div class="bot-card-desc">3-Signal Confluence (FVG + POC + Crossfire Zone) high-precision reversal strategy.</div>
+                        <div class="bot-stats-grid">
+                            <div>
+                                <div class="stat-item-label">Live Equity</div>
+                                <div class="stat-item-val mono" id="b6-equity">--</div>
+                            </div>
+                            <div>
+                                <div class="stat-item-label">Floating P&L</div>
+                                <div class="stat-item-val mono" id="b6-floating">--</div>
+                            </div>
+                            <div>
+                                <div class="stat-item-label" id="b6-pnl-label">30D Realized</div>
+                                <div class="stat-item-val mono" id="b6-pnl">--</div>
+                            </div>
+                            <div>
+                                <div class="stat-item-label">Win Rate</div>
+                                <div class="stat-item-val mono val-neutral" id="b6-winrate">--</div>
+                            </div>
+                        </div>
+                    </div>
+                    <a id="link-bot6" href="http://" class="btn-desk btn-teal" style="justify-content: center;">Open FVG Crossfire &rarr;</a>
+                </div>
             </div>
         </section>
 
@@ -1554,7 +1590,7 @@ PORTAL_HTML = """<!DOCTYPE html>
                     <span class="vps-status-pill" id="pos-count-pill" style="font-size: 0.7rem; padding: 0.15rem 0.5rem;">0 Open</span>
                 </div>
                 <div style="font-size: 0.8rem; color: var(--text-muted);">
-                    Real-time floating P&L synchronized across all 5 MT5 instances
+                    Real-time floating P&L synchronized across all 6 MT5 instances
                 </div>
             </div>
 
@@ -1613,6 +1649,7 @@ PORTAL_HTML = """<!DOCTYPE html>
         document.getElementById("link-bot3").href = "http://" + host + ":8503";
         document.getElementById("link-bot4").href = "http://" + host + ":8504";
         document.getElementById("link-bot5").href = "http://" + host + ":8505";
+        document.getElementById("link-bot6").href = "http://" + host + ":8506";
         document.getElementById("link-vnc").href = "http://" + host + ":8006";
 
         // Fullscreen API toggle
@@ -1691,7 +1728,7 @@ PORTAL_HTML = """<!DOCTYPE html>
             document.getElementById("th-period-pnl").innerText = labels[period];
             document.getElementById("dist-period-label").innerText = period.toUpperCase() + " Distribution";
             
-            ['b1', 'b2', 'b3', 'b4', 'b5'].forEach(id => {
+            ['b1', 'b2', 'b3', 'b4', 'b5', 'b6'].forEach(id => {
                 const el = document.getElementById(id + "-pnl-label");
                 if (el) el.innerText = period.toUpperCase() + " Realized";
             });
@@ -1840,7 +1877,8 @@ PORTAL_HTML = """<!DOCTYPE html>
                 2: "btn-gold",
                 3: "btn-purple",
                 4: "btn-emerald",
-                5: "btn-pink"
+                5: "btn-pink",
+                6: "btn-teal"
             };
 
             bots.forEach(b => {
@@ -2009,7 +2047,7 @@ PORTAL_HTML = """<!DOCTYPE html>
                 posTbody.innerHTML = `
                     <tr>
                         <td colspan="9" style="text-align: center; padding: 2rem; color: var(--text-muted);">
-                            ✨ All 5 engines are flat. No floating drawdown. Standing by for high-probability setups.
+                            ✨ All 6 engines are flat. No floating drawdown. Standing by for high-probability setups.
                         </td>
                     </tr>
                 `;

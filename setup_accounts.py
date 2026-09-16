@@ -22,7 +22,7 @@ BANNER = """
 ╔══════════════════════════════════════════════════════════╗
 ║           Profity AI — MT5 Account Setup                 ║
 ║                                                          ║
-║  This saves your login credentials for both bot          ║
+║  This saves your login credentials for all bot           ║
 ║  instances so they connect to MT5 automatically.         ║
 ║                                                          ║
 ║  ⚠️  Each bot MUST use a DIFFERENT MT5 account number!   ║
@@ -78,12 +78,12 @@ def setup_account(bot_num: int, port: int):
 
     login_str = prompt("  MT5 Account Login Number")
     if not login_str.isdigit():
-        print("  ⛔ Invalid login number. Skipping Bot #{bot_num}.")
+        print(f"  ⛔ Invalid login number. Skipping Bot #{bot_num}.")
         return
 
     password = prompt("  MT5 Password", secret=True)
     if not password:
-        print("  ⛔ Password cannot be empty. Skipping Bot #{bot_num}.")
+        print(f"  ⛔ Password cannot be empty. Skipping Bot #{bot_num}.")
         return
 
     default_srv = "Exness-MT5Real36" if bot_num == 1 else "Exness-MT5Real36"
