@@ -33,8 +33,12 @@ TF_SECONDS = {
 COOLDOWN_CANDLES = 3
 
 
+import os as _os
+
 def load_config():
-    with open("config.json", "r") as f:
+    # Always resolve config.json relative to THIS script, not the cwd
+    _here = _os.path.dirname(_os.path.abspath(__file__))
+    with open(_os.path.join(_here, "config.json"), "r") as f:
         return json.load(f)
 
 
