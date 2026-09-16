@@ -137,6 +137,91 @@ def test_smc_liquidity_and_fvg():
     assert perf["profit_factor"] == 9.0
     print(f"✅ Analytics Metrics Passed: Win Rate={perf['win_rate']}% | Profit Factor={perf['profit_factor']} | Net Profit=${perf['net_profit']}")
 
+    # 7. Test Data-Driven Dynamic Stop Loss Calculation
+    # Bearish Sweep: sweep extreme at 2915.0, entry at 2913.0, ATR=2.0, Spread=0.20
+    sl_price, sl_dist, sl_info = engine._calculate_dynamic_sl(
+        direction="BEARISH_SWEEP",
+        sweep_extreme=2915.0,
+        entry_price=2913.0,
+        atr=2.0,
+        spread=0.20
+    )
+    # Expected: buffer = max(0.20 * 1.5, 2.0 * 0.30) = max(0.30, 0.60) = 0.60
+    # raw_sl = 2915.0 + 0.60 = 2915.60
+    # min_sl_dist = max(1.60, 0.60, 1.00) = 1.60. raw_dist = 2.60 >= 1.60 -> sl_price = 2915.60
+    assert sl_price > 2915.0, "SL must be above sweep extreme for SELL"
+    assert sl_info["vol_buffer"] == 0.60, f"Expected 0.60 buffer, got {sl_info['vol_buffer']}"
+    assert sl_price == 2915.60, f"Expected 2915.60, got {sl_price}"
+    print(f"✅ Dynamic Stop Loss Passed (SELL): Extreme=2915.0 | ATR Buffer={sl_info['vol_buffer']} -> SL={sl_price} (Dist={sl_dist})")
+
+    # Bullish Sweep: sweep extreme at 2885.0, entry at 2887.0, ATR=2.5, Spread=0.30
+    sl_b_price, sl_b_dist, sl_b_info = engine._calculate_dynamic_sl(
+        direction="BULLISH_SWEEP",
+        sweep_extreme=2885.0,
+        entry_price=2887.0,
+        atr=2.5,
+        spread=0.30
+    )
+    # buffer = max(0.45, 0.75) = 0.75 -> SL = 2885.0 - 0.75 = 2884.25
+    assert sl_b_price < 2885.0, "SL must be below sweep extreme for BUY"
+    assert sl_b_price == 2884.25, f"Expected 2884.25, got {sl_b_price}"
+    print(f"✅ Dynamic Stop Loss Passed (BUY): Extreme=2885.0 | ATR Buffer={sl_b_info['vol_buffer']} -> SL={sl_b_price} (Dist={sl_b_dist})")
+
+    # 8. Test Data-Driven Dynamic Take Profit (Opposing Liquidity Pool Targeting)
+    # SELL Trade at 2910.0, SL Distance = 2.0 (SL at 2912.0)
+    # Opposing Pools contain Asian Low at 2902.0 (Distance = 8.0 -> Implied R:R = 4.0)
+    # Target should be 2902.0 + front_run (0.25) = 2902.25
+    test_pools_tp = {
+        "asian_low": 2902.0,
+        "pdl": 2895.0,
+        "asian_high": 2918.0,
+        "pdh": 2925.0,
+        "swing_highs": [2920.0],
+        "swing_lows": [2905.0],
+        "eqh": [],
+        "eql": []
+    }
+    tp_price, tp_rr, tp_info = engine._calculate_dynamic_tp(
+        direction="BEARISH_SWEEP",
+        entry_price=2910.0,
+        sl_distance=2.0,
+        pools=test_pools_tp,
+        atr=2.0
+    )
+    # Swing low is at 2905.0 (gain = 2910 - 2905.25 = 4.75 -> R:R = 2.38 >= 1.8)
+    # Nearest opposing pool below entry with R:R >= 1.8 is SWING_LOW @ 2905.0 -> TP = 2905.25
+    assert tp_price < 2910.0, "Take profit must be below entry for SELL"
+    assert tp_rr >= 1.8, f"Implied R:R must be >= 1.8, got {tp_rr}"
+    assert "2905.00" in tp_info["target_name"], f"Expected target to reference 2905.00, got {tp_info['target_name']}"
+    print(f"✅ Dynamic Take Profit Passed (SELL Opposing Pool): Target={tp_info['target_name']} | TP={tp_price} | Implied R:R={tp_rr}")
+
+    # BUY Trade at 2890.0, SL Distance = 2.0 (SL at 2888.0)
+    # Targets upward liquidity: nearest is Asian High at 2918.0 (clamped to max_rr 5.0 = 2900.0) or PDH
+    tp_b_price, tp_b_rr, tp_b_info = engine._calculate_dynamic_tp(
+        direction="BULLISH_SWEEP",
+        entry_price=2890.0,
+        sl_distance=2.0,
+        pools=test_pools_tp,
+        atr=2.0
+    )
+    assert tp_b_price > 2890.0, "Take profit must be above entry for BUY"
+    assert tp_b_rr >= 1.8, f"Implied R:R must be >= 1.8, got {tp_b_rr}"
+    print(f"✅ Dynamic Take Profit Passed (BUY Opposing Pool): Target={tp_b_info['target_name']} | TP={tp_b_price} | Implied R:R={tp_b_rr}")
+
+    # 9. Test Fallback when No Opposing Pools Exist
+    empty_pools = {"asian_low": 0.0, "pdl": 0.0, "asian_high": 0.0, "pdh": 0.0, "swing_highs": [], "swing_lows": []}
+    tp_fb_price, tp_fb_rr, tp_fb_info = engine._calculate_dynamic_tp(
+        direction="BEARISH_SWEEP",
+        entry_price=2910.0,
+        sl_distance=2.0,
+        pools=empty_pools,
+        atr=2.0
+    )
+    # Expected fallback to 3.5 R:R: 2910 - (2.0 * 3.5) = 2903.0
+    assert tp_fb_price == 2903.0, f"Expected 2903.0, got {tp_fb_price}"
+    assert "DYNAMIC_RR" in tp_fb_info["target_name"]
+    print(f"✅ Dynamic TP Graceful Fallback Passed: Target={tp_fb_info['target_name']} | TP={tp_fb_price} | R:R={tp_fb_rr}")
+
     print("\n================================================================")
     print("      ALL UNIT TESTS PASSED FOR BOT #4 SMC HUNTER! 🚀          ")
     print("================================================================")
@@ -144,3 +229,4 @@ def test_smc_liquidity_and_fvg():
 
 if __name__ == "__main__":
     test_smc_liquidity_and_fvg()
+

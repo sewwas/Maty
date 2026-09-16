@@ -1,1 +1,0 @@
-# Maty core package

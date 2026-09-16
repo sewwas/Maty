@@ -117,7 +117,12 @@ class SMCEngine:
                 "be_offset_points": 30,
                 "atr_period": 14,
                 "atr_sl_multiplier": 1.2,
-                "trailing_stop_active": True
+                "trailing_stop_active": True,
+                "dynamic_sl_tp_enabled": True,
+                "sl_atr_multiplier": 0.30,
+                "min_target_rr": 1.8,
+                "max_target_rr": 5.0,
+                "front_run_points": 25
             }
         }
 
@@ -144,6 +149,7 @@ class SMCEngine:
                         data["daily_date"] = today_str
                         data["daily_pnl"] = 0.0
                         data["daily_trades_count"] = 0
+                    data.setdefault("tp1_executed_tickets", [])
                     return data
             except Exception as e:
                 logger.error(f"Error loading state.json: {e}")
@@ -156,7 +162,8 @@ class SMCEngine:
             "trade_history": [],
             "last_processed_candle": 0,
             "active_fvg": None,
-            "swept_level": None
+            "swept_level": None,
+            "tp1_executed_tickets": []
         }
 
     def _save_state(self):
@@ -718,7 +725,7 @@ class SMCEngine:
                 entry_price = bid if sweep["direction"] == "BEARISH_SWEEP" else ask
                 if entry_price > 0:
                     logger.info(f"⚡ [Bot #4 SMC] Firing Direct Turtle Soup Reversal on {sweep['level_name']} rejection @ {entry_price:.2f}")
-                    self._execute_smc_entry(sweep, None, entry_price, equity, symbol, dyn_risk=dyn_risk)
+                    self._execute_smc_entry(sweep, None, entry_price, equity, symbol, dyn_risk=dyn_risk, pools=pools, tick=tick, df_m5=df_m5)
                     return
 
             active_sweep = self.state.get("swept_level")
@@ -756,48 +763,254 @@ class SMCEngine:
 
             if inside_fvg or tapped_midpoint:
                 logger.info(f"⚡ [Bot #4 SMC] Firing FVG Mitigation Retest Entry @ {current_price:.2f} (FVG {best_fvg['bottom']:.2f}-{best_fvg['top']:.2f})")
-                self._execute_smc_entry(active_sweep, best_fvg, current_price, equity, symbol, dyn_risk=dyn_risk)
+                self._execute_smc_entry(active_sweep, best_fvg, current_price, equity, symbol, dyn_risk=dyn_risk, pools=pools, tick=tick, df_m5=df_m5)
+
+    def _calculate_dynamic_sl(
+        self,
+        direction: str,
+        sweep_extreme: float,
+        entry_price: float,
+        atr: float,
+        spread: float = 0.20
+    ) -> Tuple[float, float, Dict[str, Any]]:
+        """
+        Data-driven Stop Loss Calculation:
+        - Anchored outside the sweep rejection wick extreme.
+        - Dynamic Volatility & Spread buffer: max(spread * 1.5, atr * sl_atr_multiplier).
+        - Clamped between min_sl (max(0.8 * atr, spread * 3.0, 1.00)) and max_sl (2.8 * atr).
+        Returns: (sl_price, sl_distance, info_dict)
+        """
+        strat = self.config.get("strategy", {})
+        mult = float(strat.get("sl_atr_multiplier", 0.30))
+
+        # Volatility & spread adaptive buffer
+        vol_buffer = max(spread * 1.5, atr * mult)
+        vol_buffer = max(0.25, min(round(vol_buffer, 2), 1.80))
+
+        if direction == "BEARISH_SWEEP":  # SELL
+            raw_sl = sweep_extreme + vol_buffer
+            raw_distance = raw_sl - entry_price
+        else:  # BULLISH_SWEEP (BUY)
+            raw_sl = sweep_extreme - vol_buffer
+            raw_distance = entry_price - raw_sl
+
+        # Dynamic safe distance sanity bounds
+        min_sl_dist = max(atr * 0.8, spread * 3.0, 1.00)
+        max_sl_dist = max(min_sl_dist + 1.0, atr * 2.8)
+
+        if raw_distance < min_sl_dist:
+            sl_distance = min_sl_dist
+            sl_price = round(entry_price + sl_distance, 2) if direction == "BEARISH_SWEEP" else round(entry_price - sl_distance, 2)
+        elif raw_distance > max_sl_dist:
+            sl_distance = max_sl_dist
+            sl_price = round(entry_price + sl_distance, 2) if direction == "BEARISH_SWEEP" else round(entry_price - sl_distance, 2)
+        else:
+            sl_distance = raw_distance
+            sl_price = round(raw_sl, 2)
+
+        sl_distance = round(abs(entry_price - sl_price), 2)
+        info = {
+            "sweep_extreme": round(sweep_extreme, 2),
+            "vol_buffer": round(vol_buffer, 2),
+            "spread": round(spread, 2),
+            "atr": round(atr, 2),
+            "sl_distance": sl_distance
+        }
+        return sl_price, sl_distance, info
+
+    def _calculate_dynamic_tp(
+        self,
+        direction: str,
+        entry_price: float,
+        sl_distance: float,
+        pools: Dict[str, Any],
+        atr: float,
+        dyn_risk: Optional[Dict[str, Any]] = None
+    ) -> Tuple[float, float, Dict[str, Any]]:
+        """
+        Data-driven Take Profit targeting opposing institutional liquidity pools:
+        - Bearish Sweep (SELL) -> Targets Sell-Side Liquidity (SSL): Asian Low, PDL, Swing Lows, EQL.
+        - Bullish Sweep (BUY) -> Targets Buy-Side Liquidity (BSL): Asian High, PDH, Swing Highs, EQH.
+        - Applies front-run buffer (e.g. 0.25) so order fills before the market bounces.
+        - Requires Implied R:R >= min_target_rr (default 1.8).
+        - If no suitable pool found, gracefully falls back to dynamic ATR expansion / dynamic R:R.
+        Returns: (tp_price, implied_rr, info_dict)
+        """
+        strat = self.config.get("strategy", {})
+        min_rr = float(strat.get("min_target_rr", 1.8))
+        max_rr = float(strat.get("max_target_rr", 5.0))
+        front_run = float(strat.get("front_run_points", 25)) / 100.0  # 25 pts = 0.25 on Gold
+        fallback_rr = float(dyn_risk.get("tp2_rr", strat.get("tp2_rr", 3.5))) if dyn_risk else float(strat.get("tp2_rr", 3.5))
+
+        target_level = None
+        target_name = "ATR_EXPANSION_FALLBACK"
+
+        if direction == "BEARISH_SWEEP":  # SELL: Hunt Sell-Side Liquidity below entry
+            candidates = []
+            if pools.get("asian_low", 0.0) > 0 and pools["asian_low"] < entry_price:
+                candidates.append(("ASIAN_LOW", float(pools["asian_low"])))
+            if pools.get("pdl", 0.0) > 0 and pools["pdl"] < entry_price:
+                candidates.append(("PDL", float(pools["pdl"])))
+            for eql in pools.get("eql", []):
+                if eql < entry_price:
+                    candidates.append(("EQL", float(eql)))
+            for sh in pools.get("swing_lows", []):
+                if sh < entry_price:
+                    candidates.append(("SWING_LOW", float(sh)))
+
+            # Sort descending: from nearest below entry to lowest
+            candidates.sort(key=lambda x: x[1], reverse=True)
+
+            for name, lvl in candidates:
+                potential_tp = lvl + front_run
+                gain = entry_price - potential_tp
+                implied_rr = gain / sl_distance
+                if min_rr <= implied_rr <= max_rr:
+                    target_level = potential_tp
+                    target_name = f"{name} @ {lvl:.2f}"
+                    break
+                elif implied_rr > max_rr:
+                    # Beyond max ceiling, clamp to max_rr
+                    target_level = round(entry_price - (sl_distance * max_rr), 2)
+                    target_name = f"{name} (Clamped to {max_rr} R:R)"
+                    break
+
+            if target_level is None:
+                # Fallback to dynamic R:R / ATR expansion
+                target_level = round(entry_price - (sl_distance * fallback_rr), 2)
+                target_name = f"DYNAMIC_RR ({fallback_rr:.1f}x)"
+
+            final_tp = round(target_level, 2)
+            final_rr = round((entry_price - final_tp) / sl_distance, 2)
+
+        else:  # BULLISH_SWEEP (BUY): Hunt Buy-Side Liquidity above entry
+            candidates = []
+            if pools.get("asian_high", 0.0) > 0 and pools["asian_high"] > entry_price:
+                candidates.append(("ASIAN_HIGH", float(pools["asian_high"])))
+            if pools.get("pdh", 0.0) > 0 and pools["pdh"] > entry_price:
+                candidates.append(("PDH", float(pools["pdh"])))
+            for eqh in pools.get("eqh", []):
+                if eqh > entry_price:
+                    candidates.append(("EQH", float(eqh)))
+            for sh in pools.get("swing_highs", []):
+                if sh > entry_price:
+                    candidates.append(("SWING_HIGH", float(sh)))
+
+            # Sort ascending: from nearest above entry to highest
+            candidates.sort(key=lambda x: x[1])
+
+            for name, lvl in candidates:
+                potential_tp = lvl - front_run
+                gain = potential_tp - entry_price
+                implied_rr = gain / sl_distance
+                if min_rr <= implied_rr <= max_rr:
+                    target_level = potential_tp
+                    target_name = f"{name} @ {lvl:.2f}"
+                    break
+                elif implied_rr > max_rr:
+                    # Beyond max ceiling, clamp to max_rr
+                    target_level = round(entry_price + (sl_distance * max_rr), 2)
+                    target_name = f"{name} (Clamped to {max_rr} R:R)"
+                    break
+
+            if target_level is None:
+                target_level = round(entry_price + (sl_distance * fallback_rr), 2)
+                target_name = f"DYNAMIC_RR ({fallback_rr:.1f}x)"
+
+            final_tp = round(target_level, 2)
+            final_rr = round((final_tp - entry_price) / sl_distance, 2)
+
+        # Calculate TP1 (50% dealing range equilibrium)
+        if direction == "BEARISH_SWEEP":
+            tp1_midpoint = round(entry_price - ((entry_price - final_tp) * 0.50), 2)
+        else:
+            tp1_midpoint = round(entry_price + ((final_tp - entry_price) * 0.50), 2)
+
+        info = {
+            "target_name": target_name,
+            "target_tp": final_tp,
+            "implied_rr": final_rr,
+            "tp1_equilibrium": tp1_midpoint,
+            "front_run": front_run
+        }
+        return final_tp, final_rr, info
 
     def _execute_smc_entry(
         self,
         sweep: Dict[str, Any],
-        fvg: Dict[str, Any],
+        fvg: Optional[Dict[str, Any]],
         entry_price: float,
         equity: float,
         symbol: str,
-        dyn_risk: Optional[Dict[str, Any]] = None
+        dyn_risk: Optional[Dict[str, Any]] = None,
+        pools: Optional[Dict[str, Any]] = None,
+        tick: Optional[Dict[str, Any]] = None,
+        df_m5: Optional[pd.DataFrame] = None
     ):
         if dyn_risk is None:
             dyn_risk = self._cached_dynamic_risk or {}
+        if pools is None:
+            pools = self._cached_liquidity_pools or {}
+        if tick is None:
+            tick = self.bridge.get_tick(symbol=symbol) or {}
+        if df_m5 is None:
+            df_m5 = self._cached_m5
 
-        tp2_rr = float(dyn_risk.get("tp2_rr", self.config.get("strategy", {}).get("tp2_rr", 3.5)))
+        strat = self.config.get("strategy", {})
+        dynamic_sl_tp = strat.get("dynamic_sl_tp_enabled", True)
         risk_pct = float(dyn_risk.get("risk_pct", self.config.get("risk_pct_per_trade", 1.0)))
-
         direction = sweep["direction"]
-        if direction == "BEARISH_SWEEP":
-            order_type = "SELL"
-            # Stop loss above sweep extreme + 0.50 buffer ($5 on Gold)
-            sl_price = round(sweep["sweep_extreme"] + 0.50, 2)
-            sl_distance = sl_price - entry_price
-            if sl_distance <= 0.30:
-                sl_distance = 3.00
-                sl_price = round(entry_price + 3.00, 2)
+        order_type = "SELL" if direction == "BEARISH_SWEEP" else "BUY"
 
-            tp_price = round(entry_price - (sl_distance * tp2_rr), 2)
+        # Live ATR & spread
+        atr = float(dyn_risk.get("current_atr", 1.50))
+        ask = float(tick.get("ask", entry_price))
+        bid = float(tick.get("bid", entry_price))
+        spread = max(0.05, round(abs(ask - bid), 2)) if ask > 0 and bid > 0 else 0.20
+
+        if dynamic_sl_tp:
+            sl_price, sl_distance, sl_info = self._calculate_dynamic_sl(
+                direction=direction,
+                sweep_extreme=float(sweep["sweep_extreme"]),
+                entry_price=entry_price,
+                atr=atr,
+                spread=spread
+            )
+            tp_price, tp_rr, tp_info = self._calculate_dynamic_tp(
+                direction=direction,
+                entry_price=entry_price,
+                sl_distance=sl_distance,
+                pools=pools,
+                atr=atr,
+                dyn_risk=dyn_risk
+            )
+            sl_desc = f"{sl_price:.2f} (Extreme {sl_info['sweep_extreme']} + VolBuffer {sl_info['vol_buffer']:.2f})"
+            tp_desc = f"{tp_price:.2f} (Target: {tp_info['target_name']} | R:R {tp_rr:.2f})"
         else:
-            order_type = "BUY"
-            # Stop loss below sweep extreme - 0.50 buffer
-            sl_price = round(sweep["sweep_extreme"] - 0.50, 2)
-            sl_distance = entry_price - sl_price
-            if sl_distance <= 0.30:
-                sl_distance = 3.00
-                sl_price = round(entry_price - 3.00, 2)
-
-            tp_price = round(entry_price + (sl_distance * tp2_rr), 2)
+            tp2_rr = float(dyn_risk.get("tp2_rr", strat.get("tp2_rr", 3.5)))
+            if direction == "BEARISH_SWEEP":
+                sl_price = round(sweep["sweep_extreme"] + 0.50, 2)
+                sl_distance = sl_price - entry_price
+                if sl_distance <= 0.30:
+                    sl_distance = 3.00
+                    sl_price = round(entry_price + 3.00, 2)
+                tp_price = round(entry_price - (sl_distance * tp2_rr), 2)
+            else:
+                sl_price = round(sweep["sweep_extreme"] - 0.50, 2)
+                sl_distance = entry_price - sl_price
+                if sl_distance <= 0.30:
+                    sl_distance = 3.00
+                    sl_price = round(entry_price - 3.00, 2)
+                tp_price = round(entry_price + (sl_distance * tp2_rr), 2)
+            sl_desc = f"{sl_price:.2f} (Fixed)"
+            tp_desc = f"{tp_price:.2f} (Fixed R:R {tp2_rr})"
 
         lot_size = self._calculate_lot_size(equity, sl_distance, risk_pct=risk_pct)
 
-        logger.info(f"🚀 [Bot #4] Executing {order_type} @ {entry_price:.2f} | Lot: {lot_size} ({risk_pct}%) | SL: {sl_price:.2f} | TP2: {tp_price:.2f} (R:R {tp2_rr})")
+        logger.info(
+            f"🚀 [Bot #4] Executing {order_type} @ {entry_price:.2f} | Lot: {lot_size} ({risk_pct}%) | "
+            f"SL: {sl_desc} | TP2: {tp_desc}"
+        )
         res = self.bridge.send_order(
             symbol=symbol,
             order_type=order_type,
@@ -847,6 +1060,14 @@ class SMCEngine:
             pass
 
         trail_mult = float(dyn_risk.get("atr_sl_multiplier", strat_cfg.get("atr_sl_multiplier", 1.2)))
+        tp1_tickets = set(self.state.get("tp1_executed_tickets", []))
+        active_tickets = {int(p.get("ticket", 0)) for p in open_positions}
+
+        # Prune stale tickets no longer open
+        if not tp1_tickets.issubset(active_tickets):
+            tp1_tickets = tp1_tickets.intersection(active_tickets)
+            self.state["tp1_executed_tickets"] = list(tp1_tickets)
+            self._save_state()
 
         for pos in open_positions:
             ticket = int(pos.get("ticket", 0))
@@ -869,52 +1090,102 @@ class SMCEngine:
             if "BUY" in pos_type:
                 gain = current_price - open_price
                 current_rr = gain / risk_dist
+                target_sl = sl
 
-                # 1. Breakeven Check
+                # 1. Stage 1: Breakeven Check (1.0 R:R) -> Free Trade
                 if current_rr >= be_rr:
-                    target_be_sl = round(open_price + be_offset, 2)
-                    if sl < target_be_sl:
-                        logger.info(f"🛡️ [Bot #4] Position #{ticket} reached {current_rr:.1f} R:R. Ratcheting SL to Breakeven @ {target_be_sl:.2f}")
-                        self.bridge.modify_position(ticket, sl=target_be_sl, tp=tp)
+                    be_level = round(open_price + be_offset, 2)
+                    if target_sl < be_level:
+                        target_sl = be_level
 
-                # 2. TP1 Partial Close Check
-                if current_rr >= tp1_rr and volume > 0.01:
-                    close_vol = round(volume * (tp1_pct / 100.0), 2)
-                    if close_vol >= 0.01:
-                        logger.info(f"💰 [Bot #4] Position #{ticket} reached TP1 ({current_rr:.1f} R:R). Closing partial {close_vol} lot.")
-                        self.bridge.close_position(ticket, volume=close_vol)
+                # 2. Stage 2: TP1 Partial Close Check (1.5 R:R) & +0.50 R:R Profit Lock
+                if current_rr >= tp1_rr:
+                    lock_05 = round(open_price + (risk_dist * 0.50), 2)
+                    if target_sl < lock_05:
+                        target_sl = lock_05
 
-                # 3. ATR Trailing Stop (Chandelier)
+                    # Execute TP1 50% partial cash-in exactly once per ticket
+                    if ticket not in tp1_tickets and volume > 0.01:
+                        close_vol = round(volume * (tp1_pct / 100.0), 2)
+                        if close_vol >= 0.01:
+                            logger.info(f"💰 [Bot #4 Milestone] Position #{ticket} reached TP1 ({current_rr:.1f} R:R). Banking {close_vol} lot.")
+                            self.bridge.close_position(ticket, volume=close_vol)
+                            tp1_tickets.add(ticket)
+                            self.state["tp1_executed_tickets"] = list(tp1_tickets)
+                            self._save_state()
+
+                # 3. Stage 3: Milestone Ratchet at 2.2 R:R -> Lock +1.40 R:R Profit
+                if current_rr >= 2.20:
+                    lock_14 = round(open_price + (risk_dist * 1.40), 2)
+                    if target_sl < lock_14:
+                        target_sl = lock_14
+
+                # 4. Stage 4: Milestone Ratchet at 3.0 R:R -> Lock +2.20 R:R Profit
+                if current_rr >= 3.00:
+                    lock_22 = round(open_price + (risk_dist * 2.20), 2)
+                    if target_sl < lock_22:
+                        target_sl = lock_22
+
+                # 5. Dynamic Chandelier ATR Trailing Stop
                 if current_rr >= tp1_rr and strat_cfg.get("trailing_stop_active", True):
                     trail_sl = round(current_price - (atr_val * trail_mult), 2)
-                    if trail_sl > sl and trail_sl > open_price:
-                        logger.info(f"📈 [Bot #4] Trailing stop updated for #{ticket}: SL -> {trail_sl:.2f} (Trail Multiplier: {trail_mult}x ATR)")
-                        self.bridge.modify_position(ticket, sl=trail_sl, tp=tp)
+                    if trail_sl > target_sl and trail_sl > open_price:
+                        target_sl = trail_sl
+
+                # Dispatch SL modification if ratcheted forward into higher profit
+                if target_sl > sl:
+                    logger.info(f"🛡️ [Bot #4 Ratchet] #{ticket} (BUY @ {open_price:.2f}) at {current_rr:.1f} R:R -> Ratcheting SL: {sl:.2f} -> {target_sl:.2f}")
+                    self.bridge.modify_position(ticket, sl=target_sl, tp=tp)
 
             elif "SELL" in pos_type:
                 gain = open_price - current_price
                 current_rr = gain / risk_dist
+                target_sl = sl
 
-                # 1. Breakeven Check
+                # 1. Stage 1: Breakeven Check (1.0 R:R) -> Free Trade
                 if current_rr >= be_rr:
-                    target_be_sl = round(open_price - be_offset, 2)
-                    if sl <= 0 or sl > target_be_sl:
-                        logger.info(f"🛡️ [Bot #4] Position #{ticket} reached {current_rr:.1f} R:R. Ratcheting SL to Breakeven @ {target_be_sl:.2f}")
-                        self.bridge.modify_position(ticket, sl=target_be_sl, tp=tp)
+                    be_level = round(open_price - be_offset, 2)
+                    if sl <= 0 or target_sl > be_level:
+                        target_sl = be_level
 
-                # 2. TP1 Partial Close Check
-                if current_rr >= tp1_rr and volume > 0.01:
-                    close_vol = round(volume * (tp1_pct / 100.0), 2)
-                    if close_vol >= 0.01:
-                        logger.info(f"💰 [Bot #4] Position #{ticket} reached TP1 ({current_rr:.1f} R:R). Closing partial {close_vol} lot.")
-                        self.bridge.close_position(ticket, volume=close_vol)
+                # 2. Stage 2: TP1 Partial Close Check (1.5 R:R) & +0.50 R:R Profit Lock
+                if current_rr >= tp1_rr:
+                    lock_05 = round(open_price - (risk_dist * 0.50), 2)
+                    if sl <= 0 or target_sl > lock_05:
+                        target_sl = lock_05
 
-                # 3. ATR Trailing Stop (Chandelier)
+                    # Execute TP1 50% partial cash-in exactly once per ticket
+                    if ticket not in tp1_tickets and volume > 0.01:
+                        close_vol = round(volume * (tp1_pct / 100.0), 2)
+                        if close_vol >= 0.01:
+                            logger.info(f"💰 [Bot #4 Milestone] Position #{ticket} reached TP1 ({current_rr:.1f} R:R). Banking {close_vol} lot.")
+                            self.bridge.close_position(ticket, volume=close_vol)
+                            tp1_tickets.add(ticket)
+                            self.state["tp1_executed_tickets"] = list(tp1_tickets)
+                            self._save_state()
+
+                # 3. Stage 3: Milestone Ratchet at 2.2 R:R -> Lock +1.40 R:R Profit
+                if current_rr >= 2.20:
+                    lock_14 = round(open_price - (risk_dist * 1.40), 2)
+                    if sl <= 0 or target_sl > lock_14:
+                        target_sl = lock_14
+
+                # 4. Stage 4: Milestone Ratchet at 3.0 R:R -> Lock +2.20 R:R Profit
+                if current_rr >= 3.00:
+                    lock_22 = round(open_price - (risk_dist * 2.20), 2)
+                    if sl <= 0 or target_sl > lock_22:
+                        target_sl = lock_22
+
+                # 5. Dynamic Chandelier ATR Trailing Stop
                 if current_rr >= tp1_rr and strat_cfg.get("trailing_stop_active", True):
                     trail_sl = round(current_price + (atr_val * trail_mult), 2)
-                    if (sl <= 0 or trail_sl < sl) and trail_sl < open_price:
-                        logger.info(f"📉 [Bot #4] Trailing stop updated for #{ticket}: SL -> {trail_sl:.2f} (Trail Multiplier: {trail_mult}x ATR)")
-                        self.bridge.modify_position(ticket, sl=trail_sl, tp=tp)
+                    if (target_sl <= 0 or trail_sl < target_sl) and trail_sl < open_price:
+                        target_sl = trail_sl
+
+                # Dispatch SL modification if ratcheted forward into higher profit
+                if target_sl > 0 and (sl <= 0 or target_sl < sl):
+                    logger.info(f"🛡️ [Bot #4 Ratchet] #{ticket} (SELL @ {open_price:.2f}) at {current_rr:.1f} R:R -> Ratcheting SL: {sl:.2f} -> {target_sl:.2f}")
+                    self.bridge.modify_position(ticket, sl=target_sl, tp=tp)
 
     # ── Read-Only Telemetry for Streamlit Panel ───────────────────────────────
     def get_telemetry(self) -> Dict[str, Any]:
@@ -926,6 +1197,20 @@ class SMCEngine:
         orders = self.bridge.get_orders(symbol=symbol)
 
         metrics = calculate_performance_metrics(self.state.get("trade_history", []))
+
+        # Preview dynamic liquidity targets
+        dynamic_preview = {}
+        bid = float(tick.get("bid", 0.0))
+        ask = float(tick.get("ask", 0.0))
+        pools = self._cached_liquidity_pools or {}
+        if bid > 0 and pools:
+            ssl_candidates = [p for p in [pools.get("asian_low", 0.0), pools.get("pdl", 0.0)] if p > 0 and p < bid]
+            bsl_candidates = [p for p in [pools.get("asian_high", 0.0), pools.get("pdh", 0.0)] if p > 0 and p > ask]
+            dynamic_preview = {
+                "dynamic_sl_tp_enabled": bool(self.config.get("strategy", {}).get("dynamic_sl_tp_enabled", True)),
+                "next_ssl_target": max(ssl_candidates) if ssl_candidates else None,
+                "next_bsl_target": min(bsl_candidates) if bsl_candidates else None
+            }
 
         return {
             "symbol": symbol,
@@ -945,6 +1230,7 @@ class SMCEngine:
             "daily_trades_count": self.state.get("daily_trades_count", 0),
             "auto_trading": self.config.get("auto_trading", True),
             "dynamic_risk": self._cached_dynamic_risk,
+            "dynamic_preview": dynamic_preview,
             "metrics": metrics,
             "config": self.config
         }

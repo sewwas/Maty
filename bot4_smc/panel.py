@@ -156,6 +156,12 @@ with st.sidebar:
             })
             st.toast("Manual Strategy Risk Saved!")
 
+    dynamic_sl_tp = st.toggle("🎯 Dynamic Opposing TP & Adaptive SL", value=engine.config.get("strategy", {}).get("dynamic_sl_tp_enabled", True), help="Directly targets opposing Asian High/Low, PDH/PDL, and Swing pools with live ATR buffers.")
+    if dynamic_sl_tp != engine.config.get("strategy", {}).get("dynamic_sl_tp_enabled", True):
+        engine.config["strategy"]["dynamic_sl_tp_enabled"] = dynamic_sl_tp
+        engine.save_config({"strategy": engine.config["strategy"]})
+        st.toast(f"Dynamic Liquidity SL/TP {'ENABLED' if dynamic_sl_tp else 'DISABLED'}")
+
     trailing_active = st.toggle("Dynamic ATR Trailing Stop", value=engine.config.get("strategy", {}).get("trailing_stop_active", True))
     if trailing_active != engine.config.get("strategy", {}).get("trailing_stop_active", True):
         engine.config["strategy"]["trailing_stop_active"] = trailing_active
@@ -238,9 +244,9 @@ st.markdown(f"""
             <div class="metric-sub" style="color: #94a3b8;">Current ATR: ${current_atr_val:.2f}</div>
         </div>
         <div>
-            <div class="metric-title">Dynamic Targets (TP1 / TP2)</div>
-            <div class="metric-val" style="color: #fbbf24;">{dyn_risk.get('tp1_rr', 1.5):.1f}R / {dyn_risk.get('tp2_rr', 3.5):.1f}R</div>
-            <div class="metric-sub" style="color: #94a3b8;">Partial: 50% at TP1</div>
+            <div class="metric-title">Opposing Target Mode</div>
+            <div class="metric-val" style="color: #fbbf24;">{"LIQUIDITY POOLS" if engine.config.get("strategy", {}).get("dynamic_sl_tp_enabled", True) else "FIXED RR"}</div>
+            <div class="metric-sub" style="color: #94a3b8;">Adaptive ATR + Spread SL</div>
         </div>
         <div>
             <div class="metric-title">Breakeven / Trail</div>

@@ -47,10 +47,24 @@ _FAST_SESSION.trust_env = False  # Direct localhost communication; bypass any en
 _adapter = requests.adapters.HTTPAdapter(pool_connections=25, pool_maxsize=50, max_retries=0)
 _FAST_SESSION.mount("http://", _adapter)
 
-# ── Core Imports (ONLY data + broker, never engine or auto_reading) ─────────
-from core.data import get_live_price, get_historical_klines, get_default_price
-from core.mt5_broker import MT5Broker, MT5_AVAILABLE
-import core.mt5_broker as _brk_mod
+# ── Self-Contained Bridge & Market Data Imports ─────────────────────────────
+try:
+    from bridge_client import (
+        get_live_price, get_historical_klines, get_default_price,
+        MT5Broker, MT5_AVAILABLE
+    )
+    import bridge_client as _brk_mod
+except ImportError:
+    try:
+        from core.data import get_live_price, get_historical_klines, get_default_price
+        from core.mt5_broker import MT5Broker, MT5_AVAILABLE
+        import core.mt5_broker as _brk_mod
+    except ImportError:
+        from .bridge_client import (
+            get_live_price, get_historical_klines, get_default_price,
+            MT5Broker, MT5_AVAILABLE
+        )
+        import bot2_manual.bridge_client as _brk_mod
 
 # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 #  CONSTANTS & CONFIGURATION

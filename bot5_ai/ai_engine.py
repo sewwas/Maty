@@ -35,18 +35,6 @@ if _CURRENT_DIR not in sys.path:
 from bridge_client import Bot5BridgeClient
 from analytics import calculate_performance_metrics
 
-# Shared AI signal bridge — writes Bot 5 state so Bot 1 can read it
-try:
-    import sys as _sys
-    _PARENT_DIR = os.path.dirname(_CURRENT_DIR)
-    if _PARENT_DIR not in _sys.path:
-        _sys.path.insert(0, _PARENT_DIR)
-    from core.bot5_signal_bridge import write_bot5_signal as _write_bridge
-    _BRIDGE_AVAILABLE = True
-except ImportError:
-    _BRIDGE_AVAILABLE = False
-    _write_bridge = None
-
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("AITraderBot5")
 
@@ -102,11 +90,57 @@ class AIEngine:
         magic = int(self.config.get("magic_number", 998875))
         self.bridge = Bot5BridgeClient(bridge_url=bridge_url, magic_number=magic)
 
-        # Background autonomous engine thread
+        # Process Singleton Lock: only 1 process executes live trading orders across OS
+        self._lock_file = None
+        self._is_primary_worker = self._acquire_worker_lock()
         self._running = True
         self._thread = threading.Thread(target=self._run_loop, daemon=True)
         self._thread.start()
-        logger.info(f"✅ Bot #5 AI/ML Neural Trader initialized on Magic {magic} | Bridge {bridge_url}")
+        if self._is_primary_worker:
+            logger.info(f"✅ Bot #5 AI Engine Primary Autonomous Worker ACTIVE [PID {os.getpid()}] on Magic {magic}")
+        else:
+            logger.info(f"ℹ️ Bot #5 AI Engine Telemetry Mode ACTIVE [PID {os.getpid()}] (Primary worker running in background)")
+
+    def _acquire_worker_lock(self) -> bool:
+        """
+        Ensures only ONE process executes orders on MT5 to prevent duplicate execution collisions.
+        """
+        lock_file = "/tmp/bot5_engine.lock" if sys.platform != "win32" else os.path.join(_CURRENT_DIR, "bot5_engine.lock")
+        my_pid = os.getpid()
+        self._lock_file = lock_file
+
+        if os.path.exists(lock_file):
+            try:
+                with open(lock_file, "r", encoding="utf-8") as f:
+                    content = f.read().strip()
+                if content:
+                    existing_pid = int(content)
+                    if existing_pid == my_pid:
+                        return True
+                    # Check if existing process is alive
+                    if sys.platform != "win32":
+                        try:
+                            os.kill(existing_pid, 0)
+                            return False  # Still alive, this instance stays in telemetry mode
+                        except OSError:
+                            pass  # Stale lockfile
+                    else:
+                        import ctypes
+                        kernel32 = ctypes.windll.kernel32
+                        h = kernel32.OpenProcess(0x0400, False, existing_pid)
+                        if h:
+                            kernel32.CloseHandle(h)
+                            return False
+            except Exception:
+                pass
+
+        try:
+            with open(lock_file, "w", encoding="utf-8") as f:
+                f.write(str(my_pid))
+            return True
+        except Exception as e:
+            logger.warning(f"Could not acquire primary worker lock: {e}")
+            return False
 
     def _load_config(self) -> Dict[str, Any]:
         if os.path.exists(self.config_path):
@@ -228,6 +262,15 @@ class AIEngine:
         volatility = (close - close.shift(1)).abs().rolling(window=14).sum()
         df["er"] = (change / (volatility + 1e-9)).fillna(0.3)
 
+        # Choppiness Index (CHOP) over 14 candles
+        # Classic Dreiss Formula: 100 * LOG10( SUM(ATR, 14) / (MaxHigh(14) - MinLow(14)) ) / LOG10(14)
+        tr_sum14 = tr.rolling(window=14).sum()
+        hh14 = high.rolling(window=14).max()
+        ll14 = low.rolling(window=14).min()
+        hl_range = (hh14 - ll14).replace(0, 1e-9)
+        ratio = (tr_sum14 / hl_range).clip(lower=1e-6)
+        df["chop_index"] = (100.0 * np.log10(ratio) / np.log10(14)).fillna(50.0)
+
         return df
 
     def _detect_regime(self, df: pd.DataFrame) -> Dict[str, Any]:
@@ -236,7 +279,7 @@ class AIEngine:
         - TRENDING (Strong directional impulse)
         - VOLATILE_BREAKOUT (Momentum volatility expansion)
         - RANGING (Mean-reverting within bands)
-        - LOW_VOLATILITY_DRIFT (Low volume / compression)
+        - LOW_VOLATILITY_DRIFT (Low volume / tiny chop compression — entries blocked)
         """
         if df is None or len(df) < 20:
             return self._cached_regime
@@ -245,45 +288,80 @@ class AIEngine:
         er = float(latest.get("er", 0.3))
         bb_width = float(latest.get("bb_width", 0.01))
         atr = float(latest.get("atr", 1.5))
+        chop_index = float(latest.get("chop_index", 50.0))
         mean_atr = float(df["atr"].tail(50).mean()) if "atr" in df.columns else atr
 
         ema20 = float(latest.get("ema20", 0.0))
         ema50 = float(latest.get("ema50", 0.0))
+        ema_spread = abs(ema20 - ema50)
 
-        # 1. Volatile Breakout
-        if atr > 1.6 * mean_atr and bb_width > 0.006:
+        min_atr_filter = float(self.config.get("min_atr_filter", 1.80))
+        chop_thresh = float(self.config.get("chop_index_threshold", 60.0))
+        min_ema_spread = float(self.config.get("min_ema_spread", 0.80))
+        min_bb_width = float(self.config.get("min_bb_width", 0.0035))
+
+        # Anti-Chop Shield Condition: strict suppression of tiny sideways micro-ranges
+        is_tiny_chop = (
+            atr < min_atr_filter or
+            chop_index >= chop_thresh or
+            bb_width < min_bb_width or
+            ema_spread < min_ema_spread or
+            er < 0.35
+        )
+
+        # 1. Volatile Breakout (High momentum expansion)
+        if atr > 1.6 * mean_atr and bb_width > 0.006 and not is_tiny_chop:
             return {
                 "name": "VOLATILE_BREAKOUT",
                 "confidence": 0.88,
                 "description": "High-momentum volatility expansion detected",
-                "color": "#f43f5e"
+                "color": "#f43f5e",
+                "chop_index": round(chop_index, 1),
+                "is_anti_chop_active": False
             }
 
-        # 2. Trending
-        if er > 0.42 and abs(ema20 - ema50) > (atr * 0.5):
+        # 2. Trending (Real clean directional impulse — UNLIMITED TRADING)
+        if er > 0.40 and ema_spread >= min_ema_spread and atr >= min_atr_filter and chop_index < 55.0:
             trend_dir = "BULLISH" if ema20 > ema50 else "BEARISH"
             return {
                 "name": "TRENDING",
                 "confidence": round(min(0.95, er * 1.5), 2),
-                "description": f"Persistent {trend_dir} directional impulse",
-                "color": "#10b981" if trend_dir == "BULLISH" else "#f97316"
+                "description": f"Clean {trend_dir} trend impulse (Chop: {chop_index:.1f}, ATR: ${atr:.2f}) — Velocity Unlocked",
+                "color": "#10b981" if trend_dir == "BULLISH" else "#f97316",
+                "chop_index": round(chop_index, 1),
+                "is_anti_chop_active": False
             }
 
-        # 3. Low Volatility Drift
-        if atr < 0.75 * mean_atr and bb_width < 0.0025:
+        # 3. Tiny Chop / Low Volatility Drift (🛡️ Anti-Chop Shield ENGAGED)
+        if is_tiny_chop:
+            chop_reasons = []
+            if atr < min_atr_filter:
+                chop_reasons.append(f"ATR ${atr:.2f} < ${min_atr_filter:.2f}")
+            if chop_index >= chop_thresh:
+                chop_reasons.append(f"Chop {chop_index:.1f} >= {chop_thresh:.0f}")
+            if ema_spread < min_ema_spread:
+                chop_reasons.append(f"EMA Spread ${ema_spread:.2f} < ${min_ema_spread:.2f}")
+            if bb_width < min_bb_width:
+                chop_reasons.append(f"BB Width {bb_width:.4f}")
+            reason_str = ", ".join(chop_reasons) if chop_reasons else "Sideways Drift"
+
             return {
                 "name": "LOW_VOLATILITY_DRIFT",
-                "confidence": 0.80,
-                "description": "Compressed price corridor — Sidelined",
-                "color": "#64748b"
+                "confidence": 0.88,
+                "description": f"🛡️ Anti-Chop Shield Active ({reason_str}) — Entries Paused to Protect Capital",
+                "color": "#64748b",
+                "chop_index": round(chop_index, 1),
+                "is_anti_chop_active": True
             }
 
-        # 4. Default: Ranging
+        # 4. Standard Ranging (Wide corridor)
         return {
             "name": "RANGING",
             "confidence": 0.74,
-            "description": "Mean-reverting consolidation corridor",
-            "color": "#38bdf8"
+            "description": f"Wide mean-reverting corridor (Chop: {chop_index:.1f}) — Strict boundary only",
+            "color": "#38bdf8",
+            "chop_index": round(chop_index, 1),
+            "is_anti_chop_active": False
         }
 
     # ── ⚙️ Fully Dynamic Strategy Risk Engine ────────────────────────────────────
@@ -342,51 +420,51 @@ class AIEngine:
         dyn_trail = base_trail_atr
         dyn_max_pos = int(self.config.get("max_positions", 2))
 
-        # 1. Regime-based dynamic modulation
+        # 1. Regime-based dynamic modulation (Noise-Hardened for Gold XAUUSD)
         if regime_name == "TRENDING":
             regime_mode = "🚀 TREND MOMENTUM HARVEST"
             # In clear trend, optimize risk for compounding runner profits
             dyn_risk = base_risk * (1.15 if regime_conf > 0.80 else 1.0)
-            dyn_sl = 1.35  # Tighter SL on trend pullbacks
-            dyn_tp = 3.5   # Expand TP for multi-hour runners
-            dyn_conf = 0.58  # Earlier entry on confirmed pullback
-            dyn_be = 0.80  # Earlier breakeven lock
-            dyn_trail = 1.10  # Tighter trailing behind moving trend
-            dyn_max_pos = 3
-            reasons.append(f"Trending Directional Impulse ({regime_conf*100:.0f}% Conf) → Extended TP to 3.5 R:R & Tight SL")
+            dyn_sl = 2.00  # Noise-hardened SL for Gold trend pullback
+            dyn_tp = 3.5   # Extended TP for multi-hour runners
+            dyn_conf = 0.58  # Confirmed pullback entry
+            dyn_be = 1.50  # Breakeven after +1.5 R:R
+            dyn_trail = 1.50  # Chandelier trailing
+            dyn_max_pos = 2
+            reasons.append(f"Trending Directional Impulse ({regime_conf*100:.0f}% Conf) → Extended TP to 3.5 R:R & 2.0x SL")
 
         elif regime_name == "RANGING":
             regime_mode = "🛡️ RANGE CORRIDOR PRESERVATION"
-            # In range, scale down risk and compress TP to boundaries
-            dyn_risk = base_risk * 0.75
-            dyn_sl = 1.70  # Wider SL to survive boundary wicks
-            dyn_tp = 2.0   # Take profit quickly before reversal
-            dyn_conf = 0.75  # Elevated confidence required to avoid chop
-            dyn_be = 1.00
-            dyn_trail = 1.40
-            dyn_max_pos = 2
-            reasons.append("Chop Corridor Damping → Sized down to 75%, TP compressed to 2.0 R:R")
+            # In range, scale down risk and widen SL cushion to prevent wick stop-outs
+            dyn_risk = base_risk * 0.60
+            dyn_sl = 2.50  # Hardened wide SL cushion to survive boundary wicks
+            dyn_tp = 2.0   # Take profit quickly before corridor reversal
+            dyn_conf = 0.70  # Elevated confidence required to avoid chop
+            dyn_be = 1.50
+            dyn_trail = 1.60
+            dyn_max_pos = 1
+            reasons.append("Chop Corridor Damping → 60% lot sizing, 2.5x ATR stop buffer")
 
         elif regime_name == "VOLATILE_BREAKOUT":
             regime_mode = "⚡ VOLATILE BREAKOUT SURGE"
-            # High volatility spike: lower lot size, widen stop, target explosive runner
-            dyn_risk = base_risk * 0.60
-            dyn_sl = 2.20  # Wide stop cushion
+            # High volatility spike: lower lot size, wide stop, explosive target
+            dyn_risk = base_risk * 0.50
+            dyn_sl = 3.00  # Wide stop cushion for volatility
             dyn_tp = 4.5   # Explosive expansion target
             dyn_conf = 0.72  # Very strict filter to guard against fakeouts
-            dyn_be = 0.60  # Fast de-risking
-            dyn_trail = 1.50
+            dyn_be = 1.20  # Fast de-risking
+            dyn_trail = 1.80
             dyn_max_pos = 1
-            reasons.append("High Volatility Spike → 60% lot dampener, 2.2x ATR stop cushion")
+            reasons.append("High Volatility Spike → 50% lot dampener, 3.0x ATR stop cushion")
 
         else:  # LOW_VOLATILITY_DRIFT
             regime_mode = "💤 LOW VOLATILITY SIDELINED"
-            dyn_risk = base_risk * 0.30
-            dyn_sl = 1.50
+            dyn_risk = base_risk * 0.25
+            dyn_sl = 2.00
             dyn_tp = 1.80
-            dyn_conf = 0.78
+            dyn_conf = 0.80
             dyn_max_pos = 1
-            reasons.append("Low Momentum Drift → 70% risk compression, 78% confidence required")
+            reasons.append("Low Momentum Drift → Sidelined (80% confidence barrier)")
 
         # 2. Volatility Extremes Filter
         if mean_atr > 0 and (atr / mean_atr) > 1.8:
@@ -472,15 +550,18 @@ class AIEngine:
             else:
                 factors["rsi"] = f"RSI Neutral ({rsi:.1f})"
         else:
-            # Mean-reversion at boundaries
-            if rsi < 32 and curr_price <= bb_lower + (atr * 0.25):
-                bull_score += 0.35
-                factors["rsi"] = f"Oversold Bounce ({rsi:.1f}) (+35%)"
-            elif rsi > 68 and curr_price >= bb_upper - (atr * 0.25):
-                bear_score += 0.35
-                factors["rsi"] = f"Overbought Rejection ({rsi:.1f}) (+35%)"
+            # Mean-reversion at boundaries (Only in wide channels, strictly avoiding tiny chop)
+            if bb_width >= 0.0035:
+                if rsi < 28 and curr_price <= bb_lower:
+                    bull_score += 0.35
+                    factors["rsi"] = f"Deep Oversold Bounce ({rsi:.1f}) (+35%)"
+                elif rsi > 72 and curr_price >= bb_upper:
+                    bear_score += 0.35
+                    factors["rsi"] = f"Deep Overbought Rejection ({rsi:.1f}) (+35%)"
+                else:
+                    factors["rsi"] = f"Corridor Neutral ({rsi:.1f})"
             else:
-                factors["rsi"] = f"Corridor Hold ({rsi:.1f})"
+                factors["rsi"] = f"Tiny Chop Blocked (Width: {bb_width:.4f})"
 
         # Factor 3: Candle Action & Price Envelope (30% weight)
         candle_range = latest["high"] - latest["low"]
@@ -494,11 +575,30 @@ class AIEngine:
                 bear_score += 0.25
                 factors["candle"] = "Rejection Wick Up (+25%)"
 
-        # Regime suppression
-        if regime == "LOW_VOLATILITY_DRIFT":
-            bull_score *= 0.3
-            bear_score *= 0.3
-            factors["regime_filter"] = "DRIFT_SUPPRESSION"
+        # Direction mode enforcement (One-Way vs Auto)
+        dir_mode = str(self.config.get("direction_mode", "AUTO")).upper()
+        if dir_mode == "BUY_ONLY":
+            bear_score = 0.0
+            factors["direction_mode"] = "ONE-WAY BUY ONLY (Shorts suppressed)"
+        elif dir_mode == "SELL_ONLY":
+            bull_score = 0.0
+            factors["direction_mode"] = "ONE-WAY SELL ONLY (Longs suppressed)"
+        else:  # AUTO mode: higher timeframe EMA 200 alignment
+            ema200 = float(latest.get("ema200", curr_price))
+            if curr_price > ema200 and ema50 > ema200:
+                bear_score *= 0.5  # Suppress counter-trend shorts in macro bull trend
+                factors["direction_mode"] = "AUTO: MACRO BULL ALIGNED (Counter-trend dampened)"
+            elif curr_price < ema200 and ema50 < ema200:
+                bull_score *= 0.5  # Suppress counter-trend longs in macro bear trend
+                factors["direction_mode"] = "AUTO: MACRO BEAR ALIGNED (Counter-trend dampened)"
+            else:
+                factors["direction_mode"] = "AUTO: BI-DIRECTIONAL DYNAMIC"
+
+        # Regime suppression: Strictly lock out tiny chop
+        if regime == "LOW_VOLATILITY_DRIFT" or self._cached_regime.get("is_anti_chop_active", False):
+            bull_score = 0.0
+            bear_score = 0.0
+            factors["regime_filter"] = "🛡️ ANTI-CHOP SHIELD: Tiny sideways chop blocked (All entries locked until clean breakout)"
 
         if bull_score > bear_score and bull_score >= 0.55:
             sig = "BUY"
@@ -558,18 +658,18 @@ class AIEngine:
                 points_gain = curr_price - open_price
                 risk_dist = abs(open_price - current_sl) if current_sl > 0 else (atr * 1.5)
 
-                # 1. Dynamic Breakeven check
-                if points_gain >= (be_rr * risk_dist) and current_sl < open_price:
-                    new_sl = open_price + 0.25  # lock in +25 points
-                    logger.info(f"🛡️ Bot #5 Locking Dynamic Breakeven on BUY #{ticket} @ {new_sl} (Triggered at +{be_rr:.1f} R:R)")
+                # 1. Dynamic Breakeven check (+0.50 profit cushion)
+                if points_gain >= (be_rr * risk_dist) and (current_sl < open_price or current_sl == 0.0):
+                    new_sl = open_price + 0.50  # lock in +50 points profit cushion
+                    logger.info(f"🛡️ Bot #5 Locking Dynamic Breakeven on BUY #{ticket} @ {new_sl:.2f} (Triggered at +{be_rr:.1f} R:R)")
                     self.bridge.modify_position(ticket, sl=new_sl, tp=current_tp)
                     self.state["breakeven_locked"][str(ticket)] = True
                     self._save_state()
 
                 # 2. Dynamic Trailing Stop
-                elif self.config.get("strategy", {}).get("trailing_stop_active", True) and points_gain >= (1.5 * risk_dist):
+                elif self.config.get("strategy", {}).get("trailing_stop_active", True) and points_gain >= (2.0 * risk_dist):
                     trail_sl = curr_price - (atr * trail_mult)
-                    if trail_sl > current_sl + 0.3:
+                    if trail_sl > current_sl + 0.5:
                         logger.info(f"📈 Bot #5 Trailing Stop BUY #{ticket} → {trail_sl:.2f} (Trail Multiplier: {trail_mult}x ATR)")
                         self.bridge.modify_position(ticket, sl=trail_sl, tp=current_tp)
 
@@ -577,18 +677,18 @@ class AIEngine:
                 points_gain = open_price - curr_price
                 risk_dist = abs(open_price - current_sl) if current_sl > 0 else (atr * 1.5)
 
-                # 1. Dynamic Breakeven check
+                # 1. Dynamic Breakeven check (+0.50 profit cushion)
                 if points_gain >= (be_rr * risk_dist) and (current_sl > open_price or current_sl == 0.0):
-                    new_sl = open_price - 0.25
-                    logger.info(f"🛡️ Bot #5 Locking Dynamic Breakeven on SELL #{ticket} @ {new_sl} (Triggered at +{be_rr:.1f} R:R)")
+                    new_sl = open_price - 0.50  # lock in +50 points profit cushion
+                    logger.info(f"🛡️ Bot #5 Locking Dynamic Breakeven on SELL #{ticket} @ {new_sl:.2f} (Triggered at +{be_rr:.1f} R:R)")
                     self.bridge.modify_position(ticket, sl=new_sl, tp=current_tp)
                     self.state["breakeven_locked"][str(ticket)] = True
                     self._save_state()
 
                 # 2. Dynamic Trailing Stop
-                elif self.config.get("strategy", {}).get("trailing_stop_active", True) and points_gain >= (1.5 * risk_dist):
+                elif self.config.get("strategy", {}).get("trailing_stop_active", True) and points_gain >= (2.0 * risk_dist):
                     trail_sl = curr_price + (atr * trail_mult)
-                    if current_sl == 0.0 or trail_sl < current_sl - 0.3:
+                    if current_sl == 0.0 or trail_sl < current_sl - 0.5:
                         logger.info(f"📈 Bot #5 Trailing Stop SELL #{ticket} → {trail_sl:.2f} (Trail Multiplier: {trail_mult}x ATR)")
                         self.bridge.modify_position(ticket, sl=trail_sl, tp=current_tp)
 
@@ -622,16 +722,10 @@ class AIEngine:
                 dyn_risk = self._calculate_dynamic_risk(self._cached_candles, tick, account)
                 self._cached_dynamic_risk = dyn_risk
 
-                # 3a. Publish to Bot 1 Signal Bridge (best-effort)
-                if _BRIDGE_AVAILABLE and _write_bridge is not None:
-                    try:
-                        _write_bridge(
-                            self._cached_regime,
-                            self._cached_signal,
-                            dyn_risk
-                        )
-                    except Exception as _bridge_err:
-                        logger.debug(f"Bot5 bridge write skipped: {_bridge_err}")
+                # Passive telemetry instances skip position management and order execution
+                if not self._is_primary_worker:
+                    time.sleep(3.0)
+                    continue
 
                 # 4. Position & Trailing Management with Dynamic Parameters
                 positions = self.bridge.get_positions(symbol)
@@ -645,18 +739,36 @@ class AIEngine:
                         trail_mult=float(dyn_risk["trailing_atr_multiplier"])
                     )
 
-                # Synchronize daily trades from actual history
+                # Synchronize daily trades and loss streaks from actual broker history
                 if now - self._last_stats_update > 30.0:
                     try:
                         hist = self.bridge.get_history(days=1)
                         today_str = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
                         today_deals = [d for d in hist if datetime.datetime.fromtimestamp(d.get("time", 0), datetime.timezone.utc).strftime("%Y-%m-%d") == today_str and d.get("entry") == 0]
                         self.state["daily_trades"] = len(today_deals)
+
+                        day_pnl = sum([float(d.get("profit", 0.0)) for d in hist if datetime.datetime.fromtimestamp(d.get("time", 0), datetime.timezone.utc).strftime("%Y-%m-%d") == today_str])
+                        self.state["daily_pnl"] = round(day_pnl, 2)
+
+                        exit_deals_rev = [d for d in reversed(hist) if d.get("entry") == 1]
+                        cons_losses = 0
+                        last_loss_t = float(self.state.get("last_loss_time", 0.0))
+                        for ed in exit_deals_rev:
+                            p = float(ed.get("profit", 0.0))
+                            if p < 0:
+                                cons_losses += 1
+                                if cons_losses == 1:
+                                    last_loss_t = float(ed.get("time", 0.0))
+                            elif p > 0:
+                                break
+                        self.state["consecutive_losses"] = cons_losses
+                        self.state["last_loss_time"] = last_loss_t
+                        self._save_state()
                         self._last_stats_update = now
                     except Exception:
                         pass
 
-                # 5. Entry Signal Execution Guard (Conditioned on Dynamic Risk)
+                # 5. Entry Signal Execution Guard (Conditioned on Dynamic Risk & Circuit Breakers)
                 auto_trading = self.config.get("auto_trading", True)
                 threshold = float(dyn_risk["confidence_threshold"])
                 sig_dir = self._cached_signal.get("direction", "NEUTRAL")
@@ -664,13 +776,47 @@ class AIEngine:
                 max_pos = int(dyn_risk["max_positions"])
                 curr_p = float(tick.get("price", 0.0))
 
+                min_atr = float(self.config.get("min_atr_filter", 1.80))
+                regime_name = self._cached_regime.get("name", "RANGING")
+                is_anti_chop_flag = bool(self._cached_regime.get("is_anti_chop_active", False))
+                chop_index = float(self._cached_regime.get("chop_index", 50.0))
+                chop_thresh = float(self.config.get("chop_index_threshold", 60.0))
+
+                is_tiny_chop = (
+                    is_anti_chop_flag or
+                    atr < min_atr or
+                    chop_index >= chop_thresh or
+                    regime_name == "LOW_VOLATILITY_DRIFT" or
+                    (regime_name == "RANGING" and conf < 0.72)
+                )
+
+                max_trades = int(self.config.get("max_trades_per_day", 0))
+                loss_cooldown_min = float(self.config.get("consecutive_loss_cooldown_min", 30))
+                cooldown_sec = loss_cooldown_min * 60.0
+                cons_losses = self.state.get("consecutive_losses", 0)
+                last_loss_t = float(self.state.get("last_loss_time", 0.0))
+
+                loss_cooling = (cons_losses >= 2 and (now - last_loss_t) < cooldown_sec)
+                daily_cap_reached = (max_trades > 0 and self.state.get("daily_trades", 0) >= max_trades)
+                cooling_remaining = int(cooldown_sec - (now - last_loss_t)) if loss_cooling else 0
+
                 # Periodic scanning heartbeat log
                 if now - self._last_log_time >= 30.0:
+                    status_note = ""
+                    if daily_cap_reached:
+                        status_note = f" | ⛔ DAILY CAP REACHED ({self.state.get('daily_trades', 0)}/{max_trades})"
+                    elif loss_cooling:
+                        status_note = f" | 🛑 LOSS BRAKE ACTIVE ({cons_losses} losses, {cooling_remaining//60}m remaining)"
+                    elif is_tiny_chop:
+                        status_note = f" | 🛡️ ANTI-CHOP SHIELD ACTIVE (Chop: {chop_index:.1f}, ATR: ${atr:.2f})"
+
+                    trades_str = f"{self.state.get('daily_trades', 0)}/{max_trades if max_trades > 0 else '∞'}"
+                    dir_mode_lbl = self.config.get("direction_mode", "AUTO")
                     logger.info(
                         f"🤖 [Bot #5 AI] Scanning {symbol} @ {curr_p:.2f} | "
                         f"Regime: {self._cached_regime['name']} | Signal: {sig_dir} ({conf*100:.0f}%) | "
-                        f"AutoTrading: {auto_trading} | Active Positions: {len(positions)}/{max_pos} | "
-                        f"Today Trades: {self.state.get('daily_trades', 0)}"
+                        f"Dir: {dir_mode_lbl} | AutoTrading: {auto_trading} | Active Positions: {len(positions)}/{max_pos} | "
+                        f"Today Trades: {trades_str} | Day PnL: {self.state.get('daily_pnl', 0.0):+.2f}{status_note}"
                     )
                     self._last_log_time = now
 
@@ -680,6 +826,9 @@ class AIEngine:
                     sig_dir in ["BUY", "SELL"] and
                     conf >= threshold and
                     len(positions) < max_pos and
+                    not is_tiny_chop and
+                    not daily_cap_reached and
+                    not loss_cooling and
                     now > self._order_in_flight_until and
                     now - self.state.get("last_trade_time", 0.0) >= 180.0  # 3 min cooldown
                 )
@@ -687,9 +836,10 @@ class AIEngine:
                 if can_enter:
                     with self._execution_lock:
                         self._order_in_flight_until = now + 15.0
+                        min_sl_dist = float(self.config.get("min_sl_distance", 5.0))
                         base_sl_dist = atr * float(dyn_risk["atr_sl_multiplier"])
-                        sl_dist = base_sl_dist + 0.70  # Added 0.70 USD buffer to prevent stop hunts
-                        tp_dist = base_sl_dist * float(dyn_risk["tp_rr"])
+                        sl_dist = max(min_sl_dist, base_sl_dist + 0.70)
+                        tp_dist = sl_dist * float(dyn_risk["tp_rr"])
                         lot_size = self._calculate_lot_size(account, sl_dist, risk_pct=float(dyn_risk["risk_pct"]))
 
                         if sig_dir == "BUY":
@@ -701,7 +851,7 @@ class AIEngine:
 
                         logger.info(
                             f"🎯 Bot #5 Dynamic Execution: {sig_dir} {lot_size} lots @ {curr_p:.2f} | "
-                            f"SL={sl:.2f} ({dyn_risk['atr_sl_multiplier']}x ATR) | "
+                            f"SL={sl:.2f} (Dist: ${sl_dist:.2f}) | "
                             f"TP={tp:.2f} ({dyn_risk['tp_rr']}x RR) | "
                             f"Risk={dyn_risk['risk_pct']}% | Conf={conf*100:.0f}%"
                         )
@@ -739,6 +889,19 @@ class AIEngine:
 
         floating_pnl = sum([float(p.get("profit", 0.0)) for p in positions])
 
+        max_trades = int(self.config.get("max_trades_per_day", 0))
+        loss_cooldown_min = float(self.config.get("consecutive_loss_cooldown_min", 30))
+        cooldown_sec = loss_cooldown_min * 60.0
+        cons_losses = self.state.get("consecutive_losses", 0)
+        last_loss_t = float(self.state.get("last_loss_time", 0.0))
+        now = time.time()
+        loss_cooling = (cons_losses >= 2 and (now - last_loss_t) < cooldown_sec)
+        cooling_remaining = int(cooldown_sec - (now - last_loss_t)) if loss_cooling else 0
+
+        is_anti_chop = bool(self._cached_regime.get("is_anti_chop_active", False))
+        chop_idx = float(self._cached_regime.get("chop_index", 50.0))
+        min_atr_val = float(self.config.get("min_atr_filter", 1.80))
+
         return {
             "connected": account.get("connected", False),
             "account": account,
@@ -750,6 +913,17 @@ class AIEngine:
             "dynamic_risk": self._cached_dynamic_risk,
             "performance": perf,
             "auto_trading": self.config.get("auto_trading", True),
+            "direction_mode": self.config.get("direction_mode", "AUTO"),
+            "daily_trades": self.state.get("daily_trades", 0),
+            "daily_pnl": self.state.get("daily_pnl", 0.0),
+            "max_trades": max_trades,
+            "anti_chop_active": is_anti_chop,
+            "chop_index": chop_idx,
+            "min_atr_filter": min_atr_val,
+            "consecutive_losses": cons_losses,
+            "loss_cooling": loss_cooling,
+            "cooling_remaining_sec": cooling_remaining,
+            "is_primary_worker": getattr(self, "_is_primary_worker", True),
             "config": self.config
         }
 

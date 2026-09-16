@@ -65,8 +65,15 @@ os.environ["WINE_BRIDGE_PORT"] = MT5_BRIDGE_PORT
 STATE_FILE         = os.path.join(BASE_DIR, "manual_state.json")
 MAX_HISTORY_ROWS   = 300
 
-from core.data import get_live_price, get_default_price
-from core.mt5_broker import MT5Broker
+try:
+    from bridge_client import get_live_price, get_default_price, MT5Broker
+except ImportError:
+    try:
+        from core.data import get_live_price, get_default_price
+        from core.mt5_broker import MT5Broker
+    except ImportError:
+        from .bridge_client import get_live_price, get_default_price, MT5Broker
+
 
 # ── State Management ──────────────────────────────────────────────────────────
 _STATE_LOCK = threading.Lock()

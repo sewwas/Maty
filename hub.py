@@ -14,12 +14,29 @@ Features:
 """
 
 import http.server
+import threading
+import time
+import json
+import logging
+import uuid
+import sys
+import sys
+
+# --- FIX WINDOWS EMOJI PRINT CRASHES ---
+try:
+    if sys.stdout.encoding and sys.stdout.encoding.lower() != 'utf-8':
+        sys.stdout.reconfigure(encoding='utf-8')
+    if sys.stderr.encoding and sys.stderr.encoding.lower() != 'utf-8':
+        sys.stderr.reconfigure(encoding='utf-8')
+except AttributeError:
+    import io
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
+# ---------------------------------------
 import socket
 import socketserver
-import json
 import urllib.parse
 import urllib.request
-import time
 import datetime
 from http import HTTPStatus
 from concurrent.futures import ThreadPoolExecutor

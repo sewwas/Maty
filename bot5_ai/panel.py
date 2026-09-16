@@ -104,6 +104,29 @@ with st.sidebar:
         st.toast(f"Bot #5 Auto-trading {'ENABLED' if auto_trade else 'PAUSED'}")
 
     st.markdown("---")
+    st.markdown("#### 🧭 Direction Mode (One-Way / Auto)")
+    dir_options = ["AUTO", "BUY_ONLY", "SELL_ONLY"]
+    dir_labels = {
+        "AUTO": "🧠 Dynamic Auto (Macro Aligned)",
+        "BUY_ONLY": "🟢 BUY Only (One-Way Long)",
+        "SELL_ONLY": "🔴 SELL Only (One-Way Short)"
+    }
+    cur_dir = engine.config.get("direction_mode", "AUTO").upper()
+    if cur_dir not in dir_options:
+        cur_dir = "AUTO"
+    sel_dir = st.radio(
+        "Execution Direction Bias",
+        options=dir_options,
+        index=dir_options.index(cur_dir),
+        format_func=lambda x: dir_labels[x],
+        help="Dynamic Auto aligns with macro trend. BUY Only or SELL Only locks Bot #5 to trade strictly in one direction."
+    )
+    if sel_dir != cur_dir:
+        engine.config["direction_mode"] = sel_dir
+        engine.save_config({"direction_mode": sel_dir})
+        st.toast(f"Bot #5 Direction Mode updated to {sel_dir}")
+
+    st.markdown("---")
     st.markdown("#### ⚙️ Strategy Risk Settings")
 
     # Master Dynamic Risk Toggle
@@ -118,7 +141,7 @@ with st.sidebar:
         
         base_risk = st.slider("Base Risk Anchor (%)", min_value=0.25, max_value=2.0, value=float(engine.config.get("risk_pct_per_trade", 1.0)), step=0.25)
         ceiling_risk = st.slider("Max Risk Ceiling Cap (%)", min_value=1.0, max_value=3.5, value=float(engine.config.get("max_risk_ceiling_pct", 2.5)), step=0.25)
-        max_daily_risk = st.slider("Max Daily Risk Circuit Breaker (%)", min_value=1.0, max_value=6.0, value=float(engine.config.get("max_daily_risk_pct", 3.0)), step=0.5)
+        max_daily_risk = st.slider("Max Daily Risk Circuit Breaker (%)", min_value=1.0, max_value=20.0, value=min(20.0, max(1.0, float(engine.config.get("max_daily_risk_pct", 5.0)))), step=0.5)
         max_pos = st.slider("Max Concurrent Positions", min_value=1, max_value=4, value=int(engine.config.get("max_positions", 2)), step=1)
         
         if (base_risk != engine.config.get("risk_pct_per_trade") or 
@@ -186,16 +209,42 @@ with st.sidebar:
             st.toast(f"Closed {closed} positions!")
 
 # ── Main Header & KPI Cards ───────────────────────────────────────────────────
-col_title, col_status = st.columns([3, 1])
+col_title, col_status = st.columns([2.8, 1.2])
 with col_title:
     st.markdown('<div class="main-header">Profity AI — Bot #5 AI/ML Neural Trader</div>', unsafe_allow_html=True)
-    st.caption("Deep Ensemble Confluence & Market Regime Intelligence &bull; XAUUSD &bull; Magic: 998875")
+    st.caption("Institutional Autonomous AI/ML & Volatility Risk Governor &bull; XAUUSD &bull; Magic: 998875")
 
 with col_status:
     conn = account.get("connected", False)
     status_class = "badge-green" if conn else "badge-red"
-    status_text = f"MT5 CONNECTED #{account.get('login', '?')}" if conn else "OFFLINE / SIMULATING"
-    st.markdown(f'<div style="text-align: right; margin-top: 8px;"><span class="status-badge {status_class}">{status_text}</span></div>', unsafe_allow_html=True)
+    status_text = f"MT5 #{account.get('login', '?')}" if conn else "OFFLINE"
+
+    cur_dir = telemetry.get("direction_mode", "AUTO")
+    dir_badge_class = "badge-purple" if cur_dir == "AUTO" else ("badge-green" if cur_dir == "BUY_ONLY" else "badge-red")
+    dir_badge_text = "AUTO DYNAMIC" if cur_dir == "AUTO" else ("BUY ONLY" if cur_dir == "BUY_ONLY" else "SELL ONLY")
+
+    st.markdown(f"""
+    <div style="text-align: right; margin-top: 4px; display: flex; justify-content: flex-end; gap: 6px; flex-wrap: wrap;">
+        <span class="status-badge {dir_badge_class}">🧭 {dir_badge_text}</span>
+        <span class="status-badge {status_class}">{status_text}</span>
+    </div>
+    """, unsafe_allow_html=True)
+
+# Circuit breaker & Anti-Chop alert banners
+if telemetry.get("loss_cooling", False):
+    cool_rem_min = telemetry.get("cooling_remaining_sec", 0) // 60
+    st.warning(f"🛑 **Consecutive Loss Brake Active:** 2 consecutive losses detected. Bot #5 is cooling down for {cool_rem_min} more minutes to prevent chop whipsaws.")
+elif telemetry.get("max_trades", 0) > 0 and telemetry.get("daily_trades", 0) >= telemetry.get("max_trades", 0):
+    st.info(f"⛔ **Daily Trade Cap Reached:** Bot #5 completed {telemetry.get('daily_trades', 0)}/{telemetry.get('max_trades', 0)} trades today. Auto-trading paused until tomorrow.")
+elif telemetry.get("anti_chop_active", False):
+    chop_idx = telemetry.get("chop_index", 50.0)
+    min_atr = telemetry.get("min_atr_filter", 1.80)
+    atr_now = float(signal.get("atr", 1.5))
+    st.info(f"🛡️ **Anti-Chop Shield Active:** Market in tiny consolidation (ATR: ${atr_now:.2f} < ${min_atr:.2f} min, Chop Index: {chop_idx:.1f}/100). Auto-trading is paused to protect balance until a clean trend emerges.")
+else:
+    chop_idx = telemetry.get("chop_index", 50.0)
+    atr_now = float(signal.get("atr", 1.5))
+    st.success(f"🚀 **Trend Velocity Flowing:** Market momentum is clean (ATR: ${atr_now:.2f}, Chop Index: {chop_idx:.1f}). Bot #5 has **Unlimited Trade Capacity (∞)** active for real trend harvesting.")
 
 st.markdown("<br>", unsafe_allow_html=True)
 
@@ -250,51 +299,62 @@ st.markdown("</div></div>", unsafe_allow_html=True)
 
 # Top KPI Metric Row
 k1, k2, k3, k4, k5 = st.columns(5)
+curr_code = account.get("currency", "USC")
+eq_val = float(account.get("equity", 0.0))
+bal_val = float(account.get("balance", 0.0))
+usd_eq = f"≈ ${eq_val/100:.2f} USD" if curr_code == "USC" else ""
+
 with k1:
     st.markdown(f"""
     <div class="metric-card">
-        <div class="metric-title">Live Equity</div>
-        <div class="metric-val">${account.get('equity', 1000.0):,.2f}</div>
-        <div class="metric-sub" style="color: #64748b;">Balance: ${account.get('balance', 1000.0):,.2f}</div>
+        <div class="metric-title">Account Balance / Equity</div>
+        <div class="metric-val">{eq_val:,.2f} <span style="font-size: 14px; color: #f472b6;">{curr_code}</span></div>
+        <div class="metric-sub" style="color: #94a3b8;">Bal: {bal_val:,.2f} {curr_code} {usd_eq}</div>
     </div>
     """, unsafe_allow_html=True)
 
 with k2:
     pnl_color = "#34d399" if floating_pnl >= 0 else "#f87171"
     pnl_sign = "+" if floating_pnl > 0 else ""
+    margin_free = float(account.get("margin_free", 0.0))
     st.markdown(f"""
     <div class="metric-card">
-        <div class="metric-title">Floating P&L</div>
-        <div class="metric-val" style="color: {pnl_color};">{pnl_sign}${floating_pnl:,.2f}</div>
-        <div class="metric-sub" style="color: #64748b;">{len(positions)} Open Positions</div>
+        <div class="metric-title">Floating P&L & Margin</div>
+        <div class="metric-val" style="color: {pnl_color};">{pnl_sign}{floating_pnl:,.2f} <span style="font-size: 14px;">{curr_code}</span></div>
+        <div class="metric-sub" style="color: #94a3b8;">Free: {margin_free:.1f} {curr_code} ({len(positions)} pos)</div>
     </div>
     """, unsafe_allow_html=True)
 
 with k3:
     st.markdown(f"""
     <div class="metric-card">
-        <div class="metric-title">Live Gold Price</div>
+        <div class="metric-title">Live Gold Price (XAUUSD)</div>
         <div class="metric-val" style="color: #f472b6;">${tick.get('price', 2900.0):,.2f}</div>
-        <div class="metric-sub" style="color: #64748b;">Ask: {tick.get('ask', 0.0):.2f} | Bid: {tick.get('bid', 0.0):.2f}</div>
+        <div class="metric-sub" style="color: #94a3b8;">Ask: {tick.get('ask', 0.0):.2f} | Bid: {tick.get('bid', 0.0):.2f}</div>
     </div>
     """, unsafe_allow_html=True)
 
 with k4:
-    win_rate = perf.get("win_rate", 0.0)
+    daily_tr = telemetry.get("daily_trades", 0)
+    max_tr = telemetry.get("max_trades", 0)
+    max_tr_str = str(max_tr) if max_tr > 0 else "∞"
+    day_pnl = telemetry.get("daily_pnl", 0.0)
+    day_pnl_color = "#34d399" if day_pnl >= 0 else "#f87171"
     st.markdown(f"""
     <div class="metric-card">
-        <div class="metric-title">30D Win Rate</div>
-        <div class="metric-val" style="color: #38bdf8;">{win_rate:.1f}%</div>
-        <div class="metric-sub" style="color: #64748b;">{perf.get('wins', 0)} Wins / {perf.get('total_trades', 0)} Trades</div>
+        <div class="metric-title">Today's Trades & P&L</div>
+        <div class="metric-val" style="color: #38bdf8;">{daily_tr}/{max_tr_str} <span style="font-size: 14px;">Deals</span></div>
+        <div class="metric-sub" style="color: {day_pnl_color}; font-weight: 600;">Day P&L: {day_pnl:+.2f} {curr_code}</div>
     </div>
     """, unsafe_allow_html=True)
 
 with k5:
+    win_rate = perf.get("win_rate", 0.0)
     st.markdown(f"""
     <div class="metric-card">
-        <div class="metric-title">Profit Factor</div>
-        <div class="metric-val" style="color: #c084fc;">{perf.get('profit_factor', 1.0):.2f}</div>
-        <div class="metric-sub" style="color: #64748b;">Sharpe: {perf.get('sharpe_ratio', 0.0):.2f}</div>
+        <div class="metric-title">Win Rate & Factor</div>
+        <div class="metric-val" style="color: #c084fc;">{win_rate:.1f}%</div>
+        <div class="metric-sub" style="color: #94a3b8;">PF: {perf.get('profit_factor', 1.0):.2f} | {perf.get('wins', 0)}W / {perf.get('losses', 0)}L</div>
     </div>
     """, unsafe_allow_html=True)
 
@@ -307,12 +367,22 @@ with col_regime:
     reg_name = regime.get("name", "RANGING")
     reg_conf = regime.get("confidence", 0.70) * 100.0
     reg_color = regime.get("color", "#38bdf8")
+    chop_idx = float(telemetry.get("chop_index", regime.get("chop_index", 50.0)))
+    is_shield = bool(telemetry.get("anti_chop_active", regime.get("is_anti_chop_active", False)))
+    shield_badge = '<span class="status-badge badge-red" style="font-size: 10px; margin-left: 6px;">🛡️ SHIELD ENGAGED</span>' if is_shield else '<span class="status-badge badge-green" style="font-size: 10px; margin-left: 6px;">🚀 VELOCITY ACTIVE</span>'
+
     st.markdown(f"""
     <div class="metric-card" style="border-left: 4px solid {reg_color};">
-        <div class="metric-title">Market Regime Radar</div>
+        <div class="metric-title" style="display: flex; justify-content: space-between;">
+            <span>Market Regime Radar</span>
+            <span>Chop: {chop_idx:.1f}/100</span>
+        </div>
         <div style="display: flex; align-items: center; justify-content: space-between; margin-top: 8px;">
             <span style="font-size: 18px; font-weight: 800; color: {reg_color};">{reg_name}</span>
-            <span class="status-badge" style="background: {reg_color}22; color: {reg_color}; border: 1px solid {reg_color}44;">{reg_conf:.0f}% CONF</span>
+            <div style="display: flex; align-items: center;">
+                <span class="status-badge" style="background: {reg_color}22; color: {reg_color}; border: 1px solid {reg_color}44;">{reg_conf:.0f}% CONF</span>
+                {shield_badge}
+            </div>
         </div>
         <div style="font-size: 12px; color: #94a3b8; margin-top: 6px;">{regime.get('description', '')}</div>
     </div>
