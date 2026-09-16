@@ -231,6 +231,74 @@ class MT5BridgeHandler(BaseHTTPRequestHandler):
             self.wfile.write(json.dumps(res).encode())
             return
 
+        if self.path.startswith("/rates"):
+            # ── Candle / OHLCV endpoint ──────────────────────────────────────
+            # Usage: /rates?symbol=XAUUSD&timeframe=1m&count=200
+            try:
+                query   = self.path.split("?")[1] if "?" in self.path else ""
+                params  = dict(p.split("=") for p in query.split("&") if "=" in p)
+                sym     = params.get("symbol", "XAUUSD")
+                tf_str  = params.get("timeframe", "1m").lower()
+                count   = int(params.get("count", 200))
+
+                # Map string timeframe to MT5 constant
+                tf_map = {
+                    "1m":  mt5.TIMEFRAME_M1,
+                    "3m":  mt5.TIMEFRAME_M3,
+                    "5m":  mt5.TIMEFRAME_M5,
+                    "15m": mt5.TIMEFRAME_M15,
+                    "30m": mt5.TIMEFRAME_M30,
+                    "1h":  mt5.TIMEFRAME_H1,
+                    "4h":  mt5.TIMEFRAME_H4,
+                    "1d":  mt5.TIMEFRAME_D1,
+                }
+                tf = tf_map.get(tf_str, mt5.TIMEFRAME_M1)
+
+                # Try all symbol name candidates (handles XAUUSDc, XAUUSDm etc.)
+                candidates = resolve_bridge_candidates(sym)
+                rates = None
+                used_sym = None
+                for s in candidates:
+                    try:
+                        mt5.symbol_select(s, True)
+                        r = mt5.copy_rates_from_pos(s, tf, 0, count)
+                        if r is not None and len(r) > 0:
+                            rates = r
+                            used_sym = s
+                            break
+                    except Exception:
+                        pass
+
+                if rates is not None and len(rates) > 0:
+                    bars = []
+                    for row in rates:
+                        bars.append({
+                            "time":        int(row["time"]),
+                            "open":        float(row["open"]),
+                            "high":        float(row["high"]),
+                            "low":         float(row["low"]),
+                            "close":       float(row["close"]),
+                            "tick_volume": int(row["tick_volume"]),
+                            "spread":      int(row.get("spread", 0)),
+                            "real_volume": int(row.get("real_volume", 0)),
+                        })
+                    res = {"symbol": used_sym, "timeframe": tf_str, "rates": bars}
+                    print(f"[Bridge {port}] /rates {used_sym} {tf_str} x{len(bars)} bars", flush=True)
+                else:
+                    err = mt5.last_error()
+                    res = {"symbol": sym, "timeframe": tf_str, "rates": [], "error": f"No rates: {err}"}
+                    print(f"[Bridge {port}] /rates EMPTY for {sym} {tf_str} — {err}", flush=True)
+            except Exception as e:
+                res = {"rates": [], "error": str(e)}
+                print(f"[Bridge {port}] /rates exception: {e}", flush=True)
+
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(res).encode())
+            return
+
+
         if self.path.startswith("/login"):
             try:
                 query = self.path.split("?")[1] if "?" in self.path else ""
