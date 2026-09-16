@@ -1441,8 +1441,8 @@ st.markdown(CSS, unsafe_allow_html=True)
 #  SESSION STATE INIT
 # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
-if "mgd_state" not in st.session_state:
-    st.session_state.mgd_state = load_state()
+st.session_state.mgd_state = load_state()
+st.session_state.mgd_state["manual_cmd_flatten"] = False
 
 if "mgd_action_msg" not in st.session_state:
     st.session_state.mgd_action_msg = ""

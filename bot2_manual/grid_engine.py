@@ -546,13 +546,17 @@ class Bot2Engine:
                 # 2. Check for manual command flags in state (e.g. user clicked FLATTEN from UI)
                 if state.get("manual_cmd_flatten"):
                     logger.info("🚨 Immediate Manual Flatten Command received from state!")
+                    state["manual_cmd_flatten"] = False
+                    fresh_s = load_state()
+                    fresh_s["manual_cmd_flatten"] = False
+                    fresh_s["deployed"] = False
+                    fresh_s["grid_levels"] = {}
+                    save_state(fresh_s)
                     res = flatten_all(self.brk, state)
                     self.last_msg = f"Manual Flatten: {res}"
-                    state = load_state()
-                    state["manual_cmd_flatten"] = False
-                    save_state(state)
                     self.peak_pnl = 0.0
                     self.trail_floor = 0.0
+                    self.last_cfg_sync = 0.0
                     time.sleep(0.5)
                     continue
 
