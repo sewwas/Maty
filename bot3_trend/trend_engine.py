@@ -56,6 +56,7 @@ class TrendRunnerEngine:
         self.state_path = os.path.join(_CURRENT_DIR, "state.json")
         self.config = self._load_config()
         self.state = self._load_state()
+        self._reset_state_if_new_day()  # Guard: clear stale state on startup
 
         # Concurrency & order settlement guards
         self._execution_lock = threading.Lock()
@@ -157,6 +158,28 @@ class TrendRunnerEngine:
                 json.dump(self.state, f, indent=2)
         except Exception as e:
             logger.error(f"Error saving state.json: {e}")
+
+    def _reset_state_if_new_day(self):
+        """
+        Clears all daily counters, circuit breakers, and lockouts when a new
+        trading day begins. Called both on startup and at the top of every tick
+        so stale state never blocks signals across sessions.
+        """
+        today = datetime.date.today().isoformat()
+        if self.state.get("date") != today:
+            logger.info(f"New trading day detected on startup: {today}. Resetting all daily state.")
+            self.state["date"] = today
+            self.state["today_trades_count"] = 0
+            self.state["today_pnl"] = 0.0
+            self.state["consecutive_sell_losses"] = 0
+            self.state["consecutive_buy_losses"] = 0
+            self.state["sell_lockout_until"] = 0.0
+            self.state["buy_lockout_until"] = 0.0
+            self.state["daily_risk_halt"] = False
+            self.state["last_breakout_candle_time"] = ""
+            self.state["positions_tracked"] = {}
+            self.state["signals"] = []
+            self.save_state()
 
     def log(self, msg: str, level: str = "INFO"):
         logger.info(msg)
@@ -479,6 +502,8 @@ class TrendRunnerEngine:
             return self._process_tick_internal()
 
     def _process_tick_internal(self) -> Dict[str, Any]:
+        # Guard: reset daily state if day has rolled over since last tick
+        self._reset_state_if_new_day()
         now_ts = time.time()
         sym = self.config.get("symbol", "XAUUSD")
         acc = self.bridge.get_account()
