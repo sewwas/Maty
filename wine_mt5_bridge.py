@@ -893,6 +893,25 @@ class MT5BridgeHandler(BaseHTTPRequestHandler):
             self.wfile.write(json.dumps(res).encode())
             return
 
+        if self.path.startswith("/order_cancel"):
+            try:
+                query = self.path.split("?")[1] if "?" in self.path else ""
+                params = dict(p.split("=") for p in query.split("&") if "=" in p)
+                ticket = int(params.get("ticket", 0))
+                if ticket > 0:
+                    req = {"action": mt5.TRADE_ACTION_REMOVE, "order": ticket}
+                    res_c = mt5.order_send(req)
+                    res = {"success": bool(res_c and res_c.retcode in (0, 10009, 10008, 10004)), "retcode": getattr(res_c, "retcode", -1)}
+                else:
+                    res = {"success": False, "error": "Invalid ticket"}
+            except Exception as e:
+                res = {"success": False, "error": str(e)}
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(res).encode())
+            return
+
         if self.path.startswith("/history"):
             try:
                 import datetime

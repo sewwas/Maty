@@ -30,15 +30,18 @@ pkill -9 -f 'bot5_ai' 2>/dev/null || true
 pkill -9 -f 'ai_engine.py' 2>/dev/null || true
 pkill -9 -f 'mt5-ai-xauusd-trader' 2>/dev/null || true
 pkill -9 -f 'bot2_manual' 2>/dev/null || true
+pkill -9 -f 'grid_engine.py' 2>/dev/null || true
 pkill -9 -f 'manual_grid_desk.py' 2>/dev/null || true
+pkill -9 -f 'bot6_crossfire' 2>/dev/null || true
+pkill -9 -f 'crossfire_engine.py' 2>/dev/null || true
 pkill -9 -f 'streamlit' 2>/dev/null || true
 
 # Force release any locked dashboard ports
-fuser -k -9 80/tcp 8501/tcp 8502/tcp 8503/tcp 8504/tcp 8505/tcp 2>/dev/null || true
+fuser -k -9 80/tcp 8501/tcp 8502/tcp 8503/tcp 8504/tcp 8505/tcp 8506/tcp 2>/dev/null || true
 sleep 2
 
 # Wait until ports are actually free
-for port in 80 8501 8502 8503 8504 8505; do
+for port in 80 8501 8502 8503 8504 8505 8506; do
     while fuser $port/tcp 2>/dev/null; do
         echo "Waiting for port $port to clear..."
         fuser -k -9 $port/tcp 2>/dev/null || true

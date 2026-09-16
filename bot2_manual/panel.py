@@ -412,6 +412,8 @@ def get_closed_deal_history(days: int = 30) -> list:
 #  GRID ACTIONS (deploy / flatten / cancel)
 # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
+_DEPLOY_LOCK = threading.Lock()
+
 def deploy_grid(brk: MT5Broker, levels: dict, lot_size: float, lot_mult: float = 1.0, flat_levels: int = 3) -> tuple:
     """
     Places BUY_STOP orders above center and SELL_STOP orders below center.
@@ -421,75 +423,107 @@ def deploy_grid(brk: MT5Broker, levels: dict, lot_size: float, lot_mult: float =
     GUARANTEES:
     1. Purges any lingering/stray pending orders before deployment to prevent duplicate stacking.
     2. Enforces strictly distinct prices (no duplicate price fills across all levels).
+    3. Checks live pending orders to strictly skip duplicate orders near the same price level.
     """
-    placed, errors = 0, []
-    ts = time.time()
+    with _DEPLOY_LOCK:
+        placed, errors = 0, []
+        ts = time.time()
 
-    # Pre-deployment purge: ensure no duplicate/stray pending orders exist
-    try:
-        cancel_all_pending(brk)
-        time.sleep(0.15)
-    except Exception:
-        pass
-
-    # Query live market prices to guarantee stop orders are valid
-    live_p = get_mt5_live_price(brk)
-    min_dist = brk.get_min_stop_distance() if hasattr(brk, "get_min_stop_distance") else 0.50
-    gap_step = max(0.20, float(levels.get("step", 2.0)))
-
-    # Guarantee strictly spaced distinct BUY_STOP prices (strictly increasing)
-    last_buy_px = round(live_p + min_dist, 2)
-    for i, price in enumerate(levels["buy_stops"]):
+        # Pre-deployment purge: ensure no duplicate/stray pending orders exist
         try:
-            if i < flat_levels:
-                calc_lot = lot_size
-            else:
-                exponent = i - flat_levels + 1
-                calc_lot = lot_size * (lot_mult ** exponent)
-            actual_lot = round(calc_lot, 2)
+            cancel_all_pending(brk)
+            # Poll for up to 1.5s to verify pending orders are purged before placing fresh grid
+            for _ in range(15):
+                time.sleep(0.10)
+                cur_pend = get_live_pending(brk)
+                if not cur_pend:
+                    break
+        except Exception:
+            pass
 
-            # Enforce strictly distinct price: each level is strictly above the previous
-            if i == 0:
-                target_px = max(price, last_buy_px)
-            else:
-                target_px = max(price, round(last_buy_px + gap_step, 2))
-            last_buy_px = target_px
+        # Query live market prices to guarantee stop orders are valid
+        live_p = get_mt5_live_price(brk)
+        min_dist = brk.get_min_stop_distance() if hasattr(brk, "get_min_stop_distance") else 0.50
+        gap_step = max(0.20, float(levels.get("step", 2.0)))
 
-            order = brk.place_order("BUY_STOP", price=target_px, size=actual_lot, timestamp=ts)
-            if order:
-                placed += 1
-            else:
-                errors.append(f"BUY_STOP @ {target_px:.2f}: Broker returned no order")
-        except Exception as e:
-            errors.append(f"BUY_STOP @ {price:.2f} ({actual_lot}L): {e}")
+        # Pre-load any existing pending order prices to enforce zero duplication
+        existing_pendings = get_live_pending(brk)
+        active_buy_pxs = [
+            float(getattr(o, "price_open", 0.0))
+            for o in existing_pendings
+            if getattr(o, "type", None) in (4, "BUY_STOP")
+        ]
+        active_sell_pxs = [
+            float(getattr(o, "price_open", 0.0))
+            for o in existing_pendings
+            if getattr(o, "type", None) in (5, "SELL_STOP")
+        ]
 
-    # Guarantee strictly spaced distinct SELL_STOP prices (strictly decreasing)
-    last_sell_px = round(live_p - min_dist, 2)
-    for i, price in enumerate(levels["sell_stops"]):
-        try:
-            if i < flat_levels:
-                calc_lot = lot_size
-            else:
-                exponent = i - flat_levels + 1
-                calc_lot = lot_size * (lot_mult ** exponent)
-            actual_lot = round(calc_lot, 2)
+        # Guarantee strictly spaced distinct BUY_STOP prices (strictly increasing)
+        last_buy_px = round(live_p + min_dist, 2)
+        for i, price in enumerate(levels["buy_stops"]):
+            try:
+                if i < flat_levels:
+                    calc_lot = lot_size
+                else:
+                    exponent = i - flat_levels + 1
+                    calc_lot = lot_size * (lot_mult ** exponent)
+                actual_lot = round(calc_lot, 2)
 
-            # Enforce strictly distinct price: each level is strictly below the previous
-            if i == 0:
-                target_px = min(price, last_sell_px)
-            else:
-                target_px = min(price, round(last_sell_px - gap_step, 2))
-            last_sell_px = target_px
+                # Enforce strictly distinct price: each level is strictly above the previous
+                if i == 0:
+                    target_px = max(price, last_buy_px)
+                else:
+                    target_px = max(price, round(last_buy_px + gap_step, 2))
+                last_buy_px = target_px
 
-            order = brk.place_order("SELL_STOP", price=target_px, size=actual_lot, timestamp=ts)
-            if order:
-                placed += 1
-            else:
-                errors.append(f"SELL_STOP @ {target_px:.2f}: Broker returned no order")
-        except Exception as e:
-            errors.append(f"SELL_STOP @ {price:.2f} ({actual_lot}L): {e}")
+                # Strict Duplicate Guard: skip if order already exists within 0.25
+                if any(abs(ep - target_px) < 0.25 for ep in active_buy_pxs):
+                    logging.info(f"[Manual Grid] Skipping duplicate BUY_STOP @ {target_px:.2f} (order already exists)")
+                    continue
 
-    return placed, errors
+                order = brk.place_order("BUY_STOP", price=target_px, size=actual_lot, timestamp=ts)
+                if order:
+                    placed += 1
+                    active_buy_pxs.append(target_px)
+                else:
+                    errors.append(f"BUY_STOP @ {target_px:.2f}: Broker returned no order")
+            except Exception as e:
+                errors.append(f"BUY_STOP @ {price:.2f} ({actual_lot}L): {e}")
+
+        # Guarantee strictly spaced distinct SELL_STOP prices (strictly decreasing)
+        last_sell_px = round(live_p - min_dist, 2)
+        for i, price in enumerate(levels["sell_stops"]):
+            try:
+                if i < flat_levels:
+                    calc_lot = lot_size
+                else:
+                    exponent = i - flat_levels + 1
+                    calc_lot = lot_size * (lot_mult ** exponent)
+                actual_lot = round(calc_lot, 2)
+
+                # Enforce strictly distinct price: each level is strictly below the previous
+                if i == 0:
+                    target_px = min(price, last_sell_px)
+                else:
+                    target_px = min(price, round(last_sell_px - gap_step, 2))
+                last_sell_px = target_px
+
+                # Strict Duplicate Guard: skip if order already exists within 0.25
+                if any(abs(ep - target_px) < 0.25 for ep in active_sell_pxs):
+                    logging.info(f"[Manual Grid] Skipping duplicate SELL_STOP @ {target_px:.2f} (already exists)")
+                    continue
+
+                order = brk.place_order("SELL_STOP", price=target_px, size=actual_lot, timestamp=ts)
+                if order:
+                    placed += 1
+                    active_sell_pxs.append(target_px)
+                else:
+                    errors.append(f"SELL_STOP @ {target_px:.2f}: Broker returned no order")
+            except Exception as e:
+                errors.append(f"SELL_STOP @ {price:.2f} ({actual_lot}L): {e}")
+
+        return placed, errors
 
 
 def cancel_all_pending(brk: MT5Broker) -> str:
@@ -890,7 +924,7 @@ def get_pnl_monitor():
 
                     # 1b. If standalone 24/7 Bot2Engine daemon is active, sync telemetry and let daemon execute
                     telem = cur_state.get("engine_telemetry", {})
-                    if telem.get("alive") and (now_t - float(telem.get("last_tick", 0.0))) < 4.0:
+                    if telem.get("alive") and (now_t - float(telem.get("last_tick", 0.0))) < 10.0:
                         shared["active"] = True
                         shared["daemon_active"] = True
                         shared["last_pnl"] = telem.get("pnl", 0.0)

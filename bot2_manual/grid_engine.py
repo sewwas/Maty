@@ -20,7 +20,23 @@ import logging
 import datetime
 import threading
 import concurrent.futures
+import socket
 import requests
+
+# ── Singleton Process Lock (Prevents multiple daemon instances) ───────────────
+_SINGLETON_SOCKET = None
+
+def acquire_singleton_lock(port: int = 18002) -> bool:
+    """Guarantees only one instance of Bot2Engine runs system-wide on the VPS/host."""
+    global _SINGLETON_SOCKET
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.bind(("127.0.0.1", port))
+        s.listen(1)
+        _SINGLETON_SOCKET = s
+        return True
+    except socket.error:
+        return False
 
 # ── Force UTF-8 Output ────────────────────────────────────────────────────────
 if hasattr(sys.stdout, 'reconfigure'):
@@ -241,57 +257,93 @@ def _pos_priority_key(p):
     return (0, -vol, -profit) if profit >= 0 else (1, -vol, profit)
 
 
+_DEPLOY_LOCK = threading.Lock()
+
 def deploy_grid(brk: MT5Broker, levels: dict, lot_size: float, lot_mult: float = 1.0, flat_levels: int = 2) -> tuple:
-    """Places grid pending orders with progressive Martingale sizing."""
-    placed, errors = 0, []
-    ts = time.time()
+    """
+    Places grid pending orders with progressive Martingale sizing.
+    Strictly guarantees zero duplicate orders across all price levels.
+    """
+    with _DEPLOY_LOCK:
+        placed, errors = 0, []
+        ts = time.time()
 
-    # Pre-deployment purge
-    try:
-        cancel_all_pending(brk)
-        time.sleep(0.10)
-    except Exception:
-        pass
-
-    live_p = get_mt5_live_price(brk)
-    min_dist = brk.get_min_stop_distance() if hasattr(brk, "get_min_stop_distance") else 0.50
-    gap_step = max(0.20, float(levels.get("step", 3.0)))
-
-    # BUY_STOPS
-    last_buy_px = round(live_p + min_dist, 2)
-    for i, price in enumerate(levels.get("buy_stops", [])):
+        # Pre-deployment purge: cancel existing pendings
         try:
-            exponent = 0 if i < flat_levels else (i - flat_levels + 1)
-            actual_lot = round(lot_size * (lot_mult ** exponent), 2)
-            target_px = max(price, last_buy_px) if i == 0 else max(price, round(last_buy_px + gap_step, 2))
-            last_buy_px = target_px
+            cancel_all_pending(brk)
+            # Poll for up to 1.5s to verify pending orders are purged before placing fresh grid
+            for _ in range(15):
+                time.sleep(0.10)
+                cur_pend = get_live_pending(brk)
+                if not cur_pend:
+                    break
+        except Exception:
+            pass
 
-            order = brk.place_order("BUY_STOP", price=target_px, size=actual_lot, timestamp=ts)
-            if order:
-                placed += 1
-            else:
-                errors.append(f"BUY_STOP @ {target_px:.2f}: no order returned")
-        except Exception as e:
-            errors.append(f"BUY_STOP @ {price:.2f}: {e}")
+        live_p = get_mt5_live_price(brk)
+        min_dist = brk.get_min_stop_distance() if hasattr(brk, "get_min_stop_distance") else 0.50
+        gap_step = max(0.20, float(levels.get("step", 3.0)))
 
-    # SELL_STOPS
-    last_sell_px = round(live_p - min_dist, 2)
-    for i, price in enumerate(levels.get("sell_stops", [])):
-        try:
-            exponent = 0 if i < flat_levels else (i - flat_levels + 1)
-            actual_lot = round(lot_size * (lot_mult ** exponent), 2)
-            target_px = min(price, last_sell_px) if i == 0 else min(price, round(last_sell_px - gap_step, 2))
-            last_sell_px = target_px
+        # Fetch live pending orders to enforce strict uniqueness
+        existing_pendings = get_live_pending(brk)
+        active_buy_pxs = [
+            float(getattr(o, "price_open", 0.0))
+            for o in existing_pendings
+            if getattr(o, "type", None) in (4, "BUY_STOP")
+        ]
+        active_sell_pxs = [
+            float(getattr(o, "price_open", 0.0))
+            for o in existing_pendings
+            if getattr(o, "type", None) in (5, "SELL_STOP")
+        ]
 
-            order = brk.place_order("SELL_STOP", price=target_px, size=actual_lot, timestamp=ts)
-            if order:
-                placed += 1
-            else:
-                errors.append(f"SELL_STOP @ {target_px:.2f}: no order returned")
-        except Exception as e:
-            errors.append(f"SELL_STOP @ {price:.2f}: {e}")
+        # BUY_STOPS
+        last_buy_px = round(live_p + min_dist, 2)
+        for i, price in enumerate(levels.get("buy_stops", [])):
+            try:
+                exponent = 0 if i < flat_levels else (i - flat_levels + 1)
+                actual_lot = round(lot_size * (lot_mult ** exponent), 2)
+                target_px = max(price, last_buy_px) if i == 0 else max(price, round(last_buy_px + gap_step, 2))
+                last_buy_px = target_px
 
-    return placed, errors
+                # Strict Duplicate Guard: skip if order already exists within 0.25
+                if any(abs(ep - target_px) < 0.25 for ep in active_buy_pxs):
+                    logger.info(f"Skipping duplicate BUY_STOP @ {target_px:.2f} (order already exists)")
+                    continue
+
+                order = brk.place_order("BUY_STOP", price=target_px, size=actual_lot, timestamp=ts)
+                if order:
+                    placed += 1
+                    active_buy_pxs.append(target_px)
+                else:
+                    errors.append(f"BUY_STOP @ {target_px:.2f}: no order returned")
+            except Exception as e:
+                errors.append(f"BUY_STOP @ {price:.2f}: {e}")
+
+        # SELL_STOPS
+        last_sell_px = round(live_p - min_dist, 2)
+        for i, price in enumerate(levels.get("sell_stops", [])):
+            try:
+                exponent = 0 if i < flat_levels else (i - flat_levels + 1)
+                actual_lot = round(lot_size * (lot_mult ** exponent), 2)
+                target_px = min(price, last_sell_px) if i == 0 else min(price, round(last_sell_px - gap_step, 2))
+                last_sell_px = target_px
+
+                # Strict Duplicate Guard: skip if order already exists within 0.25
+                if any(abs(ep - target_px) < 0.25 for ep in active_sell_pxs):
+                    logger.info(f"Skipping duplicate SELL_STOP @ {target_px:.2f} (already exists)")
+                    continue
+
+                order = brk.place_order("SELL_STOP", price=target_px, size=actual_lot, timestamp=ts)
+                if order:
+                    placed += 1
+                    active_sell_pxs.append(target_px)
+                else:
+                    errors.append(f"SELL_STOP @ {target_px:.2f}: no order returned")
+            except Exception as e:
+                errors.append(f"SELL_STOP @ {price:.2f}: {e}")
+
+        return placed, errors
 
 
 def cancel_all_pending(brk: MT5Broker) -> str:
@@ -618,5 +670,8 @@ class Bot2Engine:
 
 
 if __name__ == "__main__":
+    if not acquire_singleton_lock(18002):
+        logger.warning("⚠️ Another instance of Bot #2 Grid Engine is already running (port 18002 locked). Exiting immediately to prevent duplicate orders.")
+        sys.exit(0)
     engine = Bot2Engine()
     engine.run()
