@@ -4,7 +4,7 @@
     "symbols": [
         "XAUUSD"
     ],
-    "timeframe": "3M",
+    "timeframe": "1M",
     "magic_number": 60000,
     "risk_management": {
         "lot_size": 0.01,
