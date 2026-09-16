@@ -2,17 +2,16 @@
     "bot_name": "bot6_crossfire",
     "version": "1.0",
     "symbols": [
-        "EURUSD",
-        "GBPUSD",
         "XAUUSD"
     ],
-    "timeframe": "1M",
+    "timeframe": "3M",
     "magic_number": 60000,
     "risk_management": {
         "lot_size": 0.01,
         "use_dynamic_sl": true,
         "default_sl_pips": 10,
-        "default_tp_pips": 20
+        "default_tp_pips": 20,
+        "tp2_multiplier": 2.0
     },
     "strategy_params": {
         "fvg_min_gap_percent": 0.002,

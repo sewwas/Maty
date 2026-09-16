@@ -26,6 +26,7 @@ def run():
     
     tf_map = {
         "1M": "1m",
+        "3M": "3m",
         "5M": "5m",
         "15M": "15m"
     }
@@ -62,15 +63,29 @@ def run():
                     else:
                         sl = price - (sl_pips * point * 10) if result["signal"] == 1 else price + (sl_pips * point * 10)
                         
-                    tp = price + (tp_pips * point * 10) if result["signal"] == 1 else price - (tp_pips * point * 10)
+                    tp1 = price + (tp_pips * point * 10) if result["signal"] == 1 else price - (tp_pips * point * 10)
                     
+                    tp2_pips = tp_pips * config["risk_management"].get("tp2_multiplier", 2.0)
+                    tp2 = price + (tp2_pips * point * 10) if result["signal"] == 1 else price - (tp2_pips * point * 10)
+                    
+                    # Trade 1: TP1
                     client.open_trade(
                         symbol=symbol,
                         action=action,
                         volume=lot,
                         stop_loss=sl,
-                        take_profit=tp,
-                        comment="3-Signal FVG+POC"
+                        take_profit=tp1,
+                        comment="Bot6-TP1"
+                    )
+                    
+                    # Trade 2: TP2 (Runner)
+                    client.open_trade(
+                        symbol=symbol,
+                        action=action,
+                        volume=lot,
+                        stop_loss=sl,
+                        take_profit=tp2,
+                        comment="Bot6-TP2"
                     )
             
             time.sleep(5)
