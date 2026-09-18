@@ -274,16 +274,16 @@ def compute_grid_levels(
 ALLOWED_MANUAL_MAGICS = (MANUAL_MAGIC, 1008876)
 
 def get_live_positions(brk: MT5Broker) -> list:
-    """Returns open positions for this manual desk (magic 777001 or 1008876)."""
-    raw = brk._fetch_live_positions()
+    """Returns open positions for this manual desk (magic 777001 or 1008876) for this symbol."""
+    raw = brk._fetch_live_positions(symbol=brk.symbol)
     if not raw:
         return []
     return [p for p in raw if getattr(p, "magic", 0) in ALLOWED_MANUAL_MAGICS]
 
 
 def get_live_pending(brk: MT5Broker) -> list:
-    """Returns pending orders for this manual desk (magic 777001 or 1008876)."""
-    raw = brk._fetch_live_orders()
+    """Returns pending orders for this manual desk (magic 777001 or 1008876) for this symbol."""
+    raw = brk._fetch_live_orders(symbol=brk.symbol)
     if not raw:
         return []
     return [o for o in raw if getattr(o, "magic", 0) in ALLOWED_MANUAL_MAGICS]
@@ -1745,11 +1745,8 @@ with config_col:
 
     st.markdown('<hr class="divider">', unsafe_allow_html=True)
     st.markdown(f'<div class="config-title">🎯 Risk Controls ({curr_unit})</div>', unsafe_allow_html=True)
-    if curr_label == "USC":
-        st.caption("🪙 **Cent Account Active:** Targets & limits are in **US Cents (USC)**. 100 USC = $1.00 USD. E.g. 150 USC ≈ $1.50 USD.")
-
-    default_tp = 5.0 if curr_label == "USC" else 5.0
-    default_sl = 500.0 if curr_label == "USC" else 25.0
+    default_tp = 5.0
+    default_sl = 500.0
     val_tp = float(cfg.get("target_profit", default_tp))
     val_sl = float(cfg.get("stop_loss", default_sl))
 
@@ -1760,7 +1757,7 @@ with config_col:
             value=val_tp,
             min_value=0.10,
             max_value=100000.0,
-            step=1.0 if curr_label == "USC" else 0.50,
+            step=1.0,
             format="%.2f",
             help=f"Target profit for 2+ filled orders on a side, or both sides combined in {curr_label}.",
             key="mgd_tp",
@@ -1771,7 +1768,7 @@ with config_col:
             value=float(cfg.get("single_tp", 1.50)),
             min_value=0.10,
             max_value=10000.0,
-            step=0.10 if curr_label == "USC" else 0.25,
+            step=0.25,
             format="%.2f",
             help=f"Quick scalp take profit when only 1 order is filled on a side in {curr_label} (default: 1.50).",
             key="mgd_single_tp",
@@ -1782,7 +1779,7 @@ with config_col:
             value=val_sl,
             min_value=0.10,
             max_value=100000.0,
-            step=10.0 if curr_label == "USC" else 1.0,
+            step=10.0,
             format="%.2f",
             help=f"Auto-flatten all when total floating loss hits this amount in {curr_label}.",
             key="mgd_sl",

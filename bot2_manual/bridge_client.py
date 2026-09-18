@@ -291,12 +291,11 @@ class MT5Broker:
                 res = []
                 for d in data.get("positions", []):
                     p = BridgePos(d)
-                    self.open_positions[p.position_id] = p
                     res.append(p)
                 return res
         except Exception as e:
             logger.debug(f"fetch positions error: {e}")
-        return list(self.open_positions.values())
+        return []
 
     def _fetch_live_orders(self, symbol: Optional[str] = None) -> List[BridgeOrder]:
         """Fetches pending orders from bridge."""

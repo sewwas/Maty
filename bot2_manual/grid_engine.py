@@ -224,16 +224,16 @@ def compute_grid_levels(
 
 
 def get_live_positions(brk: MT5Broker) -> list:
-    """Returns all open positions with Bot #2 magic."""
-    raw = brk._fetch_live_positions()
+    """Returns all open positions with Bot #2 magic for this symbol."""
+    raw = brk._fetch_live_positions(symbol=brk.symbol)
     if not raw:
         return []
     return [p for p in raw if getattr(p, "magic", 0) in ALLOWED_MANUAL_MAGICS]
 
 
 def get_live_pending(brk: MT5Broker) -> list:
-    """Returns all pending orders with Bot #2 magic."""
-    raw = brk._fetch_live_orders()
+    """Returns all pending orders with Bot #2 magic for this symbol."""
+    raw = brk._fetch_live_orders(symbol=brk.symbol)
     if not raw:
         return []
     return [o for o in raw if getattr(o, "magic", 0) in ALLOWED_MANUAL_MAGICS]
