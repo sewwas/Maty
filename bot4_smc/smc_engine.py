@@ -150,6 +150,9 @@ class SMCEngine:
                         data["daily_pnl"] = 0.0
                         data["daily_trades_count"] = 0
                     data.setdefault("tp1_executed_tickets", [])
+                    data.setdefault("last_loss_time", 0.0)
+                    data.setdefault("last_loss_direction", None)
+                    data.setdefault("burned_levels", [])
                     return data
             except Exception as e:
                 logger.error(f"Error loading state.json: {e}")
@@ -159,6 +162,9 @@ class SMCEngine:
             "daily_trades_count": 0,
             "consecutive_losses": 0,
             "lockout_until": 0.0,
+            "last_loss_time": 0.0,
+            "last_loss_direction": None,
+            "burned_levels": [],
             "trade_history": [],
             "last_processed_candle": 0,
             "active_fvg": None,
@@ -686,17 +692,52 @@ class SMCEngine:
             closed_candle_ts = str(closed_candle.get("timestamp", ""))
             min_wick = float(dyn_risk.get("min_wick_ratio", 0.30))
 
+            # 4. Spread Guard Defense: Block trading if broker spread is abnormally wide
+            ask = float(tick.get("ask", 0.0))
+            bid = float(tick.get("bid", 0.0))
+            spread_points = round(ask - bid, 3)
+            max_spread = float(self.config.get("strategy", {}).get("max_spread_points", 0.35))
+            if ask > 0 and bid > 0 and spread_points > max_spread:
+                return
+
+            # Scan for Liquidity Sweeps (Turtle Soup Reversals & FVG Retests)
+            closed_candle = df_m5.iloc[-2]
+            closed_candle_ts = str(closed_candle.get("timestamp", ""))
+            min_wick = float(dyn_risk.get("min_wick_ratio", 0.30))
+
             sweep = self._check_liquidity_sweep(closed_candle, pools, min_wick_ratio=min_wick)
             
-            # --- HIGHER TIMEFRAME (HTF) TREND FILTER (OPTIONAL) ---
-            # By default disabled: SMC Turtle Soup is an institutional mean-reversion sweep strategy
-            enable_trend_filter = self.config.get("strategy", {}).get("enable_htf_trend_filter", False)
-            if enable_trend_filter and sweep and len(df_m15) >= 50:
-                ema_50 = df_m15['close'].ewm(span=50, adjust=False).mean().iloc[-1]
-                current_m15_close = df_m15['close'].iloc[-1]
-                if sweep["direction"] == "BULLISH_SWEEP" and current_m15_close < ema_50:
+            # --- HIGHER TIMEFRAME (HTF) TREND & MARKET STRUCTURE FILTER ---
+            enable_trend_filter = self.config.get("strategy", {}).get("enable_htf_trend_filter", True)
+            if enable_trend_filter and sweep and len(df_m15) >= 30:
+                ema_50 = float(df_m15['close'].ewm(span=50, adjust=False).mean().iloc[-1])
+                ema_20 = float(df_m15['close'].ewm(span=20, adjust=False).mean().iloc[-1])
+                current_m15_close = float(df_m15['close'].iloc[-1])
+                is_minor_level = sweep.get("level_name") in ["SWING_LOW", "SWING_HIGH", "EQH", "EQL"]
+
+                if sweep["direction"] == "BULLISH_SWEEP":
+                    if current_m15_close < ema_50 and (is_minor_level or current_m15_close < ema_20):
+                        logger.info(f"🚫 [HTF Trend Filter] Blocked BULLISH_SWEEP on {sweep['level_name']} (M15 {current_m15_close:.2f} < EMA50 {ema_50:.2f})")
+                        sweep = None
+                elif sweep["direction"] == "BEARISH_SWEEP":
+                    if current_m15_close > ema_50 and (is_minor_level or current_m15_close > ema_20):
+                        logger.info(f"🚫 [HTF Trend Filter] Blocked BEARISH_SWEEP on {sweep['level_name']} (M15 {current_m15_close:.2f} > EMA50 {ema_50:.2f})")
+                        sweep = None
+
+            # --- POST-LOSS DIRECTIONAL COOLDOWN & BURNED LEVEL GUARD ---
+            if sweep:
+                post_loss_cooldown = float(self.config.get("strategy", {}).get("post_loss_cooldown_seconds", 1800))
+                last_loss_time = float(self.state.get("last_loss_time", 0.0))
+                last_loss_dir = self.state.get("last_loss_direction")
+                burned_levels = set(self.state.get("burned_levels", []))
+                sweep_dir_type = "BUY" if sweep["direction"] == "BULLISH_SWEEP" else "SELL"
+
+                if sweep.get("level_name") in burned_levels:
+                    logger.info(f"🔥 [Level Burn Guard] {sweep['level_name']} stopped out recently. Skipping entry.")
                     sweep = None
-                elif sweep["direction"] == "BEARISH_SWEEP" and current_m15_close > ema_50:
+                elif (now_ts - last_loss_time) < post_loss_cooldown and sweep_dir_type == last_loss_dir:
+                    rem_cd = int(post_loss_cooldown - (now_ts - last_loss_time))
+                    logger.info(f"⏳ [Cooldown Guard] {last_loss_dir} cooldown active ({rem_cd}s left). Skipping {sweep['direction']}.")
                     sweep = None
 
             if sweep and sweep.get("candle_timestamp") != self.state.get("last_swept_candle_ts"):
@@ -709,15 +750,15 @@ class SMCEngine:
                 )
                 self._save_state()
 
-                # DIRECT TURTLE SOUP REJECTION ENTRY:
-                # The institutional sweep candle has confirmed absorption and rejected back inside
-                ask = float(tick.get("ask", 0.0))
-                bid = float(tick.get("bid", 0.0))
-                entry_price = bid if sweep["direction"] == "BEARISH_SWEEP" else ask
-                if entry_price > 0:
-                    logger.info(f"⚡ [Bot #4 SMC] Firing Direct Turtle Soup Reversal on {sweep['level_name']} rejection @ {entry_price:.2f}")
-                    self._execute_smc_entry(sweep, None, entry_price, equity, symbol, dyn_risk=dyn_risk, pools=pools, tick=tick, df_m5=df_m5)
-                    return
+                # DIRECT TURTLE SOUP REJECTION ENTRY (Optional - Disabled by default for higher win rate)
+                if self.config.get("strategy", {}).get("enable_direct_sweep_entry", False):
+                    ask = float(tick.get("ask", 0.0))
+                    bid = float(tick.get("bid", 0.0))
+                    entry_price = bid if sweep["direction"] == "BEARISH_SWEEP" else ask
+                    if entry_price > 0:
+                        logger.info(f"⚡ [Bot #4 SMC] Firing Direct Turtle Soup Reversal on {sweep['level_name']} rejection @ {entry_price:.2f}")
+                        self._execute_smc_entry(sweep, None, entry_price, equity, symbol, dyn_risk=dyn_risk, pools=pools, tick=tick, df_m5=df_m5)
+                        return
 
             active_sweep = self.state.get("swept_level")
             if not active_sweep:
@@ -785,9 +826,11 @@ class SMCEngine:
             raw_sl = sweep_extreme - vol_buffer
             raw_distance = entry_price - raw_sl
 
-        # Dynamic safe distance sanity bounds
+        # Dynamic safe distance sanity bounds with Hard SL Cap
+        hard_max_sl = float(strat.get("max_sl_points", 4.0))
         min_sl_dist = max(atr * 0.8, spread * 3.0, 1.00)
-        max_sl_dist = max(min_sl_dist + 1.0, atr * 2.8)
+        min_sl_dist = min(min_sl_dist, hard_max_sl * 0.75)
+        max_sl_dist = min(hard_max_sl, max(min_sl_dist + 0.50, atr * 2.8))
 
         if raw_distance < min_sl_dist:
             sl_distance = min_sl_dist
@@ -796,8 +839,8 @@ class SMCEngine:
             sl_distance = max_sl_dist
             sl_price = round(entry_price + sl_distance, 2) if direction == "BEARISH_SWEEP" else round(entry_price - sl_distance, 2)
         else:
-            sl_distance = raw_distance
-            sl_price = round(raw_sl, 2)
+            sl_distance = min(hard_max_sl, raw_distance)
+            sl_price = round(entry_price + sl_distance, 2) if direction == "BEARISH_SWEEP" else round(entry_price - sl_distance, 2)
 
         sl_distance = round(abs(entry_price - sl_price), 2)
         info = {
@@ -1046,14 +1089,45 @@ class SMCEngine:
         2. Partial TP1 close (50%) at dynamic R:R
         3. Dynamic ATR Chandelier trailing stop on the remaining runner
         """
-        # Track closed status in trade_history
+        # Track closed status in trade_history and record loss metrics
+        now_ts = time.time()
         active_tickets = {int(p.get("ticket", 0)) for p in open_positions} if open_positions else set()
         trade_hist = self.state.get("trade_history", [])
         hist_updated = False
+        strat_cfg = self.config.get("strategy", {})
+
         for t in trade_hist:
             if t.get("status") == "OPEN" and int(t.get("ticket", 0)) not in active_tickets:
                 t["status"] = "CLOSED"
                 hist_updated = True
+                ticket_id = int(t.get("ticket", 0))
+                try:
+                    hist_deals = self.bridge.get_history(days=1)
+                    exit_deals = [d for d in hist_deals if int(d.get("position_id", 0)) == ticket_id and d.get("entry") == 1]
+                    if exit_deals:
+                        pnl = sum(float(d.get("profit", 0.0)) for d in exit_deals)
+                        t["profit"] = pnl
+                        if pnl < 0:
+                            self.state["consecutive_losses"] = int(self.state.get("consecutive_losses", 0)) + 1
+                            self.state["last_loss_time"] = now_ts
+                            self.state["last_loss_direction"] = t.get("type")
+                            level = t.get("level")
+                            if level:
+                                burned = self.state.setdefault("burned_levels", [])
+                                if level not in burned:
+                                    burned.append(level)
+                            cons = self.state["consecutive_losses"]
+                            limit = int(strat_cfg.get("consecutive_loss_limit", 2))
+                            if cons >= limit:
+                                lockout_sec = float(strat_cfg.get("consecutive_loss_lockout_seconds", 2700))
+                                self.state["lockout_until"] = now_ts + lockout_sec
+                                logger.warning(f"🛑 [Streak Circuit Breaker] {cons} consecutive losses! Locking out for {int(lockout_sec//60)} mins.")
+                        else:
+                            self.state["consecutive_losses"] = 0
+                            self.state["burned_levels"] = []
+                except Exception:
+                    pass
+
         if hist_updated:
             self._save_state()
 
@@ -1063,11 +1137,12 @@ class SMCEngine:
         if dyn_risk is None:
             dyn_risk = self._cached_dynamic_risk or {}
 
-        strat_cfg = self.config.get("strategy", {})
         be_rr = float(dyn_risk.get("be_trigger_rr", strat_cfg.get("be_trigger_rr", 1.0)))
         tp1_rr = float(dyn_risk.get("tp1_rr", strat_cfg.get("tp1_rr", 1.5)))
         tp1_pct = float(strat_cfg.get("tp1_close_pct", 50.0))
         be_offset = float(strat_cfg.get("be_offset_points", 30)) / 100.0  # 30 pts = 0.30
+        early_be_pts = float(strat_cfg.get("early_be_points", 1.5))
+        early_be_offset = float(strat_cfg.get("early_be_offset_points", 0.20))
 
         # Calculate ATR for trailing stop
         atr_val = 1.50
@@ -1108,14 +1183,15 @@ class SMCEngine:
             # Realized move in direction of trade
             if "BUY" in pos_type:
                 gain = current_price - open_price
-                current_rr = gain / risk_dist
+                current_rr = gain / risk_dist if risk_dist > 0 else 0.0
                 target_sl = sl
 
-                # 1. Stage 1: Breakeven Check (1.0 R:R) -> Free Trade
-                if current_rr >= be_rr:
-                    be_level = round(open_price + be_offset, 2)
+                # 1. Early Pip-based Breakeven Lock (+15 pips / 1.5 pts) & Standard R:R Breakeven
+                if gain >= early_be_pts or current_rr >= be_rr:
+                    be_level = round(open_price + max(be_offset, early_be_offset), 2)
                     if target_sl < be_level:
                         target_sl = be_level
+                        logger.info(f"🛡️ [Bot #4 Free Trade] #{ticket} (BUY) gain +{gain:.2f} pts (+{gain*10:.0f} pips) -> SL to BE @ {be_level:.2f}")
 
                 # 2. Stage 2: TP1 Partial Close Check (1.5 R:R) & +0.50 R:R Profit Lock
                 if current_rr >= tp1_rr:
@@ -1123,7 +1199,7 @@ class SMCEngine:
                     if target_sl < lock_05:
                         target_sl = lock_05
 
-                    # Execute TP1 50% partial cash-in exactly once per ticket
+                    # Execute TP1 50% partial cash-in exactly once per ticket (if volume permits)
                     if ticket not in tp1_tickets and volume > 0.01:
                         close_vol = round(volume * (tp1_pct / 100.0), 2)
                         if close_vol >= 0.01:
@@ -1145,8 +1221,8 @@ class SMCEngine:
                     if target_sl < lock_22:
                         target_sl = lock_22
 
-                # 5. Dynamic Chandelier ATR Trailing Stop
-                if current_rr >= tp1_rr and strat_cfg.get("trailing_stop_active", True):
+                # 5. Dynamic Chandelier ATR Trailing Stop (Activates once gain >= 2.50 pts / 25 pips or current_rr >= 1.0)
+                if (gain >= 2.50 or current_rr >= 1.0) and strat_cfg.get("trailing_stop_active", True):
                     trail_sl = round(current_price - (atr_val * trail_mult), 2)
                     if trail_sl > target_sl and trail_sl > open_price:
                         target_sl = trail_sl
@@ -1158,14 +1234,15 @@ class SMCEngine:
 
             elif "SELL" in pos_type:
                 gain = open_price - current_price
-                current_rr = gain / risk_dist
+                current_rr = gain / risk_dist if risk_dist > 0 else 0.0
                 target_sl = sl
 
-                # 1. Stage 1: Breakeven Check (1.0 R:R) -> Free Trade
-                if current_rr >= be_rr:
-                    be_level = round(open_price - be_offset, 2)
+                # 1. Early Pip-based Breakeven Lock (+15 pips / 1.5 pts) & Standard R:R Breakeven
+                if gain >= early_be_pts or current_rr >= be_rr:
+                    be_level = round(open_price - max(be_offset, early_be_offset), 2)
                     if sl <= 0 or target_sl > be_level:
                         target_sl = be_level
+                        logger.info(f"🛡️ [Bot #4 Free Trade] #{ticket} (SELL) gain +{gain:.2f} pts (+{gain*10:.0f} pips) -> SL to BE @ {be_level:.2f}")
 
                 # 2. Stage 2: TP1 Partial Close Check (1.5 R:R) & +0.50 R:R Profit Lock
                 if current_rr >= tp1_rr:
@@ -1173,7 +1250,7 @@ class SMCEngine:
                     if sl <= 0 or target_sl > lock_05:
                         target_sl = lock_05
 
-                    # Execute TP1 50% partial cash-in exactly once per ticket
+                    # Execute TP1 50% partial cash-in exactly once per ticket (if volume permits)
                     if ticket not in tp1_tickets and volume > 0.01:
                         close_vol = round(volume * (tp1_pct / 100.0), 2)
                         if close_vol >= 0.01:
@@ -1195,8 +1272,8 @@ class SMCEngine:
                     if sl <= 0 or target_sl > lock_22:
                         target_sl = lock_22
 
-                # 5. Dynamic Chandelier ATR Trailing Stop
-                if current_rr >= tp1_rr and strat_cfg.get("trailing_stop_active", True):
+                # 5. Dynamic Chandelier ATR Trailing Stop (Activates once gain >= 2.50 pts / 25 pips or current_rr >= 1.0)
+                if (gain >= 2.50 or current_rr >= 1.0) and strat_cfg.get("trailing_stop_active", True):
                     trail_sl = round(current_price + (atr_val * trail_mult), 2)
                     if (target_sl <= 0 or trail_sl < target_sl) and trail_sl < open_price:
                         target_sl = trail_sl
