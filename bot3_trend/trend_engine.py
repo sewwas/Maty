@@ -104,7 +104,7 @@ class TrendRunnerEngine:
         return df
 
     def get_telemetry(self) -> Dict[str, Any]:
-        self.state = self.load_state()
+        self.state = self._load_state()
         return self.state.get("telemetry", self._cached_telemetry)
 
     def process_tick(self) -> Dict[str, Any]:
