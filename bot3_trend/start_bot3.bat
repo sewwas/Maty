@@ -1,7 +1,7 @@
 @echo off
-title Profity AI — Bot #3 Trend Runner (Port 8503)
+title Profity AI — Bot #3 Smart Martingale (Port 8503)
 echo ===================================================================
-echo     Profity AI — Bot #3: Trend Breakout Dashboard (Port 8503)
+echo     Profity AI — Bot #3: Smart Martingale Dashboard (Port 8503)
 echo ===================================================================
 cd /d "%~dp0\.."
 

@@ -70,15 +70,15 @@ BOT_CONFIGS = [
     },
     {
         "id": 3,
-        "name": "Bot #3 — London Asian Trend",
-        "tag": "TREND RUNNER",
-        "strategy": "Asian Box Breakout & London Momentum",
+        "name": "Bot #3 — Smart Martingale",
+        "tag": "MARTINGALE GRID",
+        "strategy": "ATR Dynamic Grid & Circuit Breaker",
         "bridge_port": 8003,
         "panel_port": 8503,
         "default_acc": 257499962,
         "server": "Exness-MT5Real36",
-        "color": "#a855f7",
-        "icon": "📈"
+        "color": "#3b82f6",
+        "icon": "🔄"
     },
     {
         "id": 4,
@@ -872,7 +872,7 @@ PORTAL_HTML = """<!DOCTYPE html>
 
         .icon-bot1 { background: rgba(56, 189, 248, 0.15); border: 1px solid rgba(56, 189, 248, 0.35); }
         .icon-bot2 { background: rgba(245, 158, 11, 0.15); border: 1px solid rgba(245, 158, 11, 0.35); }
-        .icon-bot3 { background: rgba(168, 85, 247, 0.15); border: 1px solid rgba(168, 85, 247, 0.35); }
+        .icon-bot3 { background: rgba(59, 130, 246, 0.15); border: 1px solid rgba(59, 130, 246, 0.35); }
         .icon-bot4 { background: rgba(16, 185, 129, 0.15); border: 1px solid rgba(16, 185, 129, 0.35); }
         .icon-bot5 { background: rgba(236, 72, 153, 0.15); border: 1px solid rgba(236, 72, 153, 0.35); }
         .icon-bot6 { background: rgba(20, 184, 166, 0.15); border: 1px solid rgba(20, 184, 166, 0.35); }
@@ -1379,7 +1379,7 @@ PORTAL_HTML = """<!DOCTYPE html>
             <div class="dist-legend" id="distribution-legend">
                 <div class="legend-tag"><div class="legend-dot" style="background: #f59e0b;"></div> Bot #1 Sunrise: --</div>
                 <div class="legend-tag"><div class="legend-dot" style="background: #f59e0b;"></div> Bot #2 Manual Desk: --</div>
-                <div class="legend-tag"><div class="legend-dot" style="background: #a855f7;"></div> Bot #3 Trend Runner: --</div>
+                <div class="legend-tag"><div class="legend-dot" style="background: #3b82f6;"></div> Bot #3 Smart Martingale: --</div>
                 <div class="legend-tag"><div class="legend-dot" style="background: #10b981;"></div> Bot #4 SMC Hunter: --</div>
                 <div class="legend-tag"><div class="legend-dot" style="background: #ec4899;"></div> Bot #5 AI Ensemble: --</div>
                 <div class="legend-tag"><div class="legend-dot" style="background: #14b8a6;"></div> Bot #6 FVG Crossfire: --</div>
@@ -1464,11 +1464,11 @@ PORTAL_HTML = """<!DOCTYPE html>
                 <div class="bot-card">
                     <div>
                         <div class="bot-card-top">
-                            <div class="bot-avatar icon-bot3">📈</div>
+                            <div class="bot-avatar icon-bot3">🔄</div>
                             <span class="port-badge">PORT 8503</span>
                         </div>
-                        <div class="bot-card-title">Bot #3 — London Asian Trend</div>
-                        <div class="bot-card-desc">24/7 autonomous Asian session box breakout & London trend confirmation trading system.</div>
+                        <div class="bot-card-title">Bot #3 — Smart Martingale</div>
+                        <div class="bot-card-desc">24/7 autonomous ATR dynamic grid trading system with 15% circuit breaker and basket TP.</div>
                         <div class="bot-stats-grid">
                             <div>
                                 <div class="stat-item-label">Live Equity</div>
@@ -1488,7 +1488,7 @@ PORTAL_HTML = """<!DOCTYPE html>
                             </div>
                         </div>
                     </div>
-                    <a id="link-bot3" href="http://" class="btn-desk btn-purple" style="justify-content: center;">Open Trend Panel &rarr;</a>
+                    <a id="link-bot3" href="http://" class="btn-desk btn-blue" style="justify-content: center;">Open Grid Panel &rarr;</a>
                 </div>
 
                 <!-- Bot 4: SMC Hunter -->

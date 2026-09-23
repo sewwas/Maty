@@ -98,7 +98,7 @@ echo.
 echo Start the Streamlit Dashboards:
 echo     Bot #1 (Sunrise):      streamlit run Bot1\panel.py --server.port 8501
 echo     Bot #2 (Manual Desk):  streamlit run bot2_manual\panel.py --server.port 8502
-echo     Bot #3 (Trend Runner): streamlit run bot3_trend\panel.py --server.port 8503
+echo     Bot #3 (Smart Martingale): streamlit run bot3_trend\panel.py --server.port 8503
 echo     Bot #4 (SMC Hunter):   streamlit run bot4_smc\panel.py --server.port 8504
 echo     Bot #5 (AI Trader):    streamlit run bot5_ai\panel.py --server.port 8505
 echo     Bot #6 (Crossfire):    streamlit run bot6_crossfire\panel.py --server.port 8506

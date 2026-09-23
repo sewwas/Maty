@@ -140,7 +140,7 @@ if __name__ == "__main__":
     print("Web Dashboards:")
     print("    Bot #1 (Auto Grid):     http://localhost:8501")
     print("    Bot #2 (Manual Desk):   http://localhost:8502")
-    print("    Bot #3 (Trend Runner):  http://localhost:8503")
+    print("    Bot #3 (Smart Martingale):  http://localhost:8503")
     print("    Bot #4 (SMC Hunter):    http://localhost:8504")
     print("    Bot #5 (AI Trader):     http://localhost:8505")
     print("    Bot #6 (Crossfire):     http://localhost:8506")

@@ -5,7 +5,7 @@
 # Architecture:
 #   Wine Prefix 1 (~/.wine_mt5_1)  →  MT5 Account #1  →  Bridge :8001  →  Panel :8501 (Sunrise)
 #   Wine Prefix 2 (~/.wine_mt5_2)  →  MT5 Account #2  →  Bridge :8002  →  Panel :8502 (Manual Desk)
-#   Wine Prefix 3 (~/.wine_mt5_3)  →  MT5 Account #3  →  Bridge :8003  →  Panel :8503 (Trend Runner)
+#   Wine Prefix 3 (~/.wine_mt5_3)  →  MT5 Account #3  →  Bridge :8003  →  Panel :8503 (Smart Martingale)
 # ══════════════════════════════════════════════════════════════════════════════
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -181,7 +181,7 @@ _check_bridge() {
 
 _check_bridge "8001" "Bot #1 (Sunrise)"
 _check_bridge "8002" "Bot #2 (Manual Desk)"
-_check_bridge "8003" "Bot #3 (Trend Runner)"
+_check_bridge "8003" "Bot #3 (Smart Martingale)"
 _check_bridge "8004" "Bot #4 (SMC Hunter)"
 _check_bridge "8005" "Bot #5 (AI Trader)"
 _check_bridge "8006" "Bot #6 (Crossfire)"
@@ -198,7 +198,7 @@ echo ""
 echo "Web Dashboards:"
 echo "  Bot #1 (Sunrise):      http://\$(hostname -I | awk '{print \$1}'):8501"
 echo "  Bot #2 (Manual Desk):  http://\$(hostname -I | awk '{print \$1}'):8502"
-echo "  Bot #3 (Trend Runner): http://\$(hostname -I | awk '{print \$1}'):8503"
+echo "  Bot #3 (Smart Martingale): http://\$(hostname -I | awk '{print \$1}'):8503"
 echo "  Bot #4 (SMC Hunter):   http://\$(hostname -I | awk '{print \$1}'):8504"
 echo "  Bot #5 (AI Trader):    http://\$(hostname -I | awk '{print \$1}'):8505"
 echo "  Bot #6 (Crossfire):    http://\$(hostname -I | awk '{print \$1}'):8506"
