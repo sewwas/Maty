@@ -120,11 +120,10 @@ class TrendRunnerEngine:
                 balance = float(acc_info.get("balance", 0.0))
                 equity = float(acc_info.get("equity", 0.0))
                 
-                tick = self.bridge.get_tick_data(symbol)
+                tick = self.bridge.get_tick(symbol)
                 current_price = float(tick.get("ask", 0.0)) if tick else 0.0
                 
-                positions_resp = self.bridge.get_open_positions()
-                positions = positions_resp.get("positions", [])
+                positions = self.bridge.get_positions(symbol)
             except Exception as e:
                 logger.error(f"Bridge error: {e}")
                 return self._cached_telemetry
@@ -137,10 +136,8 @@ class TrendRunnerEngine:
                 try:
                     strat_cfg = self.config.get("strategy", {})
                     tf = strat_cfg.get("timeframe", "M5")
-                    c_resp = self.bridge.get_historical_data(symbol, tf, 250)
-                    candles = c_resp.get("data", [])
-                    if candles:
-                        df = pd.DataFrame(candles)
+                    df = self.bridge.get_candles(symbol, timeframe=tf, limit=250)
+                    if not df.empty:
                         self._cached_candles = self.compute_indicators(df)
                     self._last_candle_fetch = now
                 except Exception as e:
@@ -193,10 +190,10 @@ class TrendRunnerEngine:
                     # First trade entry
                     if trend == "UP":
                         self.log(f"📈 Trend is UP. Opening initial BUY {base_lot} lots.")
-                        self.bridge.open_order(symbol, "BUY", base_lot)
+                        self.bridge.send_order(symbol, "BUY", current_price, base_lot)
                     elif trend == "DOWN":
                         self.log(f"📉 Trend is DOWN. Opening initial SELL {base_lot} lots.")
-                        self.bridge.open_order(symbol, "SELL", base_lot)
+                        self.bridge.send_order(symbol, "SELL", current_price, base_lot)
                 elif grid_level > 0 and grid_level < max_levels:
                     # Martingale spacing
                     is_buy = my_positions[0].get("type", 0) == 0
@@ -215,7 +212,7 @@ class TrendRunnerEngine:
                         next_lot = round(base_lot * (grid_mult ** grid_level), 2)
                         side = "BUY" if is_buy else "SELL"
                         self.log(f"🔄 Grid Level {grid_level+1}: Price moved {spacing:.2f} pts against us. Adding {side} {next_lot} lots.")
-                        self.bridge.open_order(symbol, side, next_lot)
+                        self.bridge.send_order(symbol, side, current_price, next_lot)
 
             self._cached_telemetry = {
                 "symbol": symbol,
