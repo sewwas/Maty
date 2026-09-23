@@ -116,7 +116,7 @@ class TrendRunnerEngine:
             symbol = self.config.get("symbol", "XAUUSD")
             
             try:
-                acc_info = self.bridge.get_account_info()
+                acc_info = self.bridge.get_account()
                 balance = float(acc_info.get("balance", 0.0))
                 equity = float(acc_info.get("equity", 0.0))
                 
